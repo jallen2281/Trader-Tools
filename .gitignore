@@ -38,7 +38,7 @@ Thumbs.db
 k8s/secret.yaml
 k8s/secret-*.yaml
 !k8s/secret.yaml.template
-helm/trading-platform/secrets.yaml
+helm/trader-tools/secrets.yaml
 my-values.yaml
 *-values.yaml
 

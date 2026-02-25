@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "trading-platform.fullname" . }}
+  name: {{ include "trader-tools.fullname" . }}
   labels:
-    {{- include "trading-platform.labels" . | nindent 4 }}
+    {{- include "trader-tools.labels" . | nindent 4 }}
 data:
   FLASK_APP: "app.py"
   FLASK_ENV: {{ .Values.config.flaskEnv | quote }}

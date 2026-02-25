@@ -2,9 +2,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "trading-platform.fullname" . }}
+  name: {{ include "trader-tools.fullname" . }}
   labels:
-    {{- include "trading-platform.labels" . | nindent 4 }}
+    {{- include "trader-tools.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -33,7 +33,7 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "trading-platform.fullname" $ }}
+                name: {{ include "trader-tools.fullname" $ }}
                 port:
                   number: {{ $.Values.service.port }}
           {{- end }}

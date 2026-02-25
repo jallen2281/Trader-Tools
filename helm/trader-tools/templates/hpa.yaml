@@ -2,14 +2,14 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "trading-platform.fullname" . }}
+  name: {{ include "trader-tools.fullname" . }}
   labels:
-    {{- include "trading-platform.labels" . | nindent 4 }}
+    {{- include "trader-tools.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "trading-platform.fullname" . }}
+    name: {{ include "trader-tools.fullname" . }}
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}
   metrics:

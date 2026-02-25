@@ -1,7 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: trading-platform
+namespace: trader-tools
 
 resources:
   - namespace.yaml
@@ -14,19 +14,19 @@ resources:
 
 # Images to use (update with your registry)
 images:
-  - name: your-registry/trading-platform
-    newName: your-registry/trading-platform
+  - name: your-registry/trader-tools
+    newName: your-registry/trader-tools
     newTag: latest
 
 # Common labels
 commonLabels:
-  app.kubernetes.io/name: trading-platform
+  app.kubernetes.io/name: trader-tools
   app.kubernetes.io/instance: production
   app.kubernetes.io/version: "1.0.0"
   app.kubernetes.io/managed-by: kustomize
 
 # Namespace for all resources
-# namespace: trading-platform
+# namespace: trader-tools
 
 # Config for generating resources
 configMapGenerator: []
@@ -34,5 +34,5 @@ secretGenerator: []
 
 # Replicas (can be overridden)
 replicas:
-  - name: trading-platform
+  - name: trader-tools
     count: 2

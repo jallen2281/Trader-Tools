@@ -1,12 +1,12 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: trading-platform-dev
+  name: trader-tools-dev
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   labels:
-    app: trading-platform
+    app: trader-tools
     environment: development
 spec:
   project: default
@@ -16,10 +16,10 @@ spec:
     # REPLACE WITH YOUR GIT REPOSITORY URL
     repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
     targetRevision: develop  # Use develop branch for dev environment
-    path: helm/trading-platform
+    path: helm/trader-tools
     
     helm:
-      releaseName: trading-platform-dev
+      releaseName: trader-tools-dev
       
       valueFiles:
         - values.yaml
@@ -28,7 +28,7 @@ spec:
       values: |
         # Development image settings
         image:
-          repository: localhost:32000/trading-platform
+          repository: localhost:32000/trader-tools
           pullPolicy: Always
           tag: "dev-latest"
         
@@ -69,7 +69,7 @@ spec:
   # Deploy to dev namespace
   destination:
     server: https://kubernetes.default.svc
-    namespace: trading-platform-dev
+    namespace: trader-tools-dev
   
   # Sync policy - manual sync for dev
   syncPolicy:

@@ -69,18 +69,18 @@ For the impatient, here's the fastest path to deployment:
 
 ```bash
 # 1. Build and push image
-docker build -t your-registry/trading-platform:latest .
-docker push your-registry/trading-platform:latest
+docker build -t your-registry/trader-tools:latest .
+docker push your-registry/trader-tools:latest
 
 # 2. Create secrets file
-cp helm/trading-platform/values.yaml my-values.yaml
+cp helm/trader-tools/values.yaml my-values.yaml
 # Edit my-values.yaml with your secrets
 
 # 3. Deploy with Helm
-helm install trading-platform ./helm/trading-platform -f my-values.yaml
+helm install trader-tools ./helm/trader-tools -f my-values.yaml
 
 # 4. Get the URL
-kubectl get ingress -n trading-platform
+kubectl get ingress -n trader-tools
 ```
 
 ---
@@ -99,8 +99,8 @@ sudo snap install microk8s --classic --channel=1.28/stable
 microk8s enable dns storage registry ingress metrics-server
 
 # Build and push to local registry
-docker build -t localhost:32000/trading-platform:latest .
-docker push localhost:32000/trading-platform:latest
+docker build -t localhost:32000/trader-tools:latest .
+docker push localhost:32000/trader-tools:latest
 
 # Install ArgoCD
 microk8s kubectl create namespace argocd
@@ -130,38 +130,38 @@ microk8s kubectl apply -f argocd/application.yaml
 
 ```bash
 # From project root
-docker build -t trading-platform:latest .
+docker build -t trader-tools:latest .
 
 # Test locally (optional)
-docker run -p 5000:5000 --env-file .env trading-platform:latest
+docker run -p 5000:5000 --env-file .env trader-tools:latest
 ```
 
 ### Tag and Push to Registry
 
 #### Docker Hub
 ```bash
-docker tag trading-platform:latest yourusername/trading-platform:latest
-docker push yourusername/trading-platform:latest
+docker tag trader-tools:latest yourusername/trader-tools:latest
+docker push yourusername/trader-tools:latest
 ```
 
 #### Google Container Registry (GCR)
 ```bash
-docker tag trading-platform:latest gcr.io/your-project-id/trading-platform:latest
-docker push gcr.io/your-project-id/trading-platform:latest
+docker tag trader-tools:latest gcr.io/your-project-id/trader-tools:latest
+docker push gcr.io/your-project-id/trader-tools:latest
 ```
 
 #### Amazon ECR
 ```bash
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 123456789.dkr.ecr.us-east-1.amazonaws.com
-docker tag trading-platform:latest 123456789.dkr.ecr.us-east-1.amazonaws.com/trading-platform:latest
-docker push 123456789.dkr.ecr.us-east-1.amazonaws.com/trading-platform:latest
+docker tag trader-tools:latest 123456789.dkr.ecr.us-east-1.amazonaws.com/trader-tools:latest
+docker push 123456789.dkr.ecr.us-east-1.amazonaws.com/trader-tools:latest
 ```
 
 #### Azure Container Registry (ACR)
 ```bash
 az acr login --name yourregistry
-docker tag trading-platform:latest yourregistry.azurecr.io/trading-platform:latest
-docker push yourregistry.azurecr.io/trading-platform:latest
+docker tag trader-tools:latest yourregistry.azurecr.io/trader-tools:latest
+docker push yourregistry.azurecr.io/trader-tools:latest
 ```
 
 ---
@@ -175,7 +175,7 @@ Helm provides the most flexible and maintainable deployment approach.
 #### 1. Create a Custom Values File
 
 ```bash
-cp helm/trading-platform/values.yaml my-production-values.yaml
+cp helm/trader-tools/values.yaml my-production-values.yaml
 ```
 
 #### 2. Edit my-production-values.yaml
@@ -183,7 +183,7 @@ cp helm/trading-platform/values.yaml my-production-values.yaml
 ```yaml
 # Image configuration
 image:
-  repository: your-registry/trading-platform
+  repository: your-registry/trader-tools
   tag: "v1.0.0"
 
 # Ingress configuration
@@ -195,7 +195,7 @@ ingress:
         - path: /
           pathType: Prefix
   tls:
-    - secretName: trading-platform-tls
+    - secretName: trader-tools-tls
       hosts:
         - trading.yourdomain.com
 
@@ -228,17 +228,17 @@ autoscaling:
 
 ```bash
 # Create namespace
-kubectl create namespace trading-platform
+kubectl create namespace trader-tools
 
 # Install with Helm
-helm install trading-platform ./helm/trading-platform \
+helm install trader-tools ./helm/trader-tools \
   -f my-production-values.yaml \
-  --namespace trading-platform
+  --namespace trader-tools
 
 # Or install from values via command line (more secure for secrets)
-helm install trading-platform ./helm/trading-platform \
-  --namespace trading-platform \
-  --set image.repository=your-registry/trading-platform \
+helm install trader-tools ./helm/trader-tools \
+  --namespace trader-tools \
+  --set image.repository=your-registry/trader-tools \
   --set image.tag=v1.0.0 \
   --set-string secrets.secretKey="your-secret-key" \
   --set-string secrets.googleClientId="your-client-id" \
@@ -249,15 +249,15 @@ helm install trading-platform ./helm/trading-platform \
 
 ```bash
 # After making changes
-helm upgrade trading-platform ./helm/trading-platform \
+helm upgrade trader-tools ./helm/trader-tools \
   -f my-production-values.yaml \
-  --namespace trading-platform
+  --namespace trader-tools
 ```
 
 #### 5. Uninstall
 
 ```bash
-helm uninstall trading-platform --namespace trading-platform
+helm uninstall trader-tools --namespace trader-tools
 ```
 
 ---
@@ -276,9 +276,9 @@ cd k8s
 #### 2. Create Secrets
 
 ```bash
-kubectl create namespace trading-platform
+kubectl create namespace trader-tools
 
-kubectl create secret generic trading-platform-secret \
+kubectl create secret generic trader-tools-secret \
   --from-literal=SECRET_KEY='your-secret-key' \
   --from-literal=DATABASE_URL='sqlite:////data/financial_analysis.db' \
   --from-literal=GOOGLE_CLIENT_ID='your-google-client-id' \
@@ -286,7 +286,7 @@ kubectl create secret generic trading-platform-secret \
   --from-literal=ALPHA_VANTAGE_API_KEY='your-alpha-vantage-key' \
   --from-literal=NEWS_API_KEY='your-news-api-key' \
   --from-literal=QUANDL_API_KEY='your-quandl-key' \
-  --namespace trading-platform
+  --namespace trader-tools
 ```
 
 #### 3. Deploy
@@ -299,14 +299,14 @@ kubectl kustomize k8s
 kubectl apply -k k8s
 
 # Verify deployment
-kubectl get all -n trading-platform
+kubectl get all -n trader-tools
 ```
 
 #### 4. Update Ingress Host
 
 ```bash
 # Edit ingress.yaml with your domain
-kubectl edit ingress trading-platform -n trading-platform
+kubectl edit ingress trader-tools -n trader-tools
 ```
 
 ---
@@ -348,9 +348,9 @@ kubectl apply -f k8s/hpa.yaml
 #### 4. Verify Deployment
 
 ```bash
-kubectl get pods -n trading-platform
-kubectl get svc -n trading-platform
-kubectl get ingress -n trading-platform
+kubectl get pods -n trader-tools
+kubectl get svc -n trader-tools
+kubectl get ingress -n trader-tools
 ```
 
 ---
@@ -400,7 +400,7 @@ Edit `argocd/application.yaml` to point to your Git repository:
 source:
   repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
   targetRevision: main
-  path: helm/trading-platform
+  path: helm/trader-tools
 ```
 
 #### 4. Create Secrets Manually
@@ -409,7 +409,7 @@ Secrets are not stored in Git for security:
 
 ```bash
 # Create namespace
-kubectl create namespace trading-platform
+kubectl create namespace trader-tools
 
 # Create secrets from template
 cp k8s/secret.yaml.template k8s/secret-local.yaml
@@ -438,13 +438,13 @@ kubectl apply -f argocd/application-dev.yaml
 
 ```bash
 # Watch sync status via CLI
-argocd app get trading-platform
+argocd app get trader-tools
 
 # Or view in UI
-# https://localhost:8080/applications/trading-platform
+# https://localhost:8080/applications/trader-tools
 
 # Watch pods
-kubectl get pods -n trading-platform -w
+kubectl get pods -n trader-tools -w
 ```
 
 #### GitOps Workflow
@@ -513,26 +513,26 @@ secrets:
 
 ```bash
 # Check pod status
-kubectl get pods -n trading-platform
+kubectl get pods -n trader-tools
 
 # View logs
-kubectl logs -f deployment/trading-platform -n trading-platform
+kubectl logs -f deployment/trader-tools -n trader-tools
 
 # Check service
-kubectl get svc -n trading-platform
+kubectl get svc -n trader-tools
 
 # Check ingress
-kubectl get ingress -n trading-platform
+kubectl get ingress -n trader-tools
 ```
 
 ### Access the Application
 
 ```bash
 # Get ingress URL
-kubectl get ingress trading-platform -n trading-platform
+kubectl get ingress trader-tools -n trader-tools
 
 # Port-forward for testing (optional)
-kubectl port-forward svc/trading-platform 8080:80 -n trading-platform
+kubectl port-forward svc/trader-tools 8080:80 -n trader-tools
 # Access at http://localhost:8080
 ```
 
@@ -543,7 +543,7 @@ The init container automatically creates the database schema on first deploy.
 To manually initialize:
 
 ```bash
-kubectl exec -it deployment/trading-platform -n trading-platform -- python -c "
+kubectl exec -it deployment/trader-tools -n trader-tools -- python -c "
 from db_config import init_database
 from flask import Flask
 app = Flask(__name__)
@@ -555,7 +555,7 @@ print('Database initialized')
 ### Create Admin User
 
 ```bash
-kubectl exec -it deployment/trading-platform -n trading-platform -- python -c "
+kubectl exec -it deployment/trader-tools -n trader-tools -- python -c "
 from models import db, User
 from flask import Flask
 app = Flask(__name__)
@@ -602,13 +602,13 @@ kubectl port-forward svc/prometheus 9090:9090
 
 ```bash
 # View logs from all pods
-kubectl logs -l app=trading-platform -n trading-platform --tail=100 -f
+kubectl logs -l app=trader-tools -n trader-tools --tail=100 -f
 
 # View logs from specific pod
-kubectl logs -f <pod-name> -n trading-platform
+kubectl logs -f <pod-name> -n trader-tools
 
 # View previous container logs (if crashed)
-kubectl logs <pod-name> -n trading-platform --previous
+kubectl logs <pod-name> -n trader-tools --previous
 ```
 
 ---
@@ -619,7 +619,7 @@ kubectl logs <pod-name> -n trading-platform --previous
 
 ```bash
 # Scale to 5 replicas
-kubectl scale deployment trading-platform --replicas=5 -n trading-platform
+kubectl scale deployment trader-tools --replicas=5 -n trader-tools
 ```
 
 ### Auto-Scaling
@@ -634,14 +634,14 @@ HorizontalPodAutoscaler is included:
 View scaling status:
 
 ```bash
-kubectl get hpa -n trading-platform
-kubectl describe hpa trading-platform -n trading-platform
+kubectl get hpa -n trader-tools
+kubectl describe hpa trader-tools -n trader-tools
 ```
 
 Adjust scaling parameters:
 
 ```bash
-kubectl edit hpa trading-platform -n trading-platform
+kubectl edit hpa trader-tools -n trader-tools
 ```
 
 ---
@@ -654,7 +654,7 @@ kubectl edit hpa trading-platform -n trading-platform
 
 ```bash
 # Check logs
-kubectl logs <pod-name> -n trading-platform
+kubectl logs <pod-name> -n trader-tools
 
 # Common causes:
 # - Missing required secrets (SECRET_KEY, GOOGLE_CLIENT_ID)
@@ -666,7 +666,7 @@ kubectl logs <pod-name> -n trading-platform
 
 ```bash
 # Check ingress status
-kubectl describe ingress trading-platform -n trading-platform
+kubectl describe ingress trader-tools -n trader-tools
 
 # Verify ingress controller is running
 kubectl get pods -n ingress-nginx
@@ -679,20 +679,20 @@ nslookup your-domain.com
 
 ```bash
 # Check PVC
-kubectl get pvc -n trading-platform
+kubectl get pvc -n trader-tools
 
 # Check volume mount
-kubectl describe pod <pod-name> -n trading-platform
+kubectl describe pod <pod-name> -n trader-tools
 
 # Exec into pod and check database
-kubectl exec -it <pod-name> -n trading-platform -- ls -la /data
+kubectl exec -it <pod-name> -n trader-tools -- ls -la /data
 ```
 
 #### Memory/CPU Issues
 
 ```bash
 # Check resource usage
-kubectl top pods -n trading-platform
+kubectl top pods -n trader-tools
 
 # Increase resources in values.yaml or deployment.yaml
 resources:
@@ -705,19 +705,19 @@ resources:
 
 ```bash
 # Get all resources
-kubectl get all -n trading-platform
+kubectl get all -n trader-tools
 
 # Describe deployment
-kubectl describe deployment trading-platform -n trading-platform
+kubectl describe deployment trader-tools -n trader-tools
 
 # Get events
-kubectl get events -n trading-platform --sort-by='.lastTimestamp'
+kubectl get events -n trader-tools --sort-by='.lastTimestamp'
 
 # Exec into pod
-kubectl exec -it <pod-name> -n trading-platform -- /bin/bash
+kubectl exec -it <pod-name> -n trader-tools -- /bin/bash
 
 # View config
-kubectl get configmap trading-platform-config -n trading-platform -o yaml
+kubectl get configmap trader-tools-config -n trader-tools -o yaml
 ```
 
 ---
@@ -745,12 +745,12 @@ kubectl apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: trading-platform-netpol
-  namespace: trading-platform
+  name: trader-tools-netpol
+  namespace: trader-tools
 spec:
   podSelector:
     matchLabels:
-      app: trading-platform
+      app: trader-tools
   policyTypes:
     - Ingress
     - Egress
@@ -777,13 +777,13 @@ kubectl apply -f https://github.com/bitnami-labs/sealed-secrets/releases/downloa
 brew install kubeseal
 
 # Create sealed secret
-kubectl create secret generic trading-platform-secret \
+kubectl create secret generic trader-tools-secret \
   --from-literal=SECRET_KEY='your-secret-key' \
   --dry-run=client -o yaml | \
   kubeseal -o yaml > sealed-secret.yaml
 
 # Apply sealed secret
-kubectl apply -f sealed-secret.yaml -n trading-platform
+kubectl apply -f sealed-secret.yaml -n trader-tools
 ```
 
 ---
@@ -806,20 +806,20 @@ jobs:
       - uses: actions/checkout@v3
       
       - name: Build Docker image
-        run: docker build -t ${{ secrets.REGISTRY }}/trading-platform:${{ github.sha }} .
+        run: docker build -t ${{ secrets.REGISTRY }}/trader-tools:${{ github.sha }} .
       
       - name: Push to registry
         run: |
           echo ${{ secrets.REGISTRY_PASSWORD }} | docker login -u ${{ secrets.REGISTRY_USER }} --password-stdin ${{ secrets.REGISTRY }}
-          docker push ${{ secrets.REGISTRY }}/trading-platform:${{ github.sha }}
+          docker push ${{ secrets.REGISTRY }}/trader-tools:${{ github.sha }}
       
       - name: Deploy to Kubernetes
         uses: azure/k8s-deploy@v4
         with:
           manifests: |
             k8s/deployment.yaml
-          images: ${{ secrets.REGISTRY }}/trading-platform:${{ github.sha }}
-          namespace: trading-platform
+          images: ${{ secrets.REGISTRY }}/trader-tools:${{ github.sha }}
+          namespace: trader-tools
 ```
 
 ---
@@ -830,21 +830,21 @@ jobs:
 
 ```bash
 # Create backup
-kubectl exec -it deployment/trading-platform -n trading-platform -- \
+kubectl exec -it deployment/trader-tools -n trader-tools -- \
   tar -czf /tmp/backup.tar.gz /data/financial_analysis.db
 
 # Copy backup locally
-kubectl cp trading-platform/<pod-name>:/tmp/backup.tar.gz ./backup-$(date +%Y%m%d).tar.gz
+kubectl cp trader-tools/<pod-name>:/tmp/backup.tar.gz ./backup-$(date +%Y%m%d).tar.gz
 ```
 
 ### Restore Database
 
 ```bash
 # Copy backup to pod
-kubectl cp ./backup.tar.gz trading-platform/<pod-name>:/tmp/backup.tar.gz
+kubectl cp ./backup.tar.gz trader-tools/<pod-name>:/tmp/backup.tar.gz
 
 # Restore
-kubectl exec -it <pod-name> -n trading-platform -- \
+kubectl exec -it <pod-name> -n trader-tools -- \
   tar -xzf /tmp/backup.tar.gz -C /
 ```
 
@@ -856,33 +856,33 @@ kubectl exec -it <pod-name> -n trading-platform -- \
 
 ```bash
 # Update image
-kubectl set image deployment/trading-platform \
-  trading-platform=your-registry/trading-platform:v2.0.0 \
-  -n trading-platform
+kubectl set image deployment/trader-tools \
+  trader-tools=your-registry/trader-tools:v2.0.0 \
+  -n trader-tools
 
 # Watch rollout
-kubectl rollout status deployment/trading-platform -n trading-platform
+kubectl rollout status deployment/trader-tools -n trader-tools
 ```
 
 ### Rollback
 
 ```bash
 # Rollback to previous version
-kubectl rollout undo deployment/trading-platform -n trading-platform
+kubectl rollout undo deployment/trader-tools -n trader-tools
 
 # Rollback to specific revision
-kubectl rollout undo deployment/trading-platform --to-revision=2 -n trading-platform
+kubectl rollout undo deployment/trader-tools --to-revision=2 -n trader-tools
 ```
 
 ### Cleanup
 
 ```bash
 # Delete everything
-kubectl delete namespace trading-platform
+kubectl delete namespace trader-tools
 
 # Or with Helm
-helm uninstall trading-platform -n trading-platform
-kubectl delete namespace trading-platform
+helm uninstall trader-tools -n trader-tools
+kubectl delete namespace trader-tools
 ```
 
 ---
@@ -890,7 +890,7 @@ kubectl delete namespace trading-platform
 ## Support
 
 For issues and questions:
-- GitHub Issues: https://github.com/yourusername/trading-platform/issues
+- GitHub Issues: https://github.com/yourusername/trader-tools/issues
 - Documentation: https://docs.yourdomain.com
 - Email: support@yourdomain.com
 

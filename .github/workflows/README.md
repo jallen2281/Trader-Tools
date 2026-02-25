@@ -6,7 +6,7 @@ This directory contains CI/CD workflows for building and pushing container image
 
 ### 1. `build.yml` - Docker Hub Build (Requires Secrets)
 
-Builds and pushes images to Docker Hub (`docker.io/username/trading-platform`).
+Builds and pushes images to Docker Hub (`docker.io/username/trader-tools`).
 
 **Setup:**
 1. Create Docker Hub access token at https://hub.docker.com/settings/security
@@ -79,16 +79,16 @@ Update your deployment manifests with the correct registry:
 ```bash
 # Update deployment manifests
 REGISTRY="ghcr.io/YOUR_GITHUB_USERNAME/llmtesting"  # Use lowercase repo name
-sed -i "s|docker.io/yourusername/trading-platform|$REGISTRY|g" k8s/deployment.yaml
-sed -i "s|docker.io/yourusername/trading-platform|$REGISTRY|g" helm/trading-platform/values.yaml
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" k8s/deployment.yaml
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" helm/trader-tools/values.yaml
 ```
 
 **For Docker Hub (`build.yml`):**
 ```bash
 # Update deployment manifests
-REGISTRY="docker.io/YOUR_DOCKERHUB_USERNAME/trading-platform"
-sed -i "s|docker.io/yourusername/trading-platform|$REGISTRY|g" k8s/deployment.yaml
-sed -i "s|docker.io/yourusername/trading-platform|$REGISTRY|g" helm/trading-platform/values.yaml
+REGISTRY="docker.io/YOUR_DOCKERHUB_USERNAME/trader-tools"
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" k8s/deployment.yaml
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" helm/trader-tools/values.yaml
 ```
 
 ## Viewing Build Status
@@ -102,7 +102,7 @@ sed -i "s|docker.io/yourusername/trading-platform|$REGISTRY|g" helm/trading-plat
 GHCR images are private by default. To make public:
 
 1. Go to https://github.com/users/YOUR_USERNAME/packages
-2. Find `trading-platform` package
+2. Find `trader-tools` package
 3. Click **Package settings**
 4. Scroll to **Danger Zone**
 5. Click **Change visibility** → **Public**

@@ -1,14 +1,14 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "trading-platform.name" -}}
+{{- define "trader-tools.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
-{{- define "trading-platform.fullname" -}}
+{{- define "trader-tools.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -24,16 +24,16 @@ Create a default fully qualified app name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "trading-platform.chart" -}}
+{{- define "trader-tools.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "trading-platform.labels" -}}
-helm.sh/chart: {{ include "trading-platform.chart" . }}
-{{ include "trading-platform.selectorLabels" . }}
+{{- define "trader-tools.labels" -}}
+helm.sh/chart: {{ include "trader-tools.chart" . }}
+{{ include "trader-tools.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -43,17 +43,17 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "trading-platform.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "trading-platform.name" . }}
+{{- define "trader-tools.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "trader-tools.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
 Create the name of the service account to use
 */}}
-{{- define "trading-platform.serviceAccountName" -}}
+{{- define "trader-tools.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "trading-platform.fullname" .) .Values.serviceAccount.name }}
+{{- default (include "trader-tools.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}

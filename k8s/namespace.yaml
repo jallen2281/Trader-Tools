@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: trading-platform
+  name: trader-tools
   labels:
-    name: trading-platform
+    name: trader-tools
     environment: production

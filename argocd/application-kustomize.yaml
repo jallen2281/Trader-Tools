@@ -1,12 +1,12 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: trading-platform-kustomize
+  name: trader-tools-kustomize
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   labels:
-    app: trading-platform
+    app: trader-tools
     environment: production
     deployment-method: kustomize
 spec:
@@ -32,7 +32,7 @@ spec:
       
       # Common labels to add to all resources
       commonLabels:
-        app: trading-platform
+        app: trader-tools
         managed-by: argocd
       
       # Common annotations
@@ -41,7 +41,7 @@ spec:
       
       # Images to override for your registry
       images:
-        - name: trading-platform
+        - name: trader-tools
           newName: ghcr.io/jallen2281/Trader-Tools:latest  # Update with your registry
           newTag: latest
       
@@ -50,12 +50,12 @@ spec:
       #   - path: patches/deployment-patch.yaml
       #     target:
       #       kind: Deployment
-      #       name: trading-platform
+      #       name: trader-tools
   
   # Destination cluster and namespace
   destination:
     server: https://kubernetes.default.svc
-    namespace: trading-platform
+    namespace: trader-tools
   
   # Sync policy
   syncPolicy:

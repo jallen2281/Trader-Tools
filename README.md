@@ -52,8 +52,8 @@ A comprehensive, production-ready trading intelligence platform featuring real-t
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/trading-platform.git
-cd trading-platform
+git clone https://github.com/yourusername/trader-tools.git
+cd trader-tools
 
 # Create virtual environment
 python -m venv .venv
@@ -79,10 +79,10 @@ Access at `http://localhost:5000`
 
 ```bash
 # Build image
-docker build -t trading-platform .
+docker build -t trader-tools .
 
 # Run container
-docker run -p 5000:5000 --env-file .env trading-platform
+docker run -p 5000:5000 --env-file .env trader-tools
 ```
 
 ### Production Kubernetes Deployment
@@ -97,7 +97,7 @@ docker run -p 5000:5000 --env-file .env trading-platform
 
 **Deployment Methods:**
 - **Production MicroK8s + ArgoCD**: GitOps deployment to existing cluster - [PRODUCTION.md](PRODUCTION.md)
-- **Helm Chart**: Recommended for production - [helm/trading-platform](helm/trading-platform/)
+- **Helm Chart**: Recommended for production - [helm/trader-tools](helm/trader-tools/)
 - **Kustomize**: Lightweight overlay configuration - [k8s/](k8s/)
 - **Raw Manifests**: Direct Kubernetes YAMLs - [k8s/](k8s/)
 - **ArgoCD GitOps**: Automated sync and self-healing - [argocd/](argocd/)
@@ -107,8 +107,8 @@ Quick examples:
 **Helm**:
 ```bash
 # Update image registry in values.yaml first
-helm install trading-platform ./helm/trading-platform \
-  --set image.repository=docker.io/yourusername/trading-platform \
+helm install trader-tools ./helm/trader-tools \
+  --set image.repository=docker.io/yourusername/trader-tools \
   --set-string secrets.secretKey="your-secret" \
   --set-string secrets.googleClientId="your-client-id" \
   --set-string secrets.googleClientSecret="your-secret"
@@ -119,9 +119,9 @@ helm install trading-platform ./helm/trading-platform \
 # 1. Edit argocd/application.yaml with your Git repo and registry
 # 2. Push code to Git
 # 3. Create secrets on cluster
-kubectl create secret generic trading-platform-secret \
+kubectl create secret generic trader-tools-secret \
   --from-literal=SECRET_KEY='your-secret' \
-  --namespace trading-platform
+  --namespace trader-tools
 
 # 4. Deploy
 kubectl apply -f argocd/application.yaml
@@ -163,7 +163,7 @@ OLLAMA_BASE_URL=http://localhost:11434
 ## Project Structure
 
 ```
-trading-platform/
+trader-tools/
 ├── app.py                         # Main Flask application
 ├── models.py                      # Database models
 ├── config.py                      # Configuration management
@@ -189,7 +189,7 @@ trading-platform/
 │   └── kustomization.yaml
 │
 ├── helm/                         # Helm chart
-│   └── trading-platform/
+│   └── trader-tools/
 │       ├── Chart.yaml
 │       ├── values.yaml
 │       └── templates/
@@ -275,18 +275,18 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete API documentation.
 
 ```bash
 # 1. Build and push image
-docker build -t your-registry/trading-platform:latest .
-docker push your-registry/trading-platform:latest
+docker build -t your-registry/trader-tools:latest .
+docker push your-registry/trader-tools:latest
 
 # 2. Install with Helm
-helm install trading-platform ./helm/trading-platform \
-  --set image.repository=your-registry/trading-platform \
+helm install trader-tools ./helm/trader-tools \
+  --set image.repository=your-registry/trader-tools \
   --set-string secrets.secretKey="$(python -c 'import secrets; print(secrets.token_hex(32))')" \
   --set-string secrets.googleClientId="your-client-id" \
   --set-string secrets.googleClientSecret="your-client-secret"
 
 # 3. Get the URL
-kubectl get ingress -n trading-platform
+kubectl get ingress -n trader-tools
 ```
 
 ### Features in Production

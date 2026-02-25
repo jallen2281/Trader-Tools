@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "trading-platform.fullname" . }}
+  name: {{ include "trader-tools.fullname" . }}
   labels:
-    {{- include "trading-platform.labels" . | nindent 4 }}
+    {{- include "trader-tools.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
@@ -15,19 +15,19 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      {{- include "trading-platform.selectorLabels" . | nindent 6 }}
+      {{- include "trader-tools.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       annotations:
         {{- toYaml .Values.podAnnotations | nindent 8 }}
       labels:
-        {{- include "trading-platform.selectorLabels" . | nindent 8 }}
+        {{- include "trader-tools.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "trading-platform.serviceAccountName" . }}
+      serviceAccountName: {{ include "trader-tools.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
@@ -44,9 +44,9 @@ spec:
               print('Database initialized')
           envFrom:
             - configMapRef:
-                name: {{ include "trading-platform.fullname" . }}
+                name: {{ include "trader-tools.fullname" . }}
             - secretRef:
-                name: {{ include "trading-platform.fullname" . }}
+                name: {{ include "trader-tools.fullname" . }}
           volumeMounts:
             - name: data
               mountPath: /data
@@ -65,9 +65,9 @@ spec:
               value: {{ .Values.secrets.databaseUrl | quote }}
           envFrom:
             - configMapRef:
-                name: {{ include "trading-platform.fullname" . }}
+                name: {{ include "trader-tools.fullname" . }}
             - secretRef:
-                name: {{ include "trading-platform.fullname" . }}
+                name: {{ include "trader-tools.fullname" . }}
           volumeMounts:
             - name: data
               mountPath: /data
@@ -95,7 +95,7 @@ spec:
         - name: data
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ include "trading-platform.fullname" . }}-data
+            claimName: {{ include "trader-tools.fullname" . }}-data
           {{- else }}
           emptyDir: {}
           {{- end }}

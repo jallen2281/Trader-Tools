@@ -1,8 +1,8 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: trading-platform
-  namespace: trading-platform
+  name: trader-tools
+  namespace: trader-tools
   annotations:
     # Nginx ingress annotations (adjust for your ingress controller)
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
@@ -26,7 +26,7 @@ spec:
   tls:
     - hosts:
         - trading.yourdomain.com  # Update with your domain
-      secretName: trading-platform-tls
+      secretName: trader-tools-tls
   rules:
     - host: trading.yourdomain.com  # Update with your domain
       http:
@@ -35,6 +35,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: trading-platform
+                name: trader-tools
                 port:
                   name: http

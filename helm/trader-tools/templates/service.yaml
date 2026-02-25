@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "trading-platform.fullname" . }}
+  name: {{ include "trader-tools.fullname" . }}
   labels:
-    {{- include "trading-platform.labels" . | nindent 4 }}
+    {{- include "trader-tools.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   sessionAffinity: {{ .Values.service.sessionAffinity }}
@@ -17,4 +17,4 @@ spec:
       protocol: TCP
       name: http
   selector:
-    {{- include "trading-platform.selectorLabels" . | nindent 4 }}
+    {{- include "trader-tools.selectorLabels" . | nindent 4 }}

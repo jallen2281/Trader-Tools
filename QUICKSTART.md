@@ -6,17 +6,17 @@
 
 ```bash
 # Build Docker image
-docker build -t trading-platform:latest .
+docker build -t trader-tools:latest .
 
 # Tag for your registry (Docker Hub example)
-docker tag trading-platform:latest docker.io/yourusername/trading-platform:v1.0.0
+docker tag trader-tools:latest docker.io/yourusername/trader-tools:v1.0.0
 
 # Push to registry
-docker push docker.io/yourusername/trading-platform:v1.0.0
+docker push docker.io/yourusername/trader-tools:v1.0.0
 
 # Other registries:
-# GHCR: ghcr.io/yourusername/trading-platform:v1.0.0
-# Private: your-registry.com/namespace/trading-platform:v1.0.0
+# GHCR: ghcr.io/yourusername/trader-tools:v1.0.0
+# Private: your-registry.com/namespace/trader-tools:v1.0.0
 ```
 
 ## Deploy to Kubernetes
@@ -25,10 +25,10 @@ docker push docker.io/yourusername/trading-platform:v1.0.0
 
 ```bash
 # Create secrets
-helm install trading-platform ./helm/trading-platform \
+helm install trader-tools ./helm/trader-tools \
   --create-namespace \
-  --namespace trading-platform \
-  --set image.repository=docker.io/yourusername/trading-platform \
+  --namespace trader-tools \
+  --set image.repository=docker.io/yourusername/trader-tools \
   --set image.tag=v1.0.0 \
   --set-string secrets.secretKey="$(python -c 'import secrets; print(secrets.token_hex(32))')" \
   --set-string secrets.googleClientId="YOUR_CLIENT_ID" \
@@ -40,14 +40,14 @@ helm install trading-platform ./helm/trading-platform \
 
 ```bash
 # Create namespace
-kubectl create namespace trading-platform
+kubectl create namespace trader-tools
 
 # Create secrets
-kubectl create secret generic trading-platform-secret \
+kubectl create secret generic trader-tools-secret \
   --from-literal=SECRET_KEY='your-secret-key' \
   --from-literal=GOOGLE_CLIENT_ID='your-client-id' \
   --from-literal=GOOGLE_CLIENT_SECRET='your-client-secret' \
-  --namespace trading-platform
+  --namespace trader-tools
 
 # Deploy
 kubectl apply -k k8s
@@ -74,16 +74,16 @@ Quick setup for existing production MicroK8s cluster:
 
 ```bash
 # 1. Build and push to your registry (Docker Hub example)
-docker build -t docker.io/yourusername/trading-platform:latest .
-docker push docker.io/yourusername/trading-platform:latest
+docker build -t docker.io/yourusername/trader-tools:latest .
+docker push docker.io/yourusername/trader-tools:latest
 
 # 2. Create secrets on your cluster (via SSH or kubectl)
-kubectl create namespace trading-platform
-kubectl create secret generic trading-platform-secret \
+kubectl create namespace trader-tools
+kubectl create secret generic trader-tools-secret \
   --from-literal=SECRET_KEY='your-secret-key' \
   --from-literal=GOOGLE_CLIENT_ID='your-client-id' \
   --from-literal=GOOGLE_CLIENT_SECRET='your-client-secret' \
-  --namespace trading-platform
+  --namespace trader-tools
 
 # 3. Push code to Git repository
 git push origin main
@@ -94,24 +94,24 @@ git push origin main
 kubectl apply -f argocd/application.yaml
 
 # 6. Monitor deployment
-kubectl get application trading-platform -n argocd
-kubectl get pods -n trading-platform
+kubectl get application trader-tools -n argocd
+kubectl get pods -n trader-tools
 ```
 
 ## Verify Deployment
 
 ```bash
 # Check pods
-kubectl get pods -n trading-platform
+kubectl get pods -n trader-tools
 
 # Check logs
-kubectl logs -f deployment/trading-platform -n trading-platform
+kubectl logs -f deployment/trader-tools -n trader-tools
 
 # Check ingress
-kubectl get ingress -n trading-platform
+kubectl get ingress -n trader-tools
 
 # Port forward for testing
-kubectl port-forward svc/trading-platform 8080:80 -n trading-platform
+kubectl port-forward svc/trader-tools 8080:80 -n trader-tools
 # Access at http://localhost:8080
 ```
 
@@ -119,66 +119,66 @@ kubectl port-forward svc/trading-platform 8080:80 -n trading-platform
 
 ```bash
 # Helm upgrade
-helm upgrade trading-platform ./helm/trading-platform \
-  --namespace trading-platform \
+helm upgrade trader-tools ./helm/trader-tools \
+  --namespace trader-tools \
   --set image.tag=v1.0.1
 
 # Or with kubectl
-kubectl set image deployment/trading-platform \
-  trading-platform=docker.io/yourusername/trading-platform:v1.0.1 \
-  -n trading-platform
+kubectl set image deployment/trader-tools \
+  trader-tools=docker.io/yourusername/trader-tools:v1.0.1 \
+  -n trader-tools
 
 # Watch rollout
-kubectl rollout status deployment/trading-platform -n trading-platform
+kubectl rollout status deployment/trader-tools -n trader-tools
 ```
 
 ## Rollback
 
 ```bash
 # Helm rollback
-helm rollback trading-platform --namespace trading-platform
+helm rollback trader-tools --namespace trader-tools
 
 # Or with kubectl
-kubectl rollout undo deployment/trading-platform -n trading-platform
+kubectl rollout undo deployment/trader-tools -n trader-tools
 ```
 
 ## Scale
 
 ```bash
 # Manual scale
-kubectl scale deployment trading-platform --replicas=5 -n trading-platform
+kubectl scale deployment trader-tools --replicas=5 -n trader-tools
 
 # Check HPA
-kubectl get hpa -n trading-platform
+kubectl get hpa -n trader-tools
 ```
 
 ## Troubleshooting
 
 ```bash
 # Describe pod
-kubectl describe pod <pod-name> -n trading-platform
+kubectl describe pod <pod-name> -n trader-tools
 
 # Get events
-kubectl get events -n trading-platform --sort-by='.lastTimestamp'
+kubectl get events -n trader-tools --sort-by='.lastTimestamp'
 
 # Exec into pod
-kubectl exec -it deployment/trading-platform -n trading-platform -- /bin/bash
+kubectl exec -it deployment/trader-tools -n trader-tools -- /bin/bash
 
 # Check resource usage
-kubectl top pods -n trading-platform
+kubectl top pods -n trader-tools
 ```
 
 ## Cleanup
 
 ```bash
 # Helm
-helm uninstall trading-platform -n trading-platform
-kubectl delete namespace trading-platform
+helm uninstall trader-tools -n trader-tools
+kubectl delete namespace trader-tools
 
 # Kustomize/Raw
 kubectl delete -k k8s
 # or
-kubectl delete namespace trading-platform
+kubectl delete namespace trader-tools
 ```
 
 ## Environment Variables Cheat Sheet
@@ -199,23 +199,23 @@ Optional but recommended:
 ### Docker Hub
 ```bash
 docker login
-docker push username/trading-platform:latest
+docker push username/trader-tools:latest
 ```
 
 ### Google Container Registry
 ```bash
 gcloud auth configure-docker
-docker push gcr.io/project-id/trading-platform:latest
+docker push gcr.io/project-id/trader-tools:latest
 ```
 
 ### Amazon ECR
 ```bash
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 123456789.dkr.ecr.us-east-1.amazonaws.com
-docker push 123456789.dkr.ecr.us-east-1.amazonaws.com/trading-platform:latest
+docker push 123456789.dkr.ecr.us-east-1.amazonaws.com/trader-tools:latest
 ```
 
 ### Azure ACR
 ```bash
 az acr login --name myregistry
-docker push myregistry.azurecr.io/trading-platform:latest
+docker push myregistry.azurecr.io/trader-tools:latest
 ```

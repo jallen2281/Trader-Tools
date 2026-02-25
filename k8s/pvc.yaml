@@ -1,8 +1,8 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: trading-platform-data
-  namespace: trading-platform
+  name: trader-tools-data
+  namespace: trader-tools
 spec:
   accessModes:
     - ReadWriteOnce

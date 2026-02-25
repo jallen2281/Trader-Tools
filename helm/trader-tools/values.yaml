@@ -1,4 +1,4 @@
-# Default values for trading-platform Helm chart
+# Default values for trader-tools Helm chart
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
@@ -56,14 +56,14 @@ ingress:
     nginx.ingress.kubernetes.io/limit-rps: "10"
     nginx.ingress.kubernetes.io/affinity: "cookie"
   hosts:
-    - host: trading.yourdomain.com
+    - host: tradertools.kegbot.net
       paths:
         - path: /
           pathType: Prefix
   tls:
-    - secretName: trading-platform-tls
+    - secretName: trader-tools-tls
       hosts:
-        - trading.yourdomain.com
+        - tradertools.kegbot.net
 
 resources:
   limits:
@@ -123,5 +123,5 @@ affinity:
               - key: app.kubernetes.io/name
                 operator: In
                 values:
-                  - trading-platform
+                  - trader-tools
           topologyKey: kubernetes.io/hostname

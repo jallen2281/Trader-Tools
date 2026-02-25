@@ -1,8 +1,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: trading-platform-config
-  namespace: trading-platform
+  name: trader-tools-config
+  namespace: trader-tools
 data:
   # Flask Configuration
   FLASK_APP: "app.py"

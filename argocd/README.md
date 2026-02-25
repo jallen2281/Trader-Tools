@@ -48,7 +48,7 @@ Secrets are not stored in Git. Create them manually:
 
 ```bash
 # Create namespace
-microk8s kubectl create namespace trading-platform
+microk8s kubectl create namespace trader-tools
 
 # Create from template
 cp k8s/secret.yaml.template k8s/secret-local.yaml
@@ -76,20 +76,20 @@ microk8s kubectl apply -f argocd/application-kustomize.yaml
 
 ```bash
 # Watch sync status
-argocd app get trading-platform
+argocd app get trader-tools
 
 # View in UI
-# https://localhost:8080/applications/trading-platform
+# https://localhost:8080/applications/trader-tools
 
 # Watch pods
-microk8s kubectl get pods -n trading-platform -w
+microk8s kubectl get pods -n trader-tools -w
 ```
 
 ## Application Manifests
 
 ### application.yaml
 - **Purpose**: Deploys using Helm chart
-- **Source Path**: `helm/trading-platform/`
+- **Source Path**: `helm/trader-tools/`
 - **Sync Policy**: Automated with self-heal
 - **Features**:
   - Auto-sync on Git commits
@@ -113,7 +113,7 @@ microk8s kubectl get pods -n trading-platform -w
 ```bash
 # Edit code or configs
 vim app.py
-vim helm/trading-platform/values.yaml
+vim helm/trader-tools/values.yaml
 
 # Commit changes
 git add .
@@ -131,17 +131,17 @@ ArgoCD detects changes and automatically syncs (if automated sync enabled):
 ### 3. Monitor Sync
 ```bash
 # CLI
-argocd app get trading-platform
+argocd app get trader-tools
 
 # UI
-# https://localhost:8080/applications/trading-platform
+# https://localhost:8080/applications/trader-tools
 ```
 
 ### 4. Rollback if Needed
 ```bash
 # Via ArgoCD UI: Click "History and Rollback"
 # Or via CLI:
-argocd app rollback trading-platform <revision-number>
+argocd app rollback trader-tools <revision-number>
 ```
 
 ## Building and Pushing Images
@@ -165,8 +165,8 @@ jobs:
       
       - name: Build image
         run: |
-          docker build -t localhost:32000/trading-platform:${{ github.sha }} .
-          docker tag localhost:32000/trading-platform:${{ github.sha }} localhost:32000/trading-platform:latest
+          docker build -t localhost:32000/trader-tools:${{ github.sha }} .
+          docker tag localhost:32000/trader-tools:${{ github.sha }} localhost:32000/trader-tools:latest
       
       # For MicroK8s, need to transfer image
       # Option: Use external registry or save/load
@@ -176,14 +176,14 @@ jobs:
 
 ```bash
 # Build new version
-docker build -t localhost:32000/trading-platform:v1.2.0 .
-docker push localhost:32000/trading-platform:v1.2.0
+docker build -t localhost:32000/trader-tools:v1.2.0 .
+docker push localhost:32000/trader-tools:v1.2.0
 
 # Update values.yaml
-sed -i 's/tag: ".*"/tag: "v1.2.0"/' helm/trading-platform/values.yaml
+sed -i 's/tag: ".*"/tag: "v1.2.0"/' helm/trader-tools/values.yaml
 
 # Commit and push
-git add helm/trading-platform/values.yaml
+git add helm/trader-tools/values.yaml
 git commit -m "Update to v1.2.0"
 git push
 
@@ -198,43 +198,43 @@ git push
 argocd app list
 
 # Get application details
-argocd app get trading-platform
+argocd app get trader-tools
 
 # Sync application
-argocd app sync trading-platform
+argocd app sync trader-tools
 
 # Refresh application (check Git for changes)
-argocd app get trading-platform --refresh
+argocd app get trader-tools --refresh
 
 # Delete application
-argocd app delete trading-platform
+argocd app delete trader-tools
 ```
 
 ### Sync Operations
 ```bash
 # Sync specific resource
-argocd app sync trading-platform --resource=:Deployment:trading-platform
+argocd app sync trader-tools --resource=:Deployment:trader-tools
 
 # Force sync (override)
-argocd app sync trading-platform --force
+argocd app sync trader-tools --force
 
 # Dry run sync
-argocd app sync trading-platform --dry-run
+argocd app sync trader-tools --dry-run
 
 # Preview sync diff
-argocd app diff trading-platform
+argocd app diff trader-tools
 ```
 
 ### Rollback Operations
 ```bash
 # List history
-argocd app history trading-platform
+argocd app history trader-tools
 
 # Rollback to revision
-argocd app rollback trading-platform 3
+argocd app rollback trader-tools 3
 
 # Rollback to previous
-argocd app rollback trading-platform
+argocd app rollback trader-tools
 ```
 
 ### Repository Management
@@ -330,7 +330,7 @@ argocd repo add https://github.com/YOUR_USERNAME/YOUR_REPO.git \
 ### SSH Key
 ```bash
 # Generate SSH key (if needed)
-ssh-keygen -t ed25519 -C "argocd@trading-platform" -f ~/.ssh/argocd
+ssh-keygen -t ed25519 -C "argocd@trader-tools" -f ~/.ssh/argocd
 
 # Add public key to GitHub: Settings > SSH Keys
 
@@ -369,28 +369,28 @@ Deploy to multiple environments using branches:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: trading-platform-prod
+  name: trader-tools-prod
 spec:
   source:
     repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
     targetRevision: main
-    path: helm/trading-platform
+    path: helm/trader-tools
   destination:
-    namespace: trading-platform-prod
+    namespace: trader-tools-prod
 
 ---
 # Staging
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: trading-platform-staging
+  name: trader-tools-staging
 spec:
   source:
     repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
     targetRevision: develop
-    path: helm/trading-platform
+    path: helm/trader-tools
   destination:
-    namespace: trading-platform-staging
+    namespace: trader-tools-staging
 ```
 
 ## Troubleshooting
@@ -398,10 +398,10 @@ spec:
 ### Application Not Syncing
 ```bash
 # Check sync status
-argocd app get trading-platform
+argocd app get trader-tools
 
 # Force refresh
-argocd app get trading-platform --refresh --hard-refresh
+argocd app get trader-tools --refresh --hard-refresh
 
 # Check repository access
 argocd repo list
@@ -411,22 +411,22 @@ argocd repo get https://github.com/YOUR_USERNAME/YOUR_REPO.git
 ### Sync Failed
 ```bash
 # View sync details
-argocd app get trading-platform
+argocd app get trader-tools
 
 # View logs
-argocd app logs trading-platform
+argocd app logs trader-tools
 
 # Describe specific resource
-microk8s kubectl describe deployment/trading-platform -n trading-platform
+microk8s kubectl describe deployment/trader-tools -n trader-tools
 ```
 
 ### Out of Sync Status
 ```bash
 # View differences
-argocd app diff trading-platform
+argocd app diff trader-tools
 
 # Sync specific out-of-sync resources
-argocd app sync trading-platform --resource=:Deployment:trading-platform
+argocd app sync trader-tools --resource=:Deployment:trader-tools
 ```
 
 ### Repository Connection Failed
