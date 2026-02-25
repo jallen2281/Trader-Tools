@@ -1,14 +1,14 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: trading-platform
+  name: trader-tools
   namespace: argocd
   # Finalizer ensures cascading delete
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   # Labels for organization
   labels:
-    app: trading-platform
+    app: trader-tools
     environment: production
 spec:
   # The project to deploy into (default is 'default')
@@ -17,14 +17,14 @@ spec:
   # Source repository configuration
   source:
     # REPLACE WITH YOUR GIT REPOSITORY URL
-    repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
-    targetRevision: main  # Branch, tag, or commit SHA
-    path: helm/trading-platform  # Path to Helm chart
+    repoURL: https://github.com/jallen2281/Trader-Tools.git
+    targetRevision: master  #Branch, tag, or commit SHA
+    path: helm/trader-tools  # Path to Helm chart
     
     # Helm-specific configuration
     helm:
       # Release name
-      releaseName: trading-platform
+      releaseName: trader-tools
       
       # Values file overrides (optional)
       valueFiles:
@@ -34,7 +34,7 @@ spec:
       values: |
         # Override for MicroK8s local registry
         image:
-          repository: localhost:32000/trading-platform
+          repository: localhost:32000/trader-tools
           pullPolicy: Always
           tag: "latest"
         
@@ -80,7 +80,7 @@ spec:
   destination:
     # In-cluster deployment
     server: https://kubernetes.default.svc
-    namespace: trading-platform
+    namespace: trader-tools
   
   # Sync policy
   syncPolicy:
