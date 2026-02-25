@@ -1,16 +1,22 @@
 # Quick Deployment Reference
 
+> **For Production MicroK8s**: See [PRODUCTION.md](PRODUCTION.md) for complete production deployment guide.
+
 ## Build and Push
 
 ```bash
 # Build Docker image
 docker build -t trading-platform:latest .
 
-# Tag for your registry
-docker tag trading-platform:latest your-registry/trading-platform:v1.0.0
+# Tag for your registry (Docker Hub example)
+docker tag trading-platform:latest docker.io/yourusername/trading-platform:v1.0.0
 
 # Push to registry
-docker push your-registry/trading-platform:v1.0.0
+docker push docker.io/yourusername/trading-platform:v1.0.0
+
+# Other registries:
+# GHCR: ghcr.io/yourusername/trading-platform:v1.0.0
+# Private: your-registry.com/namespace/trading-platform:v1.0.0
 ```
 
 ## Deploy to Kubernetes
@@ -22,7 +28,7 @@ docker push your-registry/trading-platform:v1.0.0
 helm install trading-platform ./helm/trading-platform \
   --create-namespace \
   --namespace trading-platform \
-  --set image.repository=your-registry/trading-platform \
+  --set image.repository=docker.io/yourusername/trading-platform \
   --set image.tag=v1.0.0 \
   --set-string secrets.secretKey="$(python -c 'import secrets; print(secrets.token_hex(32))')" \
   --set-string secrets.googleClientId="YOUR_CLIENT_ID" \
@@ -60,6 +66,38 @@ kubectl apply -f k8s/ingress.yaml
 kubectl apply -f k8s/hpa.yaml
 ```
 
+### Option 4: Production MicroK8s + ArgoCD (GitOps)
+
+**See [PRODUCTION.md](PRODUCTION.md) for complete production deployment guide.**
+
+Quick setup for existing production MicroK8s cluster:
+
+```bash
+# 1. Build and push to your registry (Docker Hub example)
+docker build -t docker.io/yourusername/trading-platform:latest .
+docker push docker.io/yourusername/trading-platform:latest
+
+# 2. Create secrets on your cluster (via SSH or kubectl)
+kubectl create namespace trading-platform
+kubectl create secret generic trading-platform-secret \
+  --from-literal=SECRET_KEY='your-secret-key' \
+  --from-literal=GOOGLE_CLIENT_ID='your-client-id' \
+  --from-literal=GOOGLE_CLIENT_SECRET='your-client-secret' \
+  --namespace trading-platform
+
+# 3. Push code to Git repository
+git push origin main
+
+# 4. Update argocd/application.yaml with your Git repo URL and registry
+
+# 5. Deploy via ArgoCD
+kubectl apply -f argocd/application.yaml
+
+# 6. Monitor deployment
+kubectl get application trading-platform -n argocd
+kubectl get pods -n trading-platform
+```
+
 ## Verify Deployment
 
 ```bash
@@ -87,7 +125,7 @@ helm upgrade trading-platform ./helm/trading-platform \
 
 # Or with kubectl
 kubectl set image deployment/trading-platform \
-  trading-platform=your-registry/trading-platform:v1.0.1 \
+  trading-platform=docker.io/yourusername/trading-platform:v1.0.1 \
   -n trading-platform
 
 # Watch rollout

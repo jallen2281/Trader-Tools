@@ -1,0 +1,85 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: trading-platform-kustomize
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app: trading-platform
+    environment: production
+    deployment-method: kustomize
+spec:
+  project: default
+  
+  # Source repository configuration
+  source:
+    # REPLACE WITH YOUR GIT REPOSITORY URL
+    repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
+    targetRevision: main
+    path: k8s  # Path to Kustomize directory
+    
+    # Kustomize-specific configuration
+    kustomize:
+      # Kustomize version (optional)
+      version: v5.0.0
+      
+      # Name prefix for all resources
+      namePrefix: ""
+      
+      # Name suffix for all resources
+      nameSuffix: ""
+      
+      # Common labels to add to all resources
+      commonLabels:
+        app: trading-platform
+        managed-by: argocd
+      
+      # Common annotations
+      commonAnnotations:
+        deployed-by: argocd
+      
+      # Images to override for your registry
+      images:
+        - name: trading-platform
+          newName: docker.io/yourusername/trading-platform  # Update with your registry
+          newTag: latest
+      
+      # Patches (optional)
+      # patches:
+      #   - path: patches/deployment-patch.yaml
+      #     target:
+      #       kind: Deployment
+      #       name: trading-platform
+  
+  # Destination cluster and namespace
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: trading-platform
+  
+  # Sync policy
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+    
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  
+  # Ignore differences
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

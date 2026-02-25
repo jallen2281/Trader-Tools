@@ -8,11 +8,13 @@ This guide provides comprehensive instructions for deploying the AI-Powered Fina
 
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+- [MicroK8s Deployment](#microk8s-deployment)
 - [Build & Push Docker Image](#build--push-docker-image)
 - [Deployment Methods](#deployment-methods)
   - [Method 1: Helm (Recommended)](#method-1-helm-recommended)
   - [Method 2: Kustomize](#method-2-kustomize)
   - [Method 3: Plain Kubernetes Manifests](#method-3-plain-kubernetes-manifests)
+  - [Method 4: ArgoCD (GitOps)](#method-4-argocd-gitops)
 - [Configuration](#configuration)
 - [Post-Deployment](#post-deployment)
 - [Monitoring](#monitoring)
@@ -80,6 +82,45 @@ helm install trading-platform ./helm/trading-platform -f my-values.yaml
 # 4. Get the URL
 kubectl get ingress -n trading-platform
 ```
+
+---
+
+## MicroK8s Deployment
+
+For local or edge deployments without Docker registry requirements, use MicroK8s with ArgoCD GitOps:
+
+### Quick MicroK8s Setup
+
+```bash
+# Install MicroK8s
+sudo snap install microk8s --classic --channel=1.28/stable
+
+# Enable required addons
+microk8s enable dns storage registry ingress metrics-server
+
+# Build and push to local registry
+docker build -t localhost:32000/trading-platform:latest .
+docker push localhost:32000/trading-platform:latest
+
+# Install ArgoCD
+microk8s kubectl create namespace argocd
+microk8s kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Deploy application via ArgoCD
+# Edit argocd/application.yaml with your Git repo URL
+microk8s kubectl apply -f argocd/application.yaml
+```
+
+**For detailed MicroK8s deployment instructions, see [MICROK8S.md](MICROK8S.md)**
+
+### Benefits of MicroK8s + ArgoCD
+
+- ✅ No external Docker registry required (uses localhost:32000)
+- ✅ GitOps workflow with automated syncing
+- ✅ Self-healing deployments
+- ✅ Perfect for edge/IoT deployments
+- ✅ Low resource footprint
+- ✅ Single-command cluster setup
 
 ---
 
@@ -311,6 +352,112 @@ kubectl get pods -n trading-platform
 kubectl get svc -n trading-platform
 kubectl get ingress -n trading-platform
 ```
+
+---
+
+### Method 4: ArgoCD (GitOps)
+
+For automated, Git-driven deployments with self-healing capabilities.
+
+#### Prerequisites
+
+- ArgoCD installed on your cluster
+- Application code in a Git repository (GitHub, GitLab, Bitbucket, etc.)
+- kubectl access to the cluster
+
+#### 1. Install ArgoCD
+
+```bash
+# Create namespace
+kubectl create namespace argocd
+
+# Install ArgoCD
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Wait for ready
+kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
+```
+
+#### 2. Access ArgoCD UI
+
+```bash
+# Port forward to access UI
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+
+# Get admin password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+
+# Access at https://localhost:8080
+# Username: admin
+# Password: (from command above)
+```
+
+#### 3. Configure Git Repository
+
+Edit `argocd/application.yaml` to point to your Git repository:
+
+```yaml
+source:
+  repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
+  targetRevision: main
+  path: helm/trading-platform
+```
+
+#### 4. Create Secrets Manually
+
+Secrets are not stored in Git for security:
+
+```bash
+# Create namespace
+kubectl create namespace trading-platform
+
+# Create secrets from template
+cp k8s/secret.yaml.template k8s/secret-local.yaml
+
+# Edit with your values (DO NOT commit)
+nano k8s/secret-local.yaml
+
+# Apply
+kubectl apply -f k8s/secret-local.yaml
+```
+
+#### 5. Deploy Application
+
+```bash
+# Using Helm chart (recommended)
+kubectl apply -f argocd/application.yaml
+
+# Or using Kustomize
+kubectl apply -f argocd/application-kustomize.yaml
+
+# Or for development environment
+kubectl apply -f argocd/application-dev.yaml
+```
+
+#### 6. Monitor Deployment
+
+```bash
+# Watch sync status via CLI
+argocd app get trading-platform
+
+# Or view in UI
+# https://localhost:8080/applications/trading-platform
+
+# Watch pods
+kubectl get pods -n trading-platform -w
+```
+
+#### GitOps Workflow
+
+With ArgoCD, deployments are automated:
+
+1. **Make changes**: Edit code or configs locally
+2. **Commit and push**: Git push to your repository
+3. **Auto-sync**: ArgoCD detects changes and syncs (every 3 minutes)
+4. **Self-heal**: If cluster state drifts, ArgoCD automatically corrects it
+5. **Rollback**: Easy rollback via UI or CLI to any previous revision
+
+**For detailed ArgoCD setup and best practices, see [argocd/README.md](argocd/README.md)**
 
 ---
 

@@ -5,7 +5,7 @@
 replicaCount: 2
 
 image:
-  repository: your-registry/trading-platform
+  repository: docker.io/yourusername/trading-platform  # Update with your registry
   pullPolicy: Always
   tag: "latest"
 

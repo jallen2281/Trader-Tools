@@ -1,0 +1,127 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: trading-platform
+  namespace: argocd
+  # Finalizer ensures cascading delete
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  # Labels for organization
+  labels:
+    app: trading-platform
+    environment: production
+spec:
+  # The project to deploy into (default is 'default')
+  project: default
+  
+  # Source repository configuration
+  source:
+    # REPLACE WITH YOUR GIT REPOSITORY URL
+    repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
+    targetRevision: main  # Branch, tag, or commit SHA
+    path: helm/trading-platform  # Path to Helm chart
+    
+    # Helm-specific configuration
+    helm:
+      # Release name
+      releaseName: trading-platform
+      
+      # Values file overrides (optional)
+      valueFiles:
+        - values.yaml
+      
+      # Inline values (override values.yaml)
+      values: |
+        # Override for MicroK8s local registry
+        image:
+          repository: localhost:32000/trading-platform
+          pullPolicy: Always
+          tag: "latest"
+        
+        # Resource limits for local deployment
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+        
+        # Storage configuration
+        persistence:
+          enabled: true
+          size: 5Gi
+          storageClass: microk8s-hostpath
+        
+        # Ingress configuration for local access
+        ingress:
+          enabled: true
+          className: "public"
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "false"
+          hosts:
+            - host: trading.local
+              paths:
+                - path: /
+                  pathType: Prefix
+        
+        # Auto-scaling for local deployment
+        autoscaling:
+          enabled: true
+          minReplicas: 1
+          maxReplicas: 3
+          targetCPUUtilizationPercentage: 80
+          targetMemoryUtilizationPercentage: 80
+      
+      # Skip CRDs (if any)
+      skipCrds: false
+      
+  # Destination cluster and namespace
+  destination:
+    # In-cluster deployment
+    server: https://kubernetes.default.svc
+    namespace: trading-platform
+  
+  # Sync policy
+  syncPolicy:
+    # Automated sync policy
+    automated:
+      # Automatically apply changes from Git
+      prune: true  # Delete resources not in Git
+      selfHeal: true  # Sync when cluster state drifts
+      allowEmpty: false  # Don't sync if no resources
+    
+    # Sync options
+    syncOptions:
+      - CreateNamespace=true  # Auto-create namespace
+      - PrunePropagationPolicy=foreground  # Delete dependents first
+      - PruneLast=true  # Prune after other resources are synced
+      - ApplyOutOfSyncOnly=true  # Only sync out-of-sync resources
+      - RespectIgnoreDifferences=true  # Respect ignore differences
+    
+    # Retry policy for failed syncs
+    retry:
+      limit: 5  # Number of retry attempts
+      backoff:
+        duration: 5s  # Initial backoff duration
+        factor: 2  # Backoff factor
+        maxDuration: 3m  # Max backoff duration
+  
+  # Ignore differences for certain fields
+  ignoreDifferences:
+    # Ignore replicas if HPA is managing it
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    # Ignore certain annotations
+    - group: "*"
+      kind: "*"
+      managedFieldsManagers:
+        - kube-controller-manager
+  
+  # Application health and sync status
+  # (Optional) Custom health checks
+  # info:
+  #   - name: url
+  #     value: http://trading.local

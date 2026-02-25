@@ -1,0 +1,694 @@
+# Production Deployment Guide
+
+Quick guide for deploying to **existing production MicroK8s cluster** with external container registry and ArgoCD.
+
+> **💡 No Docker Installed?** Option A (GitHub Actions) is recommended - it builds images in the cloud automatically!
+
+## Prerequisites ✅
+
+- ✓ Production MicroK8s cluster (v1.28+) already running
+- ✓ ArgoCD already installed on the cluster
+- ✓ External container registry (Docker Hub, GHCR, ECR, etc.)
+- ✓ `kubectl` configured OR SSH access to MicroK8s server
+- ✓ Docker installed locally for building images
+- ✓ Git repository for your code (GitHub, GitLab, Bitbucket)
+
+## Step 1: Configure Registry
+
+Update the image registry in deployment manifests:
+
+### Option A: Using Docker Hub
+
+```bash
+# 1. Update k8s/deployment.yaml
+sed -i 's|docker.io/yourusername|docker.io/YOUR_DOCKERHUB_USERNAME|g' k8s/deployment.yaml
+
+# 2. Update Helm values
+sed -i 's|docker.io/yourusername|docker.io/YOUR_DOCKERHUB_USERNAME|g' helm/trading-platform/values.yaml
+
+# 3. Update ArgoCD manifest
+sed -i 's|docker.io/yourusername|docker.io/YOUR_DOCKERHUB_USERNAME|g' argocd/application-kustomize.yaml
+```
+
+### Option B: Using GitHub Container Registry
+
+```bash
+# Use ghcr.io/YOUR_GITHUB_USERNAME/trading-platform:latest
+sed -i 's|docker.io/yourusername/trading-platform|ghcr.io/YOUR_GITHUB_USERNAME/trading-platform|g' k8s/deployment.yaml
+sed -i 's|docker.io/yourusername/trading-platform|ghcr.io/YOUR_GITHUB_USERNAME/trading-platform|g' helm/trading-platform/values.yaml
+```
+
+### Option C: Using Private Registry
+
+```bash
+# Use your-registry.com/namespace/trading-platform:latest
+REGISTRY="your-registry.com/namespace"
+sed -i "s|docker.io/yourusername|$REGISTRY|g" k8s/deployment.yaml
+sed -i "s|docker.io/yourusername|$REGISTRY|g" helm/trading-platform/values.yaml
+```
+
+## Step 2: Build & Push Container Image
+
+### Option A: Using CI/CD Pipeline (Recommended - No Docker Required)
+
+**GitHub Actions** - Add `.github/workflows/build.yml`:
+
+```yaml
+name: Build and Push Container Image
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ github.repository_owner }}/trading-platform
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        registry: docker.io
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+```
+
+**Setup:**
+1. Go to GitHub Settings → Secrets → Actions
+2. Add secrets:
+   - `DOCKERHUB_USERNAME`: Your Docker Hub username
+   - `DOCKERHUB_TOKEN`: Docker Hub access token (create at hub.docker.com/settings/security)
+3. Push code to trigger build:
+   ```bash
+   git add .
+   git commit -m "Add CI/CD workflow"
+   git push origin main
+   ```
+
+**For GitHub Container Registry (GHCR)** - Change `.github/workflows/build.yml`:
+```yaml
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}  # ghcr.io/username/repo
+
+jobs:
+  build:
+    steps:
+    - name: Log in to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}  # Automatic, no setup needed
+```
+
+### Option B: Using Cloud Build Services (No Docker Required)
+
+**Google Cloud Build:**
+```bash
+# Install gcloud CLI: https://cloud.google.com/sdk/docs/install
+
+# Build and push (runs in cloud)
+gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/trading-platform:latest .
+```
+
+**Azure Container Registry:**
+```bash
+# Install Azure CLI: https://aka.ms/azure-cli
+
+# Build and push (runs in cloud)
+az acr build --registry YOUR_REGISTRY_NAME \
+  --image trading-platform:latest \
+  --file Dockerfile .
+```
+
+**AWS CodeBuild:**
+Create `buildspec.yml`:
+```yaml
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+  build:
+    commands:
+      - echo Building the Docker image...
+      - docker build -t trading-platform .
+      - docker tag trading-platform:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/trading-platform:latest
+  post_build:
+    commands:
+      - echo Pushing the Docker image...
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/trading-platform:latest
+```
+
+### Option C: Using Podman (Docker Alternative)
+
+Podman is a Docker alternative that doesn't require a daemon:
+
+```bash
+# Install Podman
+# Windows: winget install -e --id RedHat.Podman
+# Linux: sudo apt install podman  # or dnf install podman
+
+# Build (same syntax as Docker)
+podman build -t docker.io/YOUR_USERNAME/trading-platform:latest .
+
+# Login
+podman login docker.io
+
+# Push
+podman push docker.io/YOUR_USERNAME/trading-platform:latest
+```
+
+### Option D: Using Remote Docker (Another Machine)
+
+If you have access to another machine with Docker:
+
+```bash
+# On your local machine, create tar of source
+tar -czf trading-platform-src.tar.gz --exclude='.git' --exclude='__pycache__' .
+
+# Copy to remote machine
+scp trading-platform-src.tar.gz user@build-server:/tmp/
+
+# SSH to build server
+ssh user@build-server
+
+# Extract and build
+cd /tmp
+tar -xzf trading-platform-src.tar.gz -C trading-platform-build
+cd trading-platform-build
+
+# Build and push
+docker build -t YOUR_REGISTRY/trading-platform:latest .
+docker push YOUR_REGISTRY/trading-platform:latest
+```
+
+### Option E: If You Have Docker Installed Locally
+
+<details>
+<summary>Click to expand Docker commands</summary>
+
+**Docker Hub:**
+```bash
+docker login
+docker build -t YOUR_DOCKERHUB_USERNAME/trading-platform:latest .
+docker push YOUR_DOCKERHUB_USERNAME/trading-platform:latest
+
+# Tag with version (recommended)
+docker tag YOUR_DOCKERHUB_USERNAME/trading-platform:latest YOUR_DOCKERHUB_USERNAME/trading-platform:v1.0.0
+docker push YOUR_DOCKERHUB_USERNAME/trading-platform:v1.0.0
+```
+
+**GitHub Container Registry:**
+```bash
+echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+docker build -t ghcr.io/YOUR_GITHUB_USERNAME/trading-platform:latest .
+docker push ghcr.io/YOUR_GITHUB_USERNAME/trading-platform:latest
+```
+
+**Private Registry:**
+```bash
+docker login your-registry.com
+docker build -t your-registry.com/namespace/trading-platform:latest .
+docker push your-registry.com/namespace/trading-platform:latest
+```
+
+</details>
+
+## Step 3: Push Code to Git Repository
+
+ArgoCD needs your manifests in a Git repository:
+
+```bash
+# Initialize git if not already done
+git init
+git add .
+git commit -m "Add deployment manifests"
+
+# Add remote and push
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+git push -u origin main
+```
+
+## Step 4: Configure ArgoCD Application
+
+Update the ArgoCD Application manifest with your Git repository:
+
+```yaml
+# Edit argocd/application.yaml
+# Change these lines:
+  source:
+    repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git  # Your repository
+    targetRevision: main
+    path: helm/trading-platform
+    
+    helm:
+      values: |
+        image:
+          repository: YOUR_REGISTRY/trading-platform  # Your registry
+          tag: "latest"  # or specific version like v1.0.0
+```
+
+or for Kustomize deployment:
+
+```yaml
+# Edit argocd/application-kustomize.yaml
+  source:
+    repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
+    targetRevision: main
+    path: k8s
+    
+    kustomize:
+      images:
+        - name: trading-platform
+          newName: YOUR_REGISTRY/trading-platform
+          newTag: latest
+```
+
+## Step 5: Create Kubernetes Secrets
+
+### Option A: From Production MicroK8s Server (SSH)
+
+```bash
+# SSH to your MicroK8s server
+ssh user@your-production-server
+
+# Create secrets
+microk8s kubectl create namespace trading-platform
+
+microk8s kubectl create secret generic trading-platform-secret \
+  --from-literal=SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+  --from-literal=GOOGLE_CLIENT_ID="your-google-client-id" \
+  --from-literal=GOOGLE_CLIENT_SECRET="your-google-client-secret" \
+  --from-literal=ALPHA_VANTAGE_API_KEY="your-alpha-vantage-key" \
+  --from-literal=NEWS_API_KEY="your-news-api-key" \
+  --from-literal=QUANDL_API_KEY="your-quandl-api-key" \
+  --namespace trading-platform
+```
+
+### Option B: From Local kubectl (if configured)
+
+```bash
+# Create namespace
+kubectl create namespace trading-platform
+
+# Create secrets
+kubectl create secret generic trading-platform-secret \
+  --from-literal=SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')" \
+  --from-literal=GOOGLE_CLIENT_ID="your-google-client-id" \
+  --from-literal=GOOGLE_CLIENT_SECRET="your-google-client-secret" \
+  --from-literal=ALPHA_VANTAGE_API_KEY="your-alpha-vantage-key" \
+  --from-literal=NEWS_API_KEY="your-news-api-key" \
+  --from-literal=QUANDL_API_KEY="your-quandl-api-key" \
+  --namespace trading-platform
+```
+
+### Option C: Using CI/CD Pipeline
+
+Add to your CI/CD pipeline (GitHub Actions, GitLab CI, Jenkins):
+
+```yaml
+# Example: GitHub Actions
+- name: Create Kubernetes secrets
+  run: |
+    echo "${{ secrets.KUBECONFIG }}" > kubeconfig
+    export KUBECONFIG=kubeconfig
+    
+    kubectl create namespace trading-platform --dry-run=client -o yaml | kubectl apply -f -
+    
+    kubectl create secret generic trading-platform-secret \
+      --from-literal=SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+      --from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}" \
+      --from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}" \
+      --namespace trading-platform \
+      --dry-run=client -o yaml | kubectl apply -f -
+```
+
+## Step 6: Deploy with ArgoCD
+
+### Option A: Using ArgoCD UI
+
+1. Open ArgoCD UI: `https://argocd.your-domain.com`
+2. Click **+ NEW APP**
+3. Fill in details:
+   - **Application Name**: `trading-platform`
+   - **Project**: `default`
+   - **Sync Policy**: `Automatic`
+   - **Repository URL**: Your Git repo
+   - **Path**: `helm/trading-platform` or `k8s`
+   - **Cluster**: `https://kubernetes.default.svc`
+   - **Namespace**: `trading-platform`
+4. Click **CREATE**
+
+### Option B: Using ArgoCD CLI
+
+```bash
+# SSH to MicroK8s server or use kubectl port-forward
+ssh user@your-production-server
+
+# Apply the Application manifest
+microk8s kubectl apply -f argocd/application.yaml
+```
+
+### Option C: Using kubectl Locally
+
+```bash
+# Apply ArgoCD Application manifest
+kubectl apply -f argocd/application.yaml
+
+# Watch deployment
+kubectl get applications -n argocd
+argocd app get trading-platform
+```
+
+## Step 7: Verify Deployment
+
+```bash
+# Check ArgoCD Application status
+kubectl get application trading-platform -n argocd
+
+# Check pods
+kubectl get pods -n trading-platform
+
+# Check services
+kubectl get svc -n trading-platform
+
+# Check ingress
+kubectl get ingress -n trading-platform
+
+# View logs
+kubectl logs -n trading-platform -l app=trading-platform --tail=100
+
+# Test health endpoint
+kubectl port-forward -n trading-platform svc/trading-platform 8080:80
+curl http://localhost:8080/health
+```
+
+## Step 8: Configure Ingress/Domain
+
+Update your DNS to point to your MicroK8s cluster ingress IP:
+
+```bash
+# Get ingress IP
+kubectl get ingress -n trading-platform
+
+# Example output:
+# NAME                CLASS   HOSTS                    ADDRESS        PORTS
+# trading-platform    nginx   trading.yourdomain.com   192.168.1.100  80, 443
+```
+
+Add DNS A record:
+```
+trading.yourdomain.com → 192.168.1.100
+```
+
+## Deployment Methods Comparison
+
+| Method | Use Case | Pros | Cons |
+|--------|----------|------|------|
+| **ArgoCD Helm** | Production (recommended) | GitOps, auto-sync, easy rollbacks, monitoring | Requires Git repo |
+| **ArgoCD Kustomize** | Production (simpler configs) | GitOps, lightweight, overlays | Less templating power |
+| **Direct Helm** | Quick production deploy | Fast, flexible | No GitOps benefits |
+| **Direct kubectl** | Testing, simple deploys | Simple, no dependencies | Manual updates |
+
+## Updates & Rollbacks
+
+### Update Application (GitOps Way)
+
+```bash
+# 1. Build new image
+docker build -t YOUR_REGISTRY/trading-platform:v1.1.0 .
+docker push YOUR_REGISTRY/trading-platform:v1.1.0
+
+# 2. Update manifest in Git
+# Update image tag in argocd/application.yaml or helm values
+git commit -am "Update to v1.1.0"
+git push
+
+# 3. ArgoCD auto-syncs within 3 minutes (or manual sync)
+argocd app sync trading-platform
+```
+
+### Rollback
+
+```bash
+# Using ArgoCD
+argocd app rollback trading-platform
+
+# Or revert Git commit
+git revert HEAD
+git push
+```
+
+## Monitoring
+
+```bash
+# Check application health
+argocd app get trading-platform
+
+# Watch sync status
+argocd app wait trading-platform --timeout 300
+
+# View logs
+kubectl logs -n trading-platform -l app=trading-platform -f
+
+# Check metrics (if metrics-server enabled)
+kubectl top pods -n trading-platform
+kubectl top nodes
+```
+
+## Troubleshooting
+
+### Image Pull Failures
+
+```bash
+# Check if secret is needed for private registry
+kubectl create secret docker-registry regcred \
+  --docker-server=your-registry.com \
+  --docker-username=your-username \
+  --docker-password=your-password \
+  --namespace trading-platform
+
+# Add to deployment
+kubectl patch deployment trading-platform -n trading-platform \
+  -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}}}'
+```
+
+### ArgoCD Not Syncing
+
+```bash
+# Check Application status
+kubectl describe application trading-platform -n argocd
+
+# Force refresh
+argocd app get trading-platform --refresh
+
+# Manual sync
+argocd app sync trading-platform --force
+
+# Check ArgoCD logs
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
+```
+
+### Pod CrashLoops
+
+```bash
+# Check pod logs
+kubectl logs -n trading-platform -l app=trading-platform --previous
+
+# Check events
+kubectl describe pod -n trading-platform -l app=trading-platform
+
+# Verify secrets exist
+kubectl get secret trading-platform-secret -n trading-platform
+
+# Check configmap
+kubectl get configmap trading-platform-config -n trading-platform
+```
+
+### Database Issues
+
+```bash
+# Check PVC
+kubectl get pvc -n trading-platform
+
+# Check PVC mount
+kubectl exec -n trading-platform deployment/trading-platform -- ls -la /data
+
+# Reinitialize database (careful in production!)
+kubectl exec -n trading-platform deployment/trading-platform -- python -c "
+from db_config import init_database
+from flask import Flask
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////data/financial_analysis.db'
+init_database(app)
+"
+```
+
+## Security Considerations
+
+1. **Secrets Management**: Never commit secrets to Git
+   ```bash
+   # Verify secrets not in repo
+   git log --all --full-history --source --show-pulls -- k8s/secret.yaml
+   ```
+
+2. **Image Scanning**: Scan images before deployment
+   ```bash
+   docker scan YOUR_REGISTRY/trading-platform:latest
+   ```
+
+3. **Network Policies**: Restrict pod communication (add to k8s/)
+   ```yaml
+   apiVersion: networking.k8s.io/v1
+   kind: NetworkPolicy
+   metadata:
+     name: trading-platform-netpol
+     namespace: trading-platform
+   spec:
+     podSelector:
+       matchLabels:
+         app: trading-platform
+     policyTypes:
+     - Ingress
+     - Egress
+     ingress:
+     - from:
+       - namespaceSelector:
+           matchLabels:
+             name: ingress-nginx
+     egress:
+     - to:
+       - namespaceSelector: {}
+       ports:
+       - protocol: TCP
+         port: 443
+       - protocol: TCP
+         port: 80
+   ```
+
+4. **RBAC**: Limit ArgoCD permissions (production)
+   ```bash
+   # Create limited service account for ArgoCD
+   kubectl create sa trading-platform-deployer -n trading-platform
+   kubectl create rolebinding trading-platform-deployer \
+     --clusterrole=edit \
+     --serviceaccount=trading-platform:trading-platform-deployer \
+     --namespace=trading-platform
+   ```
+
+## Scaling
+
+### Manual Scaling
+
+```bash
+# Scale replicas
+kubectl scale deployment trading-platform -n trading-platform --replicas=5
+
+# Or update in Git for GitOps
+# Edit helm/trading-platform/values.yaml or k8s/deployment.yaml
+# Commit and push
+```
+
+### Auto-Scaling (HPA already configured)
+
+```bash
+# Check HPA status
+kubectl get hpa -n trading-platform
+
+# View metrics
+kubectl top pods -n trading-platform
+```
+
+### Vertical Scaling (Resource Limits)
+
+Update `helm/trading-platform/values.yaml`:
+```yaml
+resources:
+  limits:
+    cpu: 4000m
+    memory: 4Gi
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+```
+
+Commit, push, and ArgoCD will sync.
+
+## Backup & Disaster Recovery
+
+### Backup SQLite Database
+
+```bash
+# Create backup job
+kubectl create job --from=cronjob/backup-db backup-manual -n trading-platform
+
+# Or manual backup
+kubectl exec -n trading-platform deployment/trading-platform -- \
+  sqlite3 /data/financial_analysis.db ".backup /data/backup.db"
+
+# Copy to local
+kubectl cp trading-platform/deployment/trading-platform:/data/backup.db ./backup.db
+```
+
+### Restore from Backup
+
+```bash
+# Copy backup to pod
+kubectl cp ./backup.db trading-platform/deployment/trading-platform:/data/financial_analysis.db
+
+# Restart pod
+kubectl rollout restart deployment/trading-platform -n trading-platform
+```
+
+## Next Steps
+
+- ✅ Configure monitoring with Prometheus/Grafana
+- ✅ Set up log aggregation (ELK/Loki)
+- ✅ Configure alerting (AlertManager)
+- ✅ Implement database backups (CronJob)
+- ✅ Set up SSL/TLS with cert-manager
+- ✅ Configure rate limiting
+- ✅ Add health check monitoring
+- ✅ Implement disaster recovery plan
+
+## Support
+
+For detailed documentation on all deployment methods, see:
+- [DEPLOYMENT.md](DEPLOYMENT.md) - Comprehensive deployment guide
+- [QUICKSTART.md](QUICKSTART.md) - Quick reference commands
+- [argocd/README.md](argocd/README.md) - ArgoCD-specific guide

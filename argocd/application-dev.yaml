@@ -1,0 +1,91 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: trading-platform-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app: trading-platform
+    environment: development
+spec:
+  project: default
+  
+  # Source repository configuration
+  source:
+    # REPLACE WITH YOUR GIT REPOSITORY URL
+    repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
+    targetRevision: develop  # Use develop branch for dev environment
+    path: helm/trading-platform
+    
+    helm:
+      releaseName: trading-platform-dev
+      
+      valueFiles:
+        - values.yaml
+      
+      # Development-specific overrides
+      values: |
+        # Development image settings
+        image:
+          repository: localhost:32000/trading-platform
+          pullPolicy: Always
+          tag: "dev-latest"
+        
+        # Lower resources for development
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi
+        
+        # Smaller storage for dev
+        persistence:
+          enabled: true
+          size: 2Gi
+          storageClass: microk8s-hostpath
+        
+        # Development ingress
+        ingress:
+          enabled: true
+          className: "public"
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "false"
+          hosts:
+            - host: trading-dev.local
+              paths:
+                - path: /
+                  pathType: Prefix
+        
+        # Disable auto-scaling in dev
+        autoscaling:
+          enabled: false
+        
+        # Single replica for dev
+        replicaCount: 1
+  
+  # Deploy to dev namespace
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: trading-platform-dev
+  
+  # Sync policy - manual sync for dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false  # Don't auto-heal in dev
+      allowEmpty: false
+    
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m

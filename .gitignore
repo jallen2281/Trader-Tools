@@ -1,4 +1,52 @@
-/.env
-/.venv
-/config.py
-/db_config.py
+# Environment and local config
+.env
+.env.local
+.venv
+venv/
+env/
+config.py
+db_config.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+instance/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kubernetes secrets (never commit real secrets!)
+k8s/secret.yaml
+k8s/secret-*.yaml
+!k8s/secret.yaml.template
+helm/trading-platform/secrets.yaml
+my-values.yaml
+*-values.yaml
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak
+.cache/

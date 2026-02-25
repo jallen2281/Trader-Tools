@@ -87,14 +87,44 @@ docker run -p 5000:5000 --env-file .env trading-platform
 
 ### Production Kubernetes Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive production deployment guide.
+**🚀 No Docker? Start Here**: [NO_DOCKER_QUICKSTART.md](NO_DOCKER_QUICKSTART.md) - Deploy using GitHub Actions (easiest!)
 
-Quick Helm install:
+**📋 For Production MicroK8s Cluster**: See [PRODUCTION.md](PRODUCTION.md) for deploying to existing production MicroK8s cluster.
+
+**�📘 Full Deployment Guide**: See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment documentation.
+
+**⚡ Quick Reference**: See [QUICKSTART.md](QUICKSTART.md) for command reference.
+
+**Deployment Methods:**
+- **Production MicroK8s + ArgoCD**: GitOps deployment to existing cluster - [PRODUCTION.md](PRODUCTION.md)
+- **Helm Chart**: Recommended for production - [helm/trading-platform](helm/trading-platform/)
+- **Kustomize**: Lightweight overlay configuration - [k8s/](k8s/)
+- **Raw Manifests**: Direct Kubernetes YAMLs - [k8s/](k8s/)
+- **ArgoCD GitOps**: Automated sync and self-healing - [argocd/](argocd/)
+
+Quick examples:
+
+**Helm**:
 ```bash
+# Update image registry in values.yaml first
 helm install trading-platform ./helm/trading-platform \
+  --set image.repository=docker.io/yourusername/trading-platform \
   --set-string secrets.secretKey="your-secret" \
   --set-string secrets.googleClientId="your-client-id" \
   --set-string secrets.googleClientSecret="your-secret"
+```
+
+**Production ArgoCD** (for existing MicroK8s cluster):
+```bash
+# 1. Edit argocd/application.yaml with your Git repo and registry
+# 2. Push code to Git
+# 3. Create secrets on cluster
+kubectl create secret generic trading-platform-secret \
+  --from-literal=SECRET_KEY='your-secret' \
+  --namespace trading-platform
+
+# 4. Deploy
+kubectl apply -f argocd/application.yaml
 ```
 
 ## Configuration
@@ -141,6 +171,12 @@ trading-platform/
 ├── Dockerfile                     # Container image definition
 ├── .dockerignore                  # Docker build exclusions
 │
+├── .github/                      # GitHub Actions CI/CD
+│   └── workflows/
+│       ├── build.yml             # Docker Hub build
+│       ├── build-ghcr.yml        # GitHub Container Registry build
+│       └── README.md
+│
 ├── k8s/                          # Kubernetes manifests
 │   ├── namespace.yaml
 │   ├── deployment.yaml
@@ -157,6 +193,12 @@ trading-platform/
 │       ├── Chart.yaml
 │       ├── values.yaml
 │       └── templates/
+│
+├── argocd/                       # ArgoCD GitOps manifests
+│   ├── application.yaml          # Production app
+│   ├── application-dev.yaml      # Development app
+│   ├── application-kustomize.yaml
+│   └── README.md
 │
 ├── static/                       # Frontend assets
 │   ├── styles.css
@@ -186,9 +228,12 @@ trading-platform/
 │   └── ... 17 total modules
 │
 └── Documentation
-    ├── README.md
-    ├── DEPLOYMENT.md
-    └── database_schema.sql
+    ├── README.md                # This file
+    ├── DEPLOYMENT.md            # Comprehensive deployment guide
+    ├── PRODUCTION.md            # Production MicroK8s deployment
+    ├── QUICKSTART.md            # Quick command reference
+    ├── NO_DOCKER_QUICKSTART.md  # Deploy without Docker installed
+    └── database_schema.sql      # Database schema
 ```
 
 ## API Endpoints
