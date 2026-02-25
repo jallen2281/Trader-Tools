@@ -2,6 +2,11 @@
 
 This guide is for deploying to production MicroK8s **without Docker installed locally**.
 
+> **🎯 Your Production Cluster Has:**
+> - ✅ **ArgoCD UI** - Use for visual GitOps deployment (easiest!)
+> - ✅ **Portainer** - Alternative UI for cluster management
+> - ✅ Both eliminate the need for SSH/kubectl in most cases!
+
 ## ⚡ Fastest Path (GitHub Container Registry)
 
 ### Step 1: Enable GitHub Actions Workflow
@@ -41,7 +46,7 @@ Update the manifests:
 
 ```bash
 # Set your registry
-REGISTRY="ghcr.io/YOUR_USERNAME/YOUR_REPO"
+REGISTRY="ghcr.io/jallen2281/Trader-Tools:latest"
 
 # Update manifests (Linux/macOS)
 sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" k8s/deployment.yaml
@@ -103,11 +108,30 @@ git push
 
 ### Step 6: Deploy with ArgoCD
 
+#### Option A: Using ArgoCD UI (Easiest)
+
+1. Open ArgoCD UI in your browser: `https://argocd.your-domain.com`
+2. Log in with your credentials
+3. Click **+ NEW APP** or **+ Create Application**
+4. Fill in the application details:
+   - **Application Name**: `trader-tools`
+   - **Project**: `default`
+   - **Sync Policy**: Select `Automatic` (enable auto-sync, self-heal, prune)
+   - **Repository URL**: `https://github.com/YOUR_USERNAME/YOUR_REPO.git`
+   - **Revision**: `main` (or `HEAD`)
+   - **Path**: `helm/trader-tools` (or `k8s` for Kustomize)
+   - **Cluster URL**: `https://kubernetes.default.svc`
+   - **Namespace**: `trader-tools`
+5. Click **CREATE**
+6. Watch the application sync in real-time!
+
+#### Option B: Using kubectl (SSH to server)
+
 ```bash
 # SSH to your Ubuntu MicroK8s server
 ssh user@your-microk8s-server
 
-# Apply ArgoCD Application
+# Apply ArgoCD Application manifest
 microk8s kubectl apply -f argocd/application.yaml
 
 # Watch deployment
@@ -120,7 +144,34 @@ microk8s kubectl get pods -n trader-tools
 microk8s kubectl logs -n trader-tools -l app=trader-tools -f
 ```
 
+#### Option C: Using Portainer (Alternative UI)
+
+If you prefer Portainer:
+
+1. Open Portainer UI: `https://portainer.your-domain.com`
+2. Navigate to your MicroK8s cluster
+3. Go to **Namespaces** → Create namespace `trader-tools`
+4. Go to **Custom Templates** or **Stacks**
+5. Create new stack from Git repository or paste manifests
+6. Deploy and monitor through Portainer UI
+
 ### Step 7: Access Your Application
+
+#### Monitor Deployment via ArgoCD UI
+
+1. Open ArgoCD UI: `https://argocd.your-domain.com`
+2. View your `trader-tools` application
+3. See real-time sync status, health, and resource tree
+4. Click on pods to view logs directly in the UI
+
+#### Monitor via Portainer UI
+
+1. Open Portainer: `https://portainer.your-domain.com`
+2. Navigate to your cluster → Namespaces → `trader-tools`
+3. View pods, services, and resource usage
+4. Access logs and shell directly from UI
+
+#### Access via SSH/kubectl
 
 ```bash
 # SSH to your Ubuntu MicroK8s server
@@ -133,7 +184,7 @@ microk8s kubectl get ingress -n trader-tools
 microk8s kubectl port-forward -n trader-tools svc/trader-tools 8080:80
 ```
 
-Access at: `http://localhost:8080` (if port-forwarding) or your ingress domain.
+**Access your application** at the ingress URL or configured domain.
 
 ---
 
@@ -150,13 +201,17 @@ Every time you push to GitHub:
 
 2. **GitHub Actions builds new image automatically**
 
-3. **ArgoCD syncs within 3 minutes** (or manual sync):
-   ```bash
-   # SSH to MicroK8s server
-   microk8s kubectl patch application trader-tools -n argocd \
-     --type merge \
-     -p '{"operation":{"initiatedBy":{"username":"manual"},"sync":{"syncStrategy":{}}}}'
-   ```
+3. **ArgoCD syncs within 3 minutes** (or view/trigger in UI):
+   - **ArgoCD UI**: Click **SYNC** button or wait for auto-sync
+   - **Or via kubectl**:
+     ```bash
+     # SSH to MicroK8s server
+     microk8s kubectl patch application trader-tools -n argocd \
+       --type merge \
+       -p '{"operation":{"initiatedBy":{"username":"manual"},"sync":{"syncStrategy":{}}}}'
+     ```
+
+4. **Monitor in ArgoCD UI** or **Portainer** to watch rollout progress
 
 ---
 
@@ -249,6 +304,14 @@ Check the Actions tab for detailed logs. Common issues:
 
 ### "ArgoCD not syncing"
 
+**Via ArgoCD UI:**
+1. Open ArgoCD UI
+2. Click on your application
+3. Click **REFRESH** button (hard refresh)
+4. Click **SYNC** button if needed
+5. Check **App Details** for error messages
+
+**Via kubectl:**
 ```bash
 # SSH to MicroK8s server
 ssh user@your-microk8s-server
@@ -262,6 +325,38 @@ microk8s kubectl describe application trader-tools -n argocd
 # View ArgoCD logs
 microk8s kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
 ```
+
+---
+
+## 🎛️ Management Tools Summary
+
+Your production MicroK8s cluster provides these management interfaces:
+
+### ArgoCD UI (Recommended for GitOps)
+- **URL**: `https://argocd.your-domain.com`
+- **Use for**:
+  - Creating and managing applications
+  - Monitoring sync status and health
+  - Viewing deployment history and rollbacks
+  - Triggering manual syncs
+  - Viewing logs and events
+  - Comparing Git vs deployed state
+
+### Portainer (Alternative Management)
+- **URL**: `https://portainer.your-domain.com`
+- **Use for**:
+  - Cluster resource overview
+  - Creating namespaces and resources
+  - Viewing pod logs and metrics
+  - Opening pod shells/consoles
+  - Managing volumes and configs
+  - Resource usage monitoring
+
+### kubectl via SSH (Power Users)
+- Best for automation, scripting, and advanced operations
+- Use when UI doesn't provide needed functionality
+
+**💡 Tip**: Start with ArgoCD UI for deployment, then use Portainer for day-to-day monitoring and log viewing!
 
 ---
 

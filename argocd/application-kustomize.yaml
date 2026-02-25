@@ -15,7 +15,7 @@ spec:
   # Source repository configuration
   source:
     # REPLACE WITH YOUR GIT REPOSITORY URL
-    repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git
+    repoURL: https://github.com/jallen2281/Trader-Tools.git
     targetRevision: main
     path: k8s  # Path to Kustomize directory
     
@@ -42,7 +42,7 @@ spec:
       # Images to override for your registry
       images:
         - name: trading-platform
-          newName: docker.io/yourusername/trading-platform  # Update with your registry
+          newName: ghcr.io/jallen2281/Trader-Tools:latest  # Update with your registry
           newTag: latest
       
       # Patches (optional)

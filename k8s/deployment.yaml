@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: trading-platform
-  namespace: trading-platform
+  name: trader-tools
+  namespace: trader-tools
   labels:
-    app: trading-platform
+    app: trader-tools
     version: v1
 spec:
   replicas: 2
@@ -15,11 +15,11 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app: trading-platform
+      app: trader-tools
   template:
     metadata:
       labels:
-        app: trading-platform
+        app: trader-tools
         version: v1
       annotations:
         prometheus.io/scrape: "true"
@@ -46,15 +46,15 @@ spec:
               print('Database initialized')
           envFrom:
             - configMapRef:
-                name: trading-platform-config
+                name: trader-tools-config
             - secretRef:
-                name: trading-platform-secret
+                name: trader-tools-secret
           volumeMounts:
             - name: data
               mountPath: /data
       
       containers:
-        - name: trading-platform
+        - name: trader-tools
           image: ghcr.io/jallen2281/Trader-Tools:latest  # Update with your Docker Hub registry
           imagePullPolicy: Always
           ports:
@@ -69,9 +69,9 @@ spec:
           
           envFrom:
             - configMapRef:
-                name: trading-platform-config
+                name: trader-tools-config
             - secretRef:
-                name: trading-platform-secret
+                name: trader-tools-secret
           
           volumeMounts:
             - name: data
@@ -115,7 +115,7 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: trading-platform-data
+            claimName: trader-tools-data
         - name: instance
           emptyDir: {}
       
@@ -130,5 +130,5 @@ spec:
                     - key: app
                       operator: In
                       values:
-                        - trading-platform
+                        - trader-tools
                 topologyKey: kubernetes.io/hostname
