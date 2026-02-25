@@ -59,43 +59,95 @@ git commit -m "Update registry to GHCR"
 git push
 ```
 
-### Step 4: Create Secrets on Production Cluster
+### Step 4: Configure Secrets
 
-SSH to your MicroK8s server:
+**IMPORTANT:** The Helm chart creates secrets automatically. You have two options:
+
+#### Option A: Pass Secrets via ArgoCD (Recommended for GitOps)
+
+Edit `argocd/application.yaml` and update the secrets section:
+
+```yaml
+values: |
+  secrets:
+    secretKey: "your-generated-secret-key-here"  # Generate with: python3 -c 'import secrets; print(secrets.token_hex(32))'
+    googleClientId: "your-google-client-id"
+    googleClientSecret: "your-google-client-secret"
+    databaseUrl: "sqlite:////data/financial_analysis.db"
+```
+
+Then commit and push:
+```bash
+git add argocd/application.yaml
+git commit -m "Configure production secrets"
+git push
+```
+
+**⚠️ Security Warning:** Secrets in Git are not ideal for production. See Option B below for better security.
+
+#### Option B: Use External Secrets (More Secure)
+
+Create a separate Kubernetes secret that Helm will use:
 
 ```bash
 # SSH to your Ubuntu MicroK8s server
 ssh user@your-microk8s-server
 
-# Create namespace
+# Create namespace first
 microk8s kubectl create namespace trader-tools
 
 # Generate secret key
 SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 
-# Create secret
-microk8s kubectl create secret generic trader-tools-secret \
+# Create secret with the EXACT name Helm expects
+microk8s kubectl create secret generic trader-tools \
   --from-literal=SECRET_KEY="$SECRET_KEY" \
   --from-literal=GOOGLE_CLIENT_ID="your-google-client-id" \
   --from-literal=GOOGLE_CLIENT_SECRET="your-google-client-secret" \
+  --from-literal=DATABASE_URL="sqlite:////data/financial_analysis.db" \
+  --from-literal=OLLAMA_BASE_URL="http://localhost:11434" \
   --namespace trader-tools
 ```
 
-### Step 5: Update ArgoCD Application
+Then comment out the secrets in `argocd/application.yaml`:
 
-Edit `argocd/application.yaml`:
+```yaml
+values: |
+  # secrets:  # Using pre-created Kubernetes secret instead
+  #   secretKey: ""
+```
+
+**Note:** The secret name MUST be `trader-tools` (not `trader-tools-secret`) because that's what the Helm chart expects.
+
+### Step 5: Update ArgoCD Application for Your Environment
+
+Edit `argocd/application.yaml` to configure for production:
 
 ```yaml
 source:
-  repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git  # Your repo
-  targetRevision: main
+  repoURL: https://github.com/jallen2281/Trader-Tools.git  # Your repo
+  targetRevision: master  # Your branch
   path: helm/trader-tools
   
   helm:
     values: |
       image:
-        repository: ghcr.io/YOUR_USERNAME/YOUR_REPO  # Your image
+        repository: ghcr.io/jallen2281/trader-tools  # Your image
         tag: "latest"
+      
+      ingress:
+        hosts:
+          - host: tradertools.kegbot.net  # Your domain
+        tls:
+          - secretName: trader-tools-tls
+            hosts:
+              - tradertools.kegbot.net
+      
+      # If using Option A from Step 4, add secrets here
+      secrets:
+        secretKey: "your-generated-secret"
+        googleClientId: "your-client-id"
+        googleClientSecret: "your-client-secret"
 ```
 
 Commit and push:
@@ -267,6 +319,38 @@ git push
 ---
 
 ## 🛠️ Troubleshooting
+
+### "ArgoCD isn't using the secret"
+
+**Symptom:** Pods fail with missing environment variables
+
+**Cause:** The Helm chart creates its own secret named `trader-tools`, but you may have manually created `trader-tools-secret`
+
+**Solution:**
+```bash
+# SSH to MicroK8s server
+ssh user@your-microk8s-server
+
+# Delete incorrectly named secret
+microk8s kubectl delete secret trader-tools-secret -n trader-tools
+
+# Option 1: Pass secrets via ArgoCD application.yaml (see Step 4, Option A)
+# Option 2: Create secret with correct name
+microk8s kubectl create secret generic trader-tools \
+  --from-literal=SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+  --from-literal=GOOGLE_CLIENT_ID="your-id" \
+  --from-literal=GOOGLE_CLIENT_SECRET="your-secret" \
+  --from-literal=DATABASE_URL="sqlite:////data/financial_analysis.db" \
+  --namespace trader-tools
+
+# Then disable secret creation in Helm
+# Edit argocd/application.yaml and remove/comment the secrets: section
+```
+
+Verify the secret exists:
+```bash
+microk8s kubectl get secret trader-tools -n trader-tools -o yaml
+```
 
 ### "Failed to pull image"
 

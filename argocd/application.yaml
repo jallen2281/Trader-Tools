@@ -32,46 +32,60 @@ spec:
       
       # Inline values (override values.yaml)
       values: |
-        # Override for MicroK8s local registry
+        # Image configuration for GHCR
         image:
-          repository: localhost:32000/trader-tools
+          repository: ghcr.io/jallen2281/trader-tools
           pullPolicy: Always
           tag: "latest"
         
-        # Resource limits for local deployment
+        # Resource limits for production
         resources:
           limits:
-            cpu: 1000m
-            memory: 1Gi
+            cpu: 2000m
+            memory: 2Gi
           requests:
             cpu: 500m
-            memory: 512Mi
+            memory: 1Gi
         
         # Storage configuration
         persistence:
           enabled: true
-          size: 5Gi
-          storageClass: microk8s-hostpath
+          size: 10Gi
+          storageClass: ceph-rbd
         
-        # Ingress configuration for local access
+        # Ingress configuration
         ingress:
           enabled: true
           className: "public"
           annotations:
-            nginx.ingress.kubernetes.io/ssl-redirect: "false"
+            cert-manager.io/cluster-issuer: "letsencrypt-prod"
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
           hosts:
-            - host: trading.local
+            - host: tradertools.kegbot.net
               paths:
                 - path: /
                   pathType: Prefix
+          tls:
+            - secretName: trader-tools-tls
+              hosts:
+                - tradertools.kegbot.net
         
-        # Auto-scaling for local deployment
+        # Auto-scaling
         autoscaling:
           enabled: true
-          minReplicas: 1
-          maxReplicas: 3
-          targetCPUUtilizationPercentage: 80
+          minReplicas: 2
+          maxReplicas: 10
+          targetCPUUtilizationPercentage: 70
           targetMemoryUtilizationPercentage: 80
+        
+        # SECRETS - Pass via Helm values
+        # IMPORTANT: Helm will create the secret automatically
+#        secrets:
+#          secretKey: "your-secret-key-here-change-me"  # CHANGE THIS!
+#          googleClientId: "your-google-client-id"  # CHANGE THIS!
+#          googleClientSecret: "your-google-client-secret"  # CHANGE THIS!
+#          databaseUrl: "sqlite:////data/financial_analysis.db"
+#          ollamaBaseUrl: "http://localhost:11434"
       
       # Skip CRDs (if any)
       skipCrds: false
