@@ -5,7 +5,7 @@
 replicaCount: 2
 
 image:
-  repository: docker.io/yourusername/trading-platform  # Update with your registry
+  repository: ghcr.io/jallen2281/Trader-Tools  # Update with your registry
   pullPolicy: Always
   tag: "latest"
 

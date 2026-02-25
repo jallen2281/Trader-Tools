@@ -34,7 +34,7 @@ spec:
       # Init container to set up database
       initContainers:
         - name: init-db
-          image: docker.io/yourusername/trading-platform:latest  # Update with your Docker Hub registry
+          image: ghcr.io/jallen2281/Trader-Tools:latest  # Update with your Docker Hub registry
           command: ['python', '-c']
           args:
             - |
@@ -55,7 +55,7 @@ spec:
       
       containers:
         - name: trading-platform
-          image: docker.io/yourusername/trading-platform:latest  # Update with your Docker Hub registry
+          image: ghcr.io/jallen2281/Trader-Tools:latest  # Update with your Docker Hub registry
           imagePullPolicy: Always
           ports:
             - name: http
