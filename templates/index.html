@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Chart Analyzer with Local LLM</title>
+    <link rel="icon" type="image/svg+xml" href="/static/robot-icon.svg">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        header {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        h1 {
+            color: #333;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: #666;
+            font-size: 1.1em;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.online {
+            background: #10b981;
+        }
+        
+        .status-indicator.offline {
+            background: #ef4444;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .search-section {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .search-form {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr auto;
+            gap: 15px;
+            align-items: end;
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        label {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #555;
+            font-size: 0.9em;
+        }
+        
+        input, select {
+            padding: 12px 15px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: all 0.3s;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        button {
+            padding: 12px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 60px;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .results {
+            display: none;
+        }
+        
+        .results.show {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .card.full-width {
+            grid-column: 1 / -1;
+        }
+        
+        .card h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .icon {
+            font-size: 1.3em;
+        }
+        
+        .price-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .current-price {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .price-change {
+            font-size: 1.2em;
+            font-weight: 600;
+            padding: 8px 15px;
+            border-radius: 8px;
+        }
+        
+        .price-change.positive {
+            color: #10b981;
+            background: #d1fae5;
+        }
+        
+        .price-change.negative {
+            color: #ef4444;
+            background: #fee2e2;
+        }
+        
+        .company-name {
+            color: #666;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+        
+        .trend-badge {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+        
+        .trend-badge.uptrend {
+            background: #d1fae5;
+            color: #059669;
+        }
+        
+        .trend-badge.downtrend {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+        
+        .trend-badge.sideways {
+            background: #e0e7ff;
+            color: #4f46e5;
+        }
+        
+        .chart-container {
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        .chart-container img {
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .indicators-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .indicator-item {
+            background: #f9fafb;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .indicator-label {
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .indicator-value {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .signal-item {
+            background: #f0f9ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 4px solid #0ea5e9;
+        }
+        
+        .signal-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .signal-description {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .pattern-item {
+            background: #fef3c7;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 4px solid #f59e0b;
+        }
+        
+        .pattern-sentiment {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        .pattern-sentiment.bullish {
+            background: #d1fae5;
+            color: #059669;
+        }
+        
+        .pattern-sentiment.bearish {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+        
+        .pattern-sentiment.neutral {
+            background: #e5e7eb;
+            color: #6b7280;
+        }
+        
+        .support-resistance {
+            display: flex;
+            gap: 20px;
+            margin-top: 15px;
+        }
+        
+        .sr-column {
+            flex: 1;
+        }
+        
+        .sr-column h4 {
+            color: #666;
+            margin-bottom: 10px;
+            font-size: 0.9em;
+        }
+        
+        .sr-level {
+            background: #f9fafb;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .llm-analysis {
+            background: #f9fafb;
+            padding: 20px;
+            border-radius: 10px;
+            line-height: 1.8;
+            color: #333;
+            white-space: pre-wrap;
+        }
+        
+        .error {
+            background: #fee2e2;
+            color: #991b1b;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #dc2626;
+        }
+        
+        @media (max-width: 968px) {
+            .search-form {
+                grid-template-columns: 1fr;
+            }
+            
+            .results.show {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📈 Financial Chart Analyzer</h1>
+            <p class="subtitle">
+                <span class="status-indicator" id="statusIndicator"></span>
+                Powered by Local LLM - <span id="statusText">Checking...</span>
+            </p>
+        </header>
+        
+        <div class="search-section">
+            <form id="analysisForm" class="search-form">
+                <div class="form-group">
+                    <label for="symbol">Stock Symbol</label>
+                    <input type="text" id="symbol" name="symbol" placeholder="e.g., AAPL, TSLA, SPX, ^GSPC" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="period">Period</label>
+                    <select id="period" name="period">
+                        <option value="1mo">1 Month</option>
+                        <option value="3mo">3 Months</option>
+                        <option value="6mo" selected>6 Months</option>
+                        <option value="1y">1 Year</option>
+                        <option value="2y">2 Years</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="interval">Interval</label>
+                    <select id="interval" name="interval">
+                        <option value="1d" selected>Daily</option>
+                        <option value="1wk">Weekly</option>
+                        <option value="1mo">Monthly</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="chartType">Chart Type</label>
+                    <select id="chartType" name="chartType">
+                        <option value="candlestick" selected>Candlestick</option>
+                        <option value="line">Line</option>
+                        <option value="volume">Volume</option>
+                    </select>
+                </div>
+                
+                <button type="submit" id="analyzeBtn">Analyze</button>
+            </form>
+        </div>
+        
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>Analyzing stock data and generating AI insights...</p>
+        </div>
+        
+        <div id="error" class="error" style="display: none;"></div>
+        
+        <div id="results" class="results">
+            <div class="card">
+                <h2><span class="icon">💼</span> Stock Overview</h2>
+                <div class="company-name" id="companyName"></div>
+                <div class="price-info">
+                    <div class="current-price" id="currentPrice"></div>
+                    <div class="price-change" id="priceChange"></div>
+                </div>
+                <div>
+                    <strong>Volume:</strong> <span id="volume"></span>
+                </div>
+                <div class="trend-badge" id="trendBadge"></div>
+            </div>
+            
+            <div class="card">
+                <h2><span class="icon">📊</span> Technical Indicators</h2>
+                <div class="indicators-grid" id="indicatorsGrid"></div>
+            </div>
+            
+            <div class="card full-width">
+                <h2><span class="icon">📉</span> Chart Analysis</h2>
+                <div class="chart-container">
+                    <img id="chartImage" src="" alt="Stock Chart">
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2><span class="icon">🎯</span> Support & Resistance</h2>
+                <div class="support-resistance">
+                    <div class="sr-column">
+                        <h4>Resistance Levels</h4>
+                        <div id="resistanceLevels"></div>
+                    </div>
+                    <div class="sr-column">
+                        <h4>Support Levels</h4>
+                        <div id="supportLevels"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2><span class="icon">🔔</span> Trading Signals</h2>
+                <div id="signalsContainer"></div>
+            </div>
+            
+            <div class="card full-width" id="patternsCard" style="display: none;">
+                <h2><span class="icon">🕯️</span> Detected Patterns</h2>
+                <div id="patternsContainer"></div>
+            </div>
+            
+            <div class="card full-width">
+                <h2><span class="icon">🤖</span> AI Analysis</h2>
+                <div class="llm-analysis" id="llmAnalysis"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Check system status on load
+        async function checkStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                const indicator = document.getElementById('statusIndicator');
+                const statusText = document.getElementById('statusText');
+                
+                if (data.ollama.status === 'running') {
+                    indicator.classList.add('online');
+                    indicator.classList.remove('offline');
+                    statusText.textContent = `Ready (Model: ${data.ollama.configured_model})`;
+                } else {
+                    indicator.classList.add('offline');
+                    indicator.classList.remove('online');
+                    statusText.textContent = 'Ollama not running - Start with "ollama serve"';
+                }
+            } catch (error) {
+                console.error('Status check failed:', error);
+                const indicator = document.getElementById('statusIndicator');
+                const statusText = document.getElementById('statusText');
+                indicator.classList.add('offline');
+                statusText.textContent = 'Connection error';
+            }
+        }
+        
+        // Handle form submission
+        document.getElementById('analysisForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = {
+                symbol: document.getElementById('symbol').value.toUpperCase(),
+                period: document.getElementById('period').value,
+                interval: document.getElementById('interval').value,
+                chart_type: document.getElementById('chartType').value
+            };
+            
+            // Show loading
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').classList.remove('show');
+            document.getElementById('error').style.display = 'none';
+            document.getElementById('analyzeBtn').disabled = true;
+            
+            try {
+                const response = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Analysis failed');
+                }
+                
+                const data = await response.json();
+                displayResults(data);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('error').textContent = 'Error: ' + error.message;
+                document.getElementById('error').style.display = 'block';
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('analyzeBtn').disabled = false;
+            }
+        });
+        
+        function displayResults(data) {
+            // Company info
+            document.getElementById('companyName').textContent = data.company_info.name;
+            document.getElementById('currentPrice').textContent = '$' + data.current_price.toFixed(2);
+            
+            // Price change
+            const priceChange = document.getElementById('priceChange');
+            const changeText = `${data.price_change >= 0 ? '+' : ''}${data.price_change.toFixed(2)} (${data.price_change_pct.toFixed(2)}%)`;
+            priceChange.textContent = changeText;
+            priceChange.className = 'price-change ' + (data.price_change >= 0 ? 'positive' : 'negative');
+            
+            // Volume
+            document.getElementById('volume').textContent = data.volume.toLocaleString();
+            
+            // Trend
+            const trendBadge = document.getElementById('trendBadge');
+            trendBadge.textContent = data.trend.toUpperCase();
+            trendBadge.className = 'trend-badge ' + data.trend;
+            
+            // Chart
+            document.getElementById('chartImage').src = data.chart;
+            
+            // Indicators
+            const indicatorsGrid = document.getElementById('indicatorsGrid');
+            indicatorsGrid.innerHTML = '';
+            for (const [key, value] of Object.entries(data.indicators)) {
+                indicatorsGrid.innerHTML += `
+                    <div class="indicator-item">
+                        <div class="indicator-label">${key}</div>
+                        <div class="indicator-value">${value}</div>
+                    </div>
+                `;
+            }
+            
+            // Support & Resistance
+            const resistanceLevels = document.getElementById('resistanceLevels');
+            resistanceLevels.innerHTML = data.support_resistance.resistance.map(level => 
+                `<div class="sr-level">$${level.toFixed(2)}</div>`
+            ).join('');
+            
+            const supportLevels = document.getElementById('supportLevels');
+            supportLevels.innerHTML = data.support_resistance.support.map(level => 
+                `<div class="sr-level">$${level.toFixed(2)}</div>`
+            ).join('');
+            
+            // Signals
+            const signalsContainer = document.getElementById('signalsContainer');
+            signalsContainer.innerHTML = '';
+            for (const [key, value] of Object.entries(data.signals)) {
+                signalsContainer.innerHTML += `
+                    <div class="signal-item">
+                        <div class="signal-title">${key}</div>
+                        <div class="signal-description">${value}</div>
+                    </div>
+                `;
+            }
+            
+            // Patterns
+            if (data.patterns && data.patterns.length > 0) {
+                const patternsContainer = document.getElementById('patternsContainer');
+                patternsContainer.innerHTML = data.patterns.map(pattern => `
+                    <div class="pattern-item">
+                        <strong>${pattern.pattern}</strong>
+                        <span class="pattern-sentiment ${pattern.sentiment}">${pattern.sentiment}</span>
+                        <div style="margin-top: 8px; color: #666; font-size: 0.9em;">${pattern.description}</div>
+                    </div>
+                `).join('');
+                document.getElementById('patternsCard').style.display = 'block';
+            } else {
+                document.getElementById('patternsCard').style.display = 'none';
+            }
+            
+            // LLM Analysis
+            document.getElementById('llmAnalysis').textContent = data.llm_analysis;
+            
+            // Show results
+            document.getElementById('results').classList.add('show');
+        }
+        
+        // Check status on page load
+        checkStatus();
+        
+        // Recheck status every 30 seconds
+        setInterval(checkStatus, 30000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Copy Trading Research - Financial Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        .copy-trading-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .trader-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .trader-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .trader-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+        }
+
+        .trader-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .trader-name {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .trader-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-pro { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .badge-verified { background: #10b981; color: white; }
+        .badge-rising { background: #f59e0b; color: white; }
+
+        .trader-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin: 15px 0;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            font-size: 0.85em;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .stat-value.positive { color: var(--success); }
+        .stat-value.negative { color: var(--danger); }
+
+        .risk-meter {
+            margin: 15px 0;
+        }
+
+        .risk-bar {
+            height: 8px;
+            background: var(--light);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .risk-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .risk-low { background: linear-gradient(90deg, #10b981, #34d399); }
+        .risk-medium { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+        .risk-high { background: linear-gradient(90deg, #ef4444, #f87171); }
+
+        .strategy-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 12px 0;
+        }
+
+        .strategy-tag {
+            padding: 4px 10px;
+            background: var(--light);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 0.8em;
+            color: var(--text-secondary);
+        }
+
+        .trader-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .btn-follow {
+            flex: 1;
+            padding: 10px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn-follow:hover {
+            background: var(--primary-dark);
+        }
+
+        .btn-follow.following {
+            background: var(--success);
+        }
+
+        .btn-details {
+            padding: 10px 20px;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-details:hover {
+            background: var(--light);
+        }
+
+        .filters-bar {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .filter-group label {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+        }
+
+        .filter-select {
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        .performance-chart {
+            height: 80px;
+            margin: 15px 0;
+            position: relative;
+        }
+
+        .mini-sparkline {
+            width: 100%;
+            height: 100%;
+        }
+
+        .followers-count {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            font-size: 0.85em;
+            margin-top: 10px;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .tab-button {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: var(--text-secondary);
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 1.05em;
+        }
+
+        .tab-button:hover {
+            color: var(--text-primary);
+            background: var(--light);
+        }
+
+        .tab-button.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        /* Politician Cards */
+        .politician-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .politician-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+        }
+
+        .politician-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .politician-name {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 5px;
+        }
+
+        .politician-info {
+            font-size: 0.85em;
+            color: var(--text-secondary);
+        }
+
+        .transaction-badge {
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .transaction-badge.positive {
+            background: rgba(16, 185, 129, 0.1);
+            color: #10b981;
+        }
+
+        .transaction-badge.negative {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+        }
+
+        .trade-symbol {
+            margin: 15px 0;
+            padding: 15px;
+            background: var(--light);
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .trade-details {
+            margin: 15px 0;
+        }
+
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .detail-row:last-child {
+            border-bottom: none;
+        }
+
+        .detail-label {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+        }
+
+        .detail-value {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .trade-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .btn-action {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-action.btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-action.btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .btn-action.btn-secondary {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+        }
+
+        .btn-action.btn-secondary:hover {
+            background: var(--light);
+        }
+
+        /* Watchlist Selection Modal */
+        .watchlist-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .watchlist-modal {
+            background: var(--card-bg);
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            animation: slideUp 0.3s ease;
+        }
+
+        .watchlist-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .watchlist-modal-header h3 {
+            margin: 0;
+            color: var(--text-primary);
+            font-size: 1.3em;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 1.8em;
+            color: var(--text-secondary);
+            cursor: pointer;
+            line-height: 1;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+
+        .close-btn:hover {
+            background: var(--light);
+            color: var(--text-primary);
+        }
+
+        .watchlist-modal-body {
+            padding: 20px;
+        }
+
+        .watchlist-options {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .watchlist-option {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 15px;
+            background: var(--light);
+            border: 2px solid transparent;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .watchlist-option:hover {
+            background: var(--bg-secondary);
+            border-color: var(--primary);
+            transform: translateX(5px);
+        }
+
+        .watchlist-option.current {
+            border-color: var(--primary);
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .watchlist-icon {
+            font-size: 1.5em;
+        }
+
+        .watchlist-name {
+            flex: 1;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-transform: capitalize;
+        }
+
+        .current-badge {
+            padding: 4px 10px;
+            background: var(--primary);
+            color: white;
+            border-radius: 6px;
+            font-size: 0.75em;
+            font-weight: 600;
+        }
+
+        .btn-create-watchlist {
+            width: 100%;
+            padding: 12px;
+            background: transparent;
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-create-watchlist:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: rgba(59, 130, 246, 0.05);
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideUp {
+            from { 
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to { 
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <div class="nav-brand">📊 Copy Trading Research</div>
+        <div class="nav-actions">
+            <button onclick="location.href='/portfolio'" class="btn-secondary">← Back to Portfolio</button>
+            <button onclick="location.href='/dashboard'" class="btn-secondary">Dashboard</button>
+            <button id="settingsBtn" class="btn-icon" title="Settings">⚙️</button>
+        </div>
+    </div>
+
+    <div class="copy-trading-container">
+        <div class="page-header">
+            <h1>🎯 Copy Trading Research</h1>
+            <p style="color: var(--text-secondary); margin-top: 10px;">
+                Discover and follow top-performing traders. Analyze their strategies, risk metrics, and performance history.
+            </p>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button id="tradersTab" class="tab-button active">👥 Pro Traders</button>
+            <button id="politiciansTab" class="tab-button">🏛️ Politician Trades</button>
+        </div>
+
+        <!-- Trader Filters -->
+        <div id="filtersBar" class="filters-bar">
+            <div class="filter-group">
+                <label>Strategy:</label>
+                <select id="strategyFilter" class="filter-select" onchange="filterTraders()">
+                    <option value="all">All Strategies</option>
+                    <option value="growth">Growth</option>
+                    <option value="value">Value Investing</option>
+                    <option value="swing">Swing Trading</option>
+                    <option value="momentum">Momentum</option>
+                    <option value="dividend">Dividend</option>
+                    <option value="options">Options</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Risk Level:</label>
+                <select id="riskFilter" class="filter-select" onchange="filterTraders()">
+                    <option value="all">All Risk Levels</option>
+                    <option value="low">Low Risk</option>
+                    <option value="medium">Medium Risk</option>
+                    <option value="high">High Risk</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Min Return:</label>
+                <select id="returnFilter" class="filter-select" onchange="filterTraders()">
+                    <option value="0">Any</option>
+                    <option value="10">10%+</option>
+                    <option value="25">25%+</option>
+                    <option value="50">50%+</option>
+                    <option value="100">100%+</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Sort by:</label>
+                <select id="sortBy" class="filter-select" onchange="sortTraders()">
+                    <option value="performance">Performance</option>
+                    <option value="followers">Followers</option>
+                    <option value="winrate">Win Rate</option>
+                    <option value="risk">Risk (Low to High)</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Politician Filters -->
+        <div id="politicianFilters" class="filters-bar" style="display: none;">
+            <div class="filter-group">
+                <label>Chamber:</label>
+                <select id="chamberFilter" class="filter-select" onchange="filterPoliticianTrades()">
+                    <option value="all">All Chambers</option>
+                    <option value="House">House</option>
+                    <option value="Senate">Senate</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Party:</label>
+                <select id="partyFilter" class="filter-select" onchange="filterPoliticianTrades()">
+                    <option value="all">All Parties</option>
+                    <option value="Democrat">Democrat</option>
+                    <option value="Republican">Republican</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Transaction:</label>
+                <select id="transactionFilter" class="filter-select" onchange="filterPoliticianTrades()">
+                    <option value="all">All Transactions</option>
+                    <option value="Purchase">Purchase</option>
+                    <option value="Sale">Sale</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Sort by:</label>
+                <select id="politicianSortBy" class="filter-select" onchange="sortPoliticianTrades()">
+                    <option value="date">Most Recent</option>
+                    <option value="amount">Amount</option>
+                    <option value="politician">Politician</option>
+                    <option value="symbol">Symbol</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="traderGrid" class="trader-grid">
+            <!-- Trader cards will be loaded here -->
+            <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-secondary);">
+                Loading traders...
+            </div>
+        </div>
+
+        <div id="politicianGrid" class="trader-grid" style="display: none;">
+            <!-- Politician trade cards will be loaded here -->
+            <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-secondary);">
+                Loading politician trades...
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='watchlist.js') }}"></script>
+    <script src="{{ url_for('static', filename='copytrading.js') }}"></script>
+    <script>
+        // Dark mode initialization
+        document.addEventListener('DOMContentLoaded', () => {
+            const isDarkMode = localStorage.getItem('darkMode') === 'true';
+            if (isDarkMode) {
+                document.body.classList.add('dark-mode');
+            }
+        });
+
+        // Settings button handler
+        document.getElementById('settingsBtn')?.addEventListener('click', () => {
+            // Settings menu logic (can be implemented later)
+            alert('Settings menu coming soon!');
+        });
+    </script>
+</body>
+</html>

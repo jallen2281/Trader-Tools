@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trading-platform-config
+  namespace: trading-platform
+data:
+  # Flask Configuration
+  FLASK_APP: "app.py"
+  FLASK_ENV: "production"
+  
+  # Application Settings
+  SESSION_TYPE: "filesystem"
+  PERMANENT_SESSION_LIFETIME: "86400"  # 24 hours
+  
+  # Feature Flags
+  ENABLE_PATTERN_RECOGNITION: "true"
+  ENABLE_ML_DETECTION: "true"
+  ENABLE_SENTIMENT_ANALYSIS: "true"
+  
+  # API Rate Limiting
+  RATELIMIT_ENABLED: "true"
+  RATELIMIT_DEFAULT: "100 per hour"
+  
+  # Logging
+  LOG_LEVEL: "INFO"
+  
+  # Monitoring
+  MONITORING_INTERVAL: "60"
+  ALERT_CHECK_INTERVAL: "60"

@@ -1,0 +1,4 @@
+/.env
+/.venv
+/config.py
+/db_config.py

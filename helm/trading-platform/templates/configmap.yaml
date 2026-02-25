@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "trading-platform.fullname" . }}
+  labels:
+    {{- include "trading-platform.labels" . | nindent 4 }}
+data:
+  FLASK_APP: "app.py"
+  FLASK_ENV: {{ .Values.config.flaskEnv | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  MONITORING_INTERVAL: {{ .Values.config.monitoringInterval | quote }}
+  ALERT_CHECK_INTERVAL: {{ .Values.config.alertCheckInterval | quote }}
+  ENABLE_PATTERN_RECOGNITION: {{ .Values.config.enablePatternRecognition | quote }}
+  ENABLE_ML_DETECTION: {{ .Values.config.enableMLDetection | quote }}
+  ENABLE_SENTIMENT_ANALYSIS: {{ .Values.config.enableSentimentAnalysis | quote }}
+  RATELIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
+  RATELIMIT_DEFAULT: {{ .Values.config.rateLimitDefault | quote }}

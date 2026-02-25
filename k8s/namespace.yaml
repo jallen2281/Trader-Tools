@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trading-platform
+  labels:
+    name: trading-platform
+    environment: production

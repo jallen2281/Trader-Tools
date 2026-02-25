@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-platform
+  namespace: trading-platform
+  labels:
+    app: trading-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: trading-platform
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours for session persistence
