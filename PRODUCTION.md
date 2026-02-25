@@ -398,24 +398,27 @@ argocd app get trading-platform
 ## Step 7: Verify Deployment
 
 ```bash
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
 # Check ArgoCD Application status
-kubectl get application trading-platform -n argocd
+microk8s kubectl get application trading-platform -n argocd
 
 # Check pods
-kubectl get pods -n trading-platform
+microk8s kubectl get pods -n trading-platform
 
 # Check services
-kubectl get svc -n trading-platform
+microk8s kubectl get svc -n trading-platform
 
 # Check ingress
-kubectl get ingress -n trading-platform
+microk8s kubectl get ingress -n trading-platform
 
 # View logs
-kubectl logs -n trading-platform -l app=trading-platform --tail=100
+microk8s kubectl logs -n trading-platform -l app=trading-platform --tail=100
 
-# Test health endpoint
-kubectl port-forward -n trading-platform svc/trading-platform 8080:80
-curl http://localhost:8080/health
+# Test health endpoint (on MicroK8s server)
+microk8s kubectl port-forward -n trading-platform svc/trading-platform 8080:80
+# Then from another terminal: curl http://localhost:8080/health
 ```
 
 ## Step 8: Configure Ingress/Domain
@@ -423,8 +426,11 @@ curl http://localhost:8080/health
 Update your DNS to point to your MicroK8s cluster ingress IP:
 
 ```bash
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
 # Get ingress IP
-kubectl get ingress -n trading-platform
+microk8s kubectl get ingress -n trading-platform
 
 # Example output:
 # NAME                CLASS   HOSTS                    ADDRESS        PORTS
@@ -477,18 +483,21 @@ git push
 ## Monitoring
 
 ```bash
-# Check application health
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
+# Check application health (requires argocd CLI)
 argocd app get trading-platform
 
 # Watch sync status
 argocd app wait trading-platform --timeout 300
 
 # View logs
-kubectl logs -n trading-platform -l app=trading-platform -f
+microk8s kubectl logs -n trading-platform -l app=trading-platform -f
 
 # Check metrics (if metrics-server enabled)
-kubectl top pods -n trading-platform
-kubectl top nodes
+microk8s kubectl top pods -n trading-platform
+microk8s kubectl top nodes
 ```
 
 ## Troubleshooting
@@ -496,61 +505,73 @@ kubectl top nodes
 ### Image Pull Failures
 
 ```bash
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
 # Check if secret is needed for private registry
-kubectl create secret docker-registry regcred \
+microk8s kubectl create secret docker-registry regcred \
   --docker-server=your-registry.com \
   --docker-username=your-username \
   --docker-password=your-password \
   --namespace trading-platform
 
 # Add to deployment
-kubectl patch deployment trading-platform -n trading-platform \
+microk8s kubectl patch deployment trading-platform -n trading-platform \
   -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}}}'
 ```
 
 ### ArgoCD Not Syncing
 
 ```bash
-# Check Application status
-kubectl describe application trading-platform -n argocd
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
 
-# Force refresh
+# Check Application status
+microk8s kubectl describe application trading-platform -n argocd
+
+# Force refresh (requires argocd CLI)
 argocd app get trading-platform --refresh
 
 # Manual sync
 argocd app sync trading-platform --force
 
 # Check ArgoCD logs
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
+microk8s kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
 ```
 
 ### Pod CrashLoops
 
 ```bash
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
 # Check pod logs
-kubectl logs -n trading-platform -l app=trading-platform --previous
+microk8s kubectl logs -n trading-platform -l app=trading-platform --previous
 
 # Check events
-kubectl describe pod -n trading-platform -l app=trading-platform
+microk8s kubectl describe pod -n trading-platform -l app=trading-platform
 
 # Verify secrets exist
-kubectl get secret trading-platform-secret -n trading-platform
+microk8s kubectl get secret trading-platform-secret -n trading-platform
 
 # Check configmap
-kubectl get configmap trading-platform-config -n trading-platform
+microk8s kubectl get configmap trading-platform-config -n trading-platform
 ```
 
 ### Database Issues
 
 ```bash
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
 # Check PVC
-kubectl get pvc -n trading-platform
+microk8s kubectl get pvc -n trading-platform
 
 # Check PVC mount
-kubectl exec -n trading-platform deployment/trading-platform -- ls -la /data
+microk8s kubectl exec -n trading-platform deployment/trading-platform -- ls -la /data
 
 # Reinitialize database (careful in production!)
-kubectl exec -n trading-platform deployment/trading-platform -- python -c "
+microk8s kubectl exec -n trading-platform deployment/trading-platform -- python -c "
 from db_config import init_database
 from flask import Flask
 app = Flask(__name__)
@@ -603,9 +624,12 @@ init_database(app)
 
 4. **RBAC**: Limit ArgoCD permissions (production)
    ```bash
+   # SSH to your Ubuntu MicroK8s server
+   ssh user@your-microk8s-server
+   
    # Create limited service account for ArgoCD
-   kubectl create sa trading-platform-deployer -n trading-platform
-   kubectl create rolebinding trading-platform-deployer \
+   microk8s kubectl create sa trading-platform-deployer -n trading-platform
+   microk8s kubectl create rolebinding trading-platform-deployer \
      --clusterrole=edit \
      --serviceaccount=trading-platform:trading-platform-deployer \
      --namespace=trading-platform
@@ -616,22 +640,28 @@ init_database(app)
 ### Manual Scaling
 
 ```bash
-# Scale replicas
-kubectl scale deployment trading-platform -n trading-platform --replicas=5
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
 
-# Or update in Git for GitOps
+# Scale replicas
+microk8s kubectl scale deployment trading-platform -n trading-platform --replicas=5
+
+# Or update in Git for GitOps (recommended)
 # Edit helm/trading-platform/values.yaml or k8s/deployment.yaml
-# Commit and push
+# Commit and push - ArgoCD will sync automatically
 ```
 
 ### Auto-Scaling (HPA already configured)
 
 ```bash
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
 # Check HPA status
-kubectl get hpa -n trading-platform
+microk8s kubectl get hpa -n trading-platform
 
 # View metrics
-kubectl top pods -n trading-platform
+microk8s kubectl top pods -n trading-platform
 ```
 
 ### Vertical Scaling (Resource Limits)
@@ -654,25 +684,36 @@ Commit, push, and ArgoCD will sync.
 ### Backup SQLite Database
 
 ```bash
-# Create backup job
-kubectl create job --from=cronjob/backup-db backup-manual -n trading-platform
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
+# Create backup job (if CronJob exists)
+microk8s kubectl create job --from=cronjob/backup-db backup-manual -n trading-platform
 
 # Or manual backup
-kubectl exec -n trading-platform deployment/trading-platform -- \
+microk8s kubectl exec -n trading-platform deployment/trading-platform -- \
   sqlite3 /data/financial_analysis.db ".backup /data/backup.db"
 
-# Copy to local
-kubectl cp trading-platform/deployment/trading-platform:/data/backup.db ./backup.db
+# Copy to local (from MicroK8s server to your local machine)
+microk8s kubectl cp trading-platform/trading-platform-<pod-id>:/data/backup.db ./backup.db
+
+# Or copy from server to your Windows machine
+# On your local Windows machine:
+scp user@your-microk8s-server:~/backup.db .
 ```
 
 ### Restore from Backup
 
 ```bash
-# Copy backup to pod
-kubectl cp ./backup.db trading-platform/deployment/trading-platform:/data/financial_analysis.db
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
+# Copy backup to pod (get exact pod name first)
+POD_NAME=$(microk8s kubectl get pods -n trading-platform -l app=trading-platform -o jsonpath='{.items[0].metadata.name}')
+microk8s kubectl cp ./backup.db trading-platform/$POD_NAME:/data/financial_analysis.db
 
 # Restart pod
-kubectl rollout restart deployment/trading-platform -n trading-platform
+microk8s kubectl rollout restart deployment/trading-platform -n trading-platform
 ```
 
 ## Next Steps

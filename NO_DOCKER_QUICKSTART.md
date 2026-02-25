@@ -40,11 +40,13 @@ Your image will be at: `ghcr.io/YOUR_USERNAME/YOUR_REPO:latest`
 Update the manifests:
 
 ```bash
-# Windows PowerShell
-$REGISTRY = "ghcr.io/YOUR_USERNAME/YOUR_REPO"
-(Get-Content k8s/deployment.yaml) -replace 'docker.io/yourusername/trading-platform', $REGISTRY | Set-Content k8s/deployment.yaml
-(Get-Content helm/trading-platform/values.yaml) -replace 'docker.io/yourusername/trading-platform', $REGISTRY | Set-Content helm/trading-platform/values.yaml
-(Get-Content argocd/application-kustomize.yaml) -replace 'docker.io/yourusername/trading-platform', $REGISTRY | Set-Content argocd/application-kustomize.yaml
+# Set your registry
+REGISTRY="ghcr.io/YOUR_USERNAME/YOUR_REPO"
+
+# Update manifests (Linux/macOS)
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" k8s/deployment.yaml
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" helm/trader-tools/values.yaml
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" argocd/application-kustomize.yaml
 
 # Commit changes
 git add .
@@ -54,21 +56,24 @@ git push
 
 ### Step 4: Create Secrets on Production Cluster
 
-SSH to your MicroK8s server or use kubectl locally:
+SSH to your MicroK8s server:
 
 ```bash
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
 # Create namespace
-kubectl create namespace trading-platform
+microk8s kubectl create namespace trader-tools
 
 # Generate secret key
-$SECRET_KEY = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | ForEach-Object {[char]$_})
+SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 
 # Create secret
-kubectl create secret generic trading-platform-secret `
-  --from-literal=SECRET_KEY="$SECRET_KEY" `
-  --from-literal=GOOGLE_CLIENT_ID="your-google-client-id" `
-  --from-literal=GOOGLE_CLIENT_SECRET="your-google-client-secret" `
-  --namespace trading-platform
+microk8s kubectl create secret generic trader-tools-secret \
+  --from-literal=SECRET_KEY="$SECRET_KEY" \
+  --from-literal=GOOGLE_CLIENT_ID="your-google-client-id" \
+  --from-literal=GOOGLE_CLIENT_SECRET="your-google-client-secret" \
+  --namespace trader-tools
 ```
 
 ### Step 5: Update ArgoCD Application
@@ -79,7 +84,7 @@ Edit `argocd/application.yaml`:
 source:
   repoURL: https://github.com/YOUR_USERNAME/YOUR_REPO.git  # Your repo
   targetRevision: main
-  path: helm/trading-platform
+  path: helm/trader-tools
   
   helm:
     values: |
@@ -99,27 +104,33 @@ git push
 ### Step 6: Deploy with ArgoCD
 
 ```bash
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
+
 # Apply ArgoCD Application
-kubectl apply -f argocd/application.yaml
+microk8s kubectl apply -f argocd/application.yaml
 
 # Watch deployment
-kubectl get application trading-platform -n argocd -w
+microk8s kubectl get application trader-tools -n argocd -w
 
 # Check pods
-kubectl get pods -n trading-platform
+microk8s kubectl get pods -n trader-tools
 
 # View logs
-kubectl logs -n trading-platform -l app=trading-platform -f
+microk8s kubectl logs -n trader-tools -l app=trader-tools -f
 ```
 
 ### Step 7: Access Your Application
 
 ```bash
-# Get ingress URL
-kubectl get ingress -n trading-platform
+# SSH to your Ubuntu MicroK8s server
+ssh user@your-microk8s-server
 
-# Or port-forward for testing
-kubectl port-forward -n trading-platform svc/trading-platform 8080:80
+# Get ingress URL
+microk8s kubectl get ingress -n trader-tools
+
+# Or port-forward for testing (accessible from server only)
+microk8s kubectl port-forward -n trader-tools svc/trader-tools 8080:80
 ```
 
 Access at: `http://localhost:8080` (if port-forwarding) or your ingress domain.
@@ -141,7 +152,8 @@ Every time you push to GitHub:
 
 3. **ArgoCD syncs within 3 minutes** (or manual sync):
    ```bash
-   kubectl patch application trading-platform -n argocd \
+   # SSH to MicroK8s server
+   microk8s kubectl patch application trader-tools -n argocd \
      --type merge \
      -p '{"operation":{"initiatedBy":{"username":"manual"},"sync":{"syncStrategy":{}}}}'
    ```
@@ -179,10 +191,12 @@ rm .github/workflows/build-ghcr.yml
 ### Step 4: Update Manifests
 
 ```bash
-# Windows PowerShell
-$REGISTRY = "docker.io/YOUR_DOCKERHUB_USERNAME/trading-platform"
-(Get-Content k8s/deployment.yaml) -replace 'docker.io/yourusername/trading-platform', $REGISTRY | Set-Content k8s/deployment.yaml
-(Get-Content helm/trading-platform/values.yaml) -replace 'docker.io/yourusername/trading-platform', $REGISTRY | Set-Content helm/trading-platform/values.yaml
+# Set your registry
+REGISTRY="docker.io/YOUR_DOCKERHUB_USERNAME/trader-tools"
+
+# Update manifests (Linux/macOS)
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" k8s/deployment.yaml
+sed -i "s|docker.io/yourusername/trader-tools|$REGISTRY|g" helm/trader-tools/values.yaml
 ```
 
 ### Step 5: Push and Deploy
@@ -204,17 +218,20 @@ git push
 **For GHCR private images**, create pull secret:
 
 ```bash
+# SSH to MicroK8s server
+ssh user@your-microk8s-server
+
 # Create GitHub PAT at https://github.com/settings/tokens
 # Scopes needed: read:packages
 
-kubectl create secret docker-registry ghcr-secret \
+microk8s kubectl create secret docker-registry ghcr-secret \
   --docker-server=ghcr.io \
   --docker-username=YOUR_GITHUB_USERNAME \
   --docker-password=YOUR_GITHUB_TOKEN \
-  --namespace trading-platform
+  --namespace trader-tools
 
 # Patch deployment
-kubectl patch serviceaccount default -n trading-platform \
+microk8s kubectl patch serviceaccount default -n trader-tools \
   -p '{"imagePullSecrets":[{"name":"ghcr-secret"}]}'
 ```
 
@@ -233,14 +250,17 @@ Check the Actions tab for detailed logs. Common issues:
 ### "ArgoCD not syncing"
 
 ```bash
+# SSH to MicroK8s server
+ssh user@your-microk8s-server
+
 # Force refresh
-kubectl patch application trading-platform -n argocd --type merge -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
+microk8s kubectl patch application trader-tools -n argocd --type merge -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
 
 # Check Application status
-kubectl describe application trading-platform -n argocd
+microk8s kubectl describe application trader-tools -n argocd
 
 # View ArgoCD logs
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
+microk8s kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
 ```
 
 ---
