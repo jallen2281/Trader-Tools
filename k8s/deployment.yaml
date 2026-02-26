@@ -35,6 +35,7 @@ spec:
       initContainers:
         - name: init-db
           image: ghcr.io/jallen2281/trader-tools:latest  # Update with your Docker Hub registry
+          workingDir: /app
           command: ['python', '-c']
           args:
             - |
