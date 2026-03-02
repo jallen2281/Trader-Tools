@@ -30,27 +30,6 @@ spec:
       serviceAccountName: {{ include "trader-tools.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      initContainers:
-        - name: init-db
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          workingDir: /app
-          command: ['python', '-c']
-          args:
-            - |
-              from db_config import init_database
-              from flask import Flask
-              app = Flask(__name__)
-              app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////data/financial_analysis.db'
-              init_database(app)
-              print('Database initialized')
-          envFrom:
-            - configMapRef:
-                name: {{ include "trader-tools.fullname" . }}
-            - secretRef:
-                name: {{ include "trader-tools.fullname" . }}
-          volumeMounts:
-            - name: data
-              mountPath: /data
       containers:
         - name: {{ .Chart.Name }}
           securityContext:

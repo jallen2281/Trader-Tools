@@ -31,29 +31,6 @@ spec:
         runAsUser: 1000
         fsGroup: 1000
       
-      # Init container to set up database
-      initContainers:
-        - name: init-db
-          image: ghcr.io/jallen2281/trader-tools:latest  # Update with your Docker Hub registry
-          workingDir: /app
-          command: ['python', '-c']
-          args:
-            - |
-              from db_config import init_database
-              from flask import Flask
-              app = Flask(__name__)
-              app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////data/financial_analysis.db'
-              init_database(app)
-              print('Database initialized')
-          envFrom:
-            - configMapRef:
-                name: trader-tools-config
-            - secretRef:
-                name: trader-tools-secret
-          volumeMounts:
-            - name: data
-              mountPath: /data
-      
       containers:
         - name: trader-tools
           image: ghcr.io/jallen2281/trader-tools:latest  # Update with your Docker Hub registry
