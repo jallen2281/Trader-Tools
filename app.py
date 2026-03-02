@@ -33,6 +33,10 @@ except ImportError as e:
     print(f"⚠ Phase 2 features not available: {e}")
     print("ℹ Run 'install_phase2.bat' to enable database and authentication")
     PHASE2_ENABLED = False
+    # Define dummy decorator for when auth is not available
+    def require_api_auth(f):
+        """Dummy auth decorator when Phase 2 is disabled"""
+        return f
 
 # Phase 3: Advanced Trading Intelligence
 try:
