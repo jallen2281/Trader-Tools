@@ -90,11 +90,34 @@ persistence:
 config:
   flaskEnv: production
   logLevel: INFO
+  
+  # Ollama Configuration
+  ollamaModel: llama3.2
+  ollamaTimeout: "120"
+  useVision: "False"
+  fallbackModel: llama3.2
+  
+  # Chart Configuration
+  chartDpi: "100"
+  chartStyle: "seaborn-v0_8-darkgrid"
+  chartWidth: "12"
+  chartHeight: "6"
+  
+  # Default Stock Settings  
+  defaultSymbol: SPX
+  defaultPeriod: 6mo
+  defaultInterval: 1d
+  
+  # Monitoring
   monitoringInterval: 60
   alertCheckInterval: 60
+  
+  # Feature Flags
   enablePatternRecognition: true
   enableMLDetection: true
   enableSentimentAnalysis: true
+  
+  # Rate Limiting
   rateLimitEnabled: true
   rateLimitDefault: "100 per hour"
 

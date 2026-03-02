@@ -5,13 +5,46 @@ metadata:
   labels:
     {{- include "trader-tools.labels" . | nindent 4 }}
 data:
+  # Flask Configuration
   FLASK_APP: "app.py"
   FLASK_ENV: {{ .Values.config.flaskEnv | quote }}
+  FLASK_PORT: "5000"
+  FLASK_DEBUG: "False"
+  
+  # Logging
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  
+  # Ollama Configuration
+  OLLAMA_MODEL: {{ .Values.config.ollamaModel | quote }}
+  OLLAMA_TIMEOUT: {{ .Values.config.ollamaTimeout | quote }}
+  
+  # AI Analysis Mode
+  USE_VISION: {{ .Values.config.useVision | quote }}
+  FALLBACK_MODEL: {{ .Values.config.fallbackModel | quote }}
+  
+  # Chart Configuration
+  CHART_DPI: {{ .Values.config.chartDpi | quote }}
+  CHART_STYLE: {{ .Values.config.chartStyle | quote }}
+  CHART_WIDTH: {{ .Values.config.chartWidth | quote }}
+  CHART_HEIGHT: {{ .Values.config.chartHeight | quote }}
+  
+  # Default Stock Settings
+  DEFAULT_SYMBOL: {{ .Values.config.defaultSymbol | quote }}
+  DEFAULT_PERIOD: {{ .Values.config.defaultPeriod | quote }}
+  DEFAULT_INTERVAL: {{ .Values.config.defaultInterval | quote }}
+  
+  # Monitoring
   MONITORING_INTERVAL: {{ .Values.config.monitoringInterval | quote }}
   ALERT_CHECK_INTERVAL: {{ .Values.config.alertCheckInterval | quote }}
+  
+  # Feature Flags
   ENABLE_PATTERN_RECOGNITION: {{ .Values.config.enablePatternRecognition | quote }}
   ENABLE_ML_DETECTION: {{ .Values.config.enableMLDetection | quote }}
   ENABLE_SENTIMENT_ANALYSIS: {{ .Values.config.enableSentimentAnalysis | quote }}
-  RATELIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
-  RATELIMIT_DEFAULT: {{ .Values.config.rateLimitDefault | quote }}
+  
+  # Rate Limiting
+  RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
+  RATE_LIMIT_DEFAULT: {{ .Values.config.rateLimitDefault | quote }}
+  
+  # Database (non-sensitive)
+  SQL_DEBUG: "False"
