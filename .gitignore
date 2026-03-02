@@ -4,8 +4,8 @@
 .venv
 venv/
 env/
-config.py
-db_config.py
+# config.py - now safe to commit (uses env vars only)
+# db_config.py - safe to commit (no secrets)
 
 # Python
 __pycache__/
