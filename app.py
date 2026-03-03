@@ -240,6 +240,50 @@ def index():
     return render_template('dashboard.html')
 
 
+@app.route('/api/test/yfinance', methods=['GET'])
+def test_yfinance():
+    """Test endpoint to verify Yahoo Finance connectivity."""
+    try:
+        symbol = request.args.get('symbol', 'AAPL')
+        logger.info(f"Testing Yahoo Finance with symbol: {symbol}")
+        
+        # Try to fetch minimal data
+        stock_data = data_fetcher.fetch_stock_data(symbol, period='5d', interval='1d')
+        
+        if stock_data is None:
+            return jsonify({
+                'status': 'failed',
+                'error': 'No data returned from Yahoo Finance',
+                'symbol': symbol,
+                'message': 'Yahoo Finance API may be down or rate limiting'
+            }), 503
+        
+        if stock_data.empty:
+            return jsonify({
+                'status': 'failed',
+                'error': 'Empty data returned',
+                'symbol': symbol,
+                'message': 'Symbol may be invalid or data not available'
+            }), 404
+        
+        return jsonify({
+            'status': 'success',
+            'symbol': symbol,
+            'rows': len(stock_data),
+            'columns': list(stock_data.columns),
+            'latest_price': float(stock_data['Close'].iloc[-1]) if 'Close' in stock_data.columns else None,
+            'message': 'Yahoo Finance connection working'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error testing Yahoo Finance: {e}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+            'message': 'Exception during Yahoo Finance test'
+        }), 500
+
+
 @app.route('/dashboard')
 def dashboard():
     """Render the enhanced dashboard with watchlist, alerts, and comparison features."""
@@ -297,12 +341,20 @@ def analyze_stock():
         stock_data = data_fetcher.fetch_stock_data(symbol, period, interval)
         
         if stock_data is None:
-            logger.error(f"No data returned for {symbol}")
-            return jsonify({'error': f'No data found for {symbol}. Please verify the symbol is correct.'}), 404
+            logger.error(f"No data returned for {symbol} - check Yahoo Finance API status")
+            return jsonify({
+                'error': f'Unable to fetch data for {symbol}. Yahoo Finance may be rate limiting or the symbol may be invalid.',
+                'symbol': symbol,
+                'suggestion': 'Try again in a few moments or verify the symbol is correct.'
+            }), 503
         
         if stock_data.empty:
             logger.error(f"Empty dataframe for {symbol}")
-            return jsonify({'error': f'No data available for {symbol}'}), 404
+            return jsonify({
+                'error': f'No data available for {symbol}',
+                'symbol': symbol,
+                'suggestion': 'Please verify the symbol is correct.'
+            }), 404
         
         logger.info(f"Data fetched: {len(stock_data)} rows")
         

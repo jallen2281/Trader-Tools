@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None
-_min_request_interval = 0.5  # Minimum 500ms between requests
+_min_request_interval = 0.2  # Minimum 200ms between requests (reduced from 500ms)
 
 
 def _rate_limited_request():
@@ -34,7 +34,7 @@ class FinancialDataFetcher:
     def __init__(self):
         """Initialize the data fetcher."""
         self.cache = {}
-        self.cache_ttl = timedelta(minutes=5)  # Cache for 5 minutes
+        self.cache_ttl = timedelta(minutes=2)  # Cache for 2 minutes (reduced from 5)
         # Common index symbol mappings
         self.symbol_map = {
             'SPX': '^GSPC',
@@ -115,41 +115,49 @@ class FinancialDataFetcher:
                 # Rate limit requests
                 _rate_limited_request()
                 
-                print(f"Fetching data for {symbol} (as {normalized_symbol})...")
+                logger.info(f"Fetching data for {symbol} (as {normalized_symbol}, period={period}, interval={interval})...")
                 
                 ticker = yf.Ticker(normalized_symbol)
                 
                 # Try to fetch history with error handling
                 try:
                     data = ticker.history(period=period, interval=interval)
+                    logger.debug(f"yfinance returned data type: {type(data)}, empty: {data.empty if hasattr(data, 'empty') else 'N/A'}")
                 except TypeError as te:
-                    print(f"TypeError fetching {symbol}: {te}")
+                    logger.error(f"TypeError fetching {symbol}: {te}")
                     # Sometimes yfinance has issues, try with different parameters
                     try:
                         data = ticker.history(period=period)
                     except Exception as retry_error:
-                        print(f"Retry also failed for {symbol}: {retry_error}")
+                        logger.error(f"Retry also failed for {symbol}: {retry_error}")
                         if attempt < max_retries - 1:
                             continue
                         return None
                 except AttributeError as ae:
-                    print(f"AttributeError fetching {symbol}: {ae}")
-                    print("This may indicate yfinance version issues")
+                    logger.error(f"AttributeError fetching {symbol}: {ae}")
+                    logger.error("This may indicate yfinance version issues")
+                    return None
+                except Exception as fetch_error:
+                    logger.error(f"Unexpected error fetching {symbol}: {fetch_error}", exc_info=True)
+                    if attempt < max_retries - 1:
+                        continue
                     return None
                 
                 if data is None:
-                    print(f"No data returned (None) for {symbol} (tried {normalized_symbol})")
-                    if "429" in str(data) or attempt < max_retries - 1:
-                        continue  # Retry on rate limit
+                    logger.warning(f"No data returned (None) for {symbol} (tried {normalized_symbol})")
+                    if attempt < max_retries - 1:
+                        continue  # Retry
                     return None
                     
                 if data.empty:
-                    print(f"Empty data returned for {symbol} (tried {normalized_symbol})")
+                    logger.warning(f"Empty DataFrame returned for {symbol} (tried {normalized_symbol})")
                     if attempt < max_retries - 1:
+                        logger.info(f"Retrying empty response for {symbol}...")
                         continue  # Retry on empty response (might be rate limiting)
+                    logger.error(f"❌ Failed to fetch {symbol} after {max_retries} attempts - all returned empty")
                     return None
                 
-                print(f"✓ Fetched {len(data)} rows for {symbol}")
+                logger.info(f"✓ Successfully fetched {len(data)} rows for {symbol}")
                 
                 # Add useful calculated fields
                 data['Symbol'] = symbol
@@ -166,15 +174,16 @@ class FinancialDataFetcher:
                 # Check if it's a rate limiting error
                 if "429" in error_msg or "too many requests" in error_msg or "rate limit" in error_msg:
                     if attempt < max_retries - 1:
-                        logger.warning(f"⚠ Rate limit hit for {symbol}, retrying...")
+                        logger.warning(f"⚠ Rate limit (429) hit for {symbol}, retrying...")
                         continue
+                    else:
+                        logger.error(f"❌ Rate limit persists for {symbol} after {max_retries} attempts")
+                        return None
                 
-                print(f"Error fetching data for {symbol}: {e}")
+                logger.error(f"Error fetching data for {symbol}: {e}", exc_info=True)
                 if attempt < max_retries - 1:
+                    logger.info(f"Retrying {symbol} due to error: {e}")
                     continue
-                import traceback
-                traceback.print_exc()
-                return None
         
         # All retries exhausted
         logger.error(f"✗ Failed to fetch {symbol} after {max_retries} attempts")
