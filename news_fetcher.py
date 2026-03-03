@@ -13,8 +13,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Import rate limiter from data_fetcher
-from data_fetcher import _rate_limited_request
+# Import rate limiter and browser session from data_fetcher
+from data_fetcher import _rate_limited_request, _browser_session
 
 
 class NewsFetcher:
@@ -51,7 +51,8 @@ class NewsFetcher:
                     # Rate limit requests to avoid overwhelming Yahoo Finance
                     _rate_limited_request()
                     
-                    ticker = yf.Ticker(symbol)
+                    # Use browser impersonation if available
+                    ticker = yf.Ticker(symbol, session=_browser_session) if _browser_session else yf.Ticker(symbol)
                     ticker_news = ticker.news
                     
                     if ticker_news:
@@ -182,7 +183,8 @@ class NewsFetcher:
             
             for symbol in symbols:
                 try:
-                    ticker = yf.Ticker(symbol)
+                    # Use browser impersonation if available
+                    ticker = yf.Ticker(symbol, session=_browser_session) if _browser_session else yf.Ticker(symbol)
                     
                     # Get earnings dates
                     earnings_dates = ticker.get_earnings_dates(limit=4)
@@ -244,7 +246,8 @@ class NewsFetcher:
             
             for symbol in symbols[:limit]:
                 try:
-                    ticker = yf.Ticker(symbol)
+                    # Use browser impersonation if available
+                    ticker = yf.Ticker(symbol, session=_browser_session) if _browser_session else yf.Ticker(symbol)
                     news_count = len(ticker.news) if ticker.news else 0
                     info = ticker.info
                     
@@ -421,7 +424,8 @@ class NewsFetcher:
             
             for symbol, name in indices.items():
                 try:
-                    ticker = yf.Ticker(symbol)
+                    # Use browser impersonation if available
+                    ticker = yf.Ticker(symbol, session=_browser_session) if _browser_session else yf.Ticker(symbol)
                     info = ticker.info
                     
                     market_data[symbol] = {
