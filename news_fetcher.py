@@ -59,7 +59,13 @@ class NewsFetcher:
                             news_items.append(news_item)
                 
                 except Exception as e:
-                    logger.warning(f"Error fetching news for {symbol}: {e}")
+                    error_msg = str(e).lower()
+                    if "expecting value" in error_msg or "json" in error_msg:
+                        logger.warning(f"⚠ Yahoo Finance API rate limit or empty response for {symbol} (JSON parse error)")
+                    elif "429" in error_msg or "too many requests" in error_msg:
+                        logger.warning(f"⚠ Yahoo Finance rate limit hit for {symbol}")
+                    else:
+                        logger.warning(f"Error fetching news for {symbol}: {e}")
                     continue
             
             # Remove duplicates by link
@@ -130,7 +136,13 @@ class NewsFetcher:
             return articles
         
         except Exception as e:
-            logger.error(f"Error fetching news for {symbol}: {e}")
+            error_msg = str(e).lower()
+            if "expecting value" in error_msg or "json" in error_msg:
+                logger.warning(f"⚠ Yahoo Finance API rate limit or empty response for {symbol} (JSON parse error)")
+            elif "429" in error_msg or "too many requests" in error_msg:
+                logger.warning(f"⚠ Yahoo Finance rate limit hit for {symbol}")
+            else:
+                logger.error(f"Error fetching symbol news for {symbol}: {e}")
             return []
     
     def get_earnings_calendar(self, days_ahead: int = 7) -> List[Dict]:
