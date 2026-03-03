@@ -6,16 +6,28 @@ from datetime import datetime, timedelta
 import time
 import logging
 import threading
+import requests
 
 logger = logging.getLogger(__name__)
 
-# Configure yfinance to be more reliable
+# Configure requests session with proper headers
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Accept-Encoding': 'gzip, deflate',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1'
+})
+
+# Configure yfinance to use our session
 yf.pdr_override()
 
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None
-_min_request_interval = 0.2  # Minimum 200ms between requests (reduced from 500ms)
+_min_request_interval = 1.0  # Increase to 1 second between requests
 
 
 def _rate_limited_request():
@@ -120,42 +132,52 @@ class FinancialDataFetcher:
                 
                 logger.info(f"Fetching data for {symbol} (as {normalized_symbol}, period={period}, interval={interval})...")
                 
-                # Use yfinance download instead of Ticker for better reliability
+                # Use yfinance download with session for better reliability
                 try:
-                    data = yf.download(
-                        tickers=normalized_symbol,
+                    ticker = yf.Ticker(normalized_symbol, session=session)
+                    data = ticker.history(
                         period=period,
                         interval=interval,
-                        progress=False,
-                        show_errors=False
+                        raise_errors=True
                     )
-                    logger.debug(f"yfinance download returned: type={type(data)}, shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
+                    logger.debug(f"yfinance Ticker.history returned: type={type(data)}, shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
+                    
+                    # If empty, try download as fallback
+                    if data.empty:
+                        logger.warning(f"Ticker.history returned empty, trying yf.download for {symbol}...")
+                        data = yf.download(
+                            tickers=normalized_symbol,
+                            period=period,
+                            interval=interval,
+                            progress=False,
+                            show_errors=False
+                        )
+                        logger.debug(f"yf.download fallback returned: shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
+                    
                 except Exception as download_error:
-                    logger.error(f"yfinance download failed for {symbol}: {download_error}", exc_info=True)
-                    # Fallback to Ticker method
-                    try:
-                        logger.info(f"Trying Ticker fallback for {symbol}...")
-                        ticker = yf.Ticker(normalized_symbol)
-                        data = ticker.history(period=period, interval=interval)
-                        logger.debug(f"Ticker fallback returned: type={type(data)}, empty={data.empty if hasattr(data, 'empty') else 'N/A'}")
-                    except Exception as ticker_error:
-                        logger.error(f"Ticker fallback also failed for {symbol}: {ticker_error}", exc_info=True)
-                        if attempt < max_retries - 1:
-                            continue
-                        return None
+                    logger.error(f"yfinance fetch failed for {symbol}: {download_error}", exc_info=True)
+                    if attempt < max_retries - 1:
+                        continue
+                    return None
                 
                 if data is None:
                     logger.warning(f"No data returned (None) for {symbol} (tried {normalized_symbol})")
                     if attempt < max_retries - 1:
+                        logger.info(f"Will retry {symbol} (attempt {attempt + 2}/{max_retries})")
                         continue  # Retry
                     return None
                     
                 if data.empty:
                     logger.warning(f"Empty DataFrame returned for {symbol} (tried {normalized_symbol})")
                     if attempt < max_retries - 1:
-                        logger.info(f"Retrying empty response for {symbol}...")
-                        continue  # Retry on empty response (might be rate limiting)
+                        logger.info(f"Retrying empty response for {symbol} (attempt {attempt + 2}/{max_retries})...")
+                        # Increase wait time for empty responses - likely rate limiting
+                        extra_wait = 5 + (attempt * 3)  # 5s, 8s, 11s
+                        logger.info(f"Waiting extra {extra_wait}s due to empty response...")
+                        time.sleep(extra_wait)
+                        continue
                     logger.error(f"❌ Failed to fetch {symbol} after {max_retries} attempts - all returned empty")
+                    logger.error(f"⚠ Yahoo Finance may be blocking this IP address or rate limiting heavily")
                     return None
                 
                 logger.info(f"✓ Successfully fetched {len(data)} rows for {symbol}")
@@ -231,18 +253,14 @@ class FinancialDataFetcher:
             # Rate limit requests
             _rate_limited_request()
             
-            # Use download for reliability
-            data = yf.download(
-                tickers=normalized_symbol,
-                period="1d",
-                progress=False,
-                show_errors=False
-            )
+            # Use Ticker with session for reliability
+            ticker = yf.Ticker(normalized_symbol, session=session)
+            data = ticker.history(period="1d")
             
             if data is not None and not data.empty:
                 return float(data['Close'].iloc[-1])
             
-            logger.warning(f"No price data for {symbol}")
+            logger.warning(f"No price data for {symbol} - empty response from Yahoo Finance")
             return None
         except Exception as e:
             logger.warning(f"Error getting latest price for {symbol}: {e}")
