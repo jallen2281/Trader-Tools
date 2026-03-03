@@ -92,6 +92,7 @@ config:
   logLevel: INFO
   
   # Ollama Configuration
+  ollamaBaseUrl: http://localhost:11434
   ollamaModel: llama3.2
   ollamaTimeout: "120"
   useVision: "False"
@@ -130,7 +131,7 @@ secrets:
   alphaVantageApiKey: ""
   newsApiKey: ""
   quandlApiKey: ""
-  ollamaBaseUrl: "http://localhost:11434"
+  # ollamaBaseUrl moved to config (not sensitive)
 
 nodeSelector: {}
 

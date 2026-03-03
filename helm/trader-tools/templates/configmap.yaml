@@ -15,6 +15,8 @@ data:
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
   
   # Ollama Configuration
+  OLLAMA_BASE_URL: {{ .Values.config.ollamaBaseUrl | quote }}
+  OLLAMA_HOST: {{ .Values.config.ollamaBaseUrl | quote }}
   OLLAMA_MODEL: {{ .Values.config.ollamaModel | quote }}
   OLLAMA_TIMEOUT: {{ .Values.config.ollamaTimeout | quote }}
   
