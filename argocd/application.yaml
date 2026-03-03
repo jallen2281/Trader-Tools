@@ -78,6 +78,10 @@ spec:
           targetCPUUtilizationPercentage: 70
           targetMemoryUtilizationPercentage: 80
         
+        # Configuration overrides
+        config:
+          ollamaBaseUrl: http://node1:11434
+        
         # SECRETS - Pass via Helm values
         # IMPORTANT: Helm will create the secret automatically
 #        secrets:
