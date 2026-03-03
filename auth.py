@@ -78,11 +78,17 @@ def verify_session_token(token):
 
 def get_auth_routes(google):
     """Return authentication route handlers"""
+    from flask import current_app
     
     def login():
         """Initiate Google OAuth login"""
-        if current_user.is_authenticated:
-            return redirect(url_for('dashboard'))
+        # Only check authentication if login_manager is initialized
+        if hasattr(current_app, 'login_manager'):
+            try:
+                if current_user.is_authenticated:
+                    return redirect(url_for('dashboard'))
+            except:
+                pass
         
         redirect_uri = url_for('authorize', _external=True)
         return google.authorize_redirect(redirect_uri)
@@ -114,18 +120,25 @@ def get_auth_routes(google):
     
     def logout_route():
         """Log out current user"""
-        if current_user.is_authenticated:
-            # Invalidate session token
-            token = session.get('token')
-            if token:
-                session_obj = UserSession.query.filter_by(session_token=token).first()
-                if session_obj:
-                    db.session.delete(session_obj)
-                    db.session.commit()
-            
-            logout_user()
-            session.clear()
+        from flask import current_app
         
+        # Only process logout if login_manager is initialized
+        if hasattr(current_app, 'login_manager'):
+            try:
+                if current_user.is_authenticated:
+                    # Invalidate session token
+                    token = session.get('token')
+                    if token:
+                        session_obj = UserSession.query.filter_by(session_token=token).first()
+                        if session_obj:
+                            db.session.delete(session_obj)
+                            db.session.commit()
+                    
+                    logout_user()
+            except:
+                pass  # login_manager not properly initialized
+        
+        session.clear()
         return redirect(url_for('index'))
     
     return {
@@ -138,6 +151,8 @@ def get_auth_routes(google):
 def require_api_auth(f):
     """Decorator for API endpoints that require authentication"""
     def decorated_function(*args, **kwargs):
+        from flask import current_app
+        
         # Check session token
         token = request.headers.get('Authorization')
         if token and token.startswith('Bearer '):
@@ -148,9 +163,17 @@ def require_api_auth(f):
                 request.current_user = user
                 return f(*args, **kwargs)
         
-        # Check if user is logged in via Flask-Login
-        if current_user.is_authenticated:
-            request.current_user = current_user
+        # Check if user is logged in via Flask-Login (only if login_manager is initialized)
+        if hasattr(current_app, 'login_manager'):
+            try:
+                if current_user.is_authenticated:
+                    request.current_user = current_user
+                    return f(*args, **kwargs)
+            except:
+                pass  # login_manager not properly initialized
+        
+        # If no authentication is configured, allow access (development mode)
+        if not hasattr(current_app, 'login_manager'):
             return f(*args, **kwargs)
         
         return {'error': 'Authentication required'}, 401
