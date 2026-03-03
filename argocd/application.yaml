@@ -80,6 +80,8 @@ spec:
         
         # Configuration overrides
         config:
+          llmProvider: rkllm  # Use RKLLM server on Turing Pi
+          rkllmBaseUrl: http://node1:8000
           ollamaBaseUrl: http://node1:11434
         
         # SECRETS - Pass via Helm values

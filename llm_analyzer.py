@@ -1,5 +1,6 @@
-"""Module for integrating with local LLM via Ollama."""
+"""Module for integrating with local LLM via Ollama or RKLLM."""
 import ollama
+import requests
 import base64
 from typing import Optional, Dict, List
 from config import Config
@@ -9,15 +10,44 @@ import threading
 
 
 class LLMAnalyzer:
-    """Analyzes financial charts using a local LLM."""
+    """Analyzes financial charts using a local LLM (Ollama or RKLLM)."""
     
     def __init__(self):
         """Initialize the LLM analyzer."""
         self.config = Config()
         self.client = None
+        self.provider = self.config.LLM_PROVIDER
         self._initialize_client()
     
     def _initialize_client(self):
+        """Initialize LLM client based on provider."""
+        if self.provider == 'rkllm':
+            self._initialize_rkllm()
+        else:
+            self._initialize_ollama()
+    
+    def _initialize_rkllm(self):
+        """Initialize RKLLM client."""
+        try:
+            # Test connection to RKLLM server
+            url = f"{self.config.RKLLM_BASE_URL}{self.config.RKLLM_ENDPOINT}"
+            response = requests.post(
+                url,
+                json={"messages": [{"role": "user", "content": "test"}]},
+                timeout=5
+            )
+            if response.status_code == 200:
+                self.client = True
+                print(f"✓ Connected to RKLLM at {self.config.RKLLM_BASE_URL}")
+            else:
+                raise Exception(f"RKLLM returned status {response.status_code}")
+        except Exception as e:
+            print(f"✗ Could not connect to RKLLM: {e}")
+            print(f"  Trying Ollama as fallback...")
+            self.provider = 'ollama'
+            self._initialize_ollama()
+    
+    def _initialize_ollama(self):
         """Initialize Ollama client."""
         try:
             # Test connection
@@ -28,6 +58,49 @@ class LLMAnalyzer:
             print(f"✗ Could not connect to Ollama: {e}")
             print("Make sure Ollama is running: 'ollama serve'")
             self.client = False
+    
+    def _call_llm(self, messages: List[Dict], timeout: int = 45) -> Optional[str]:
+        """Call LLM provider (RKLLM or Ollama) with timeout."""
+        if self.provider == 'rkllm':
+            return self._call_rkllm(messages, timeout)
+        else:
+            return self._call_ollama(messages, timeout)
+    
+    def _call_rkllm(self, messages: List[Dict], timeout: int = 45) -> Optional[str]:
+        """Call RKLLM server with OpenAI-compatible API."""
+        try:
+            url = f"{self.config.RKLLM_BASE_URL}{self.config.RKLLM_ENDPOINT}"
+            response = requests.post(
+                url,
+                json={"messages": messages},
+                timeout=timeout
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # Parse OpenAI-compatible response
+            if 'choices' in data and len(data['choices']) > 0:
+                return data['choices'][0]['message']['content']
+            elif 'content' in data:
+                return data['content']
+            else:
+                return data.get('response', str(data))
+        except Exception as e:
+            print(f"✗ RKLLM error: {e}")
+            return None
+    
+    def _call_ollama(self, messages: List[Dict], timeout: int = 45) -> Optional[str]:
+        """Call Ollama with timeout."""
+        model = self.config.FALLBACK_MODEL
+        response = self._call_ollama_with_timeout(
+            model=model,
+            messages=messages,
+            options={'temperature': 0.7, 'num_predict': 400},
+            timeout=timeout
+        )
+        if response:
+            return response['message']['content']
+        return None
     
     def _call_ollama_with_timeout(self, model: str, messages: List[Dict], options: Dict, timeout: int = 20) -> Optional[Dict]:
         """Call Ollama with timeout to prevent hanging."""
@@ -149,15 +222,12 @@ class LLMAnalyzer:
             prompt = self._build_analysis_prompt(symbol, indicators, patterns, context)
             prompt += "\n\nNote: Analyzing based on technical indicators and patterns."
             
-            # Use fallback model (text-only)
-            model = self.config.FALLBACK_MODEL
-            print(f"Using text-only model: {model}")
+            # Call LLM provider
+            print(f"Using {self.provider.upper()} for text-only analysis")
             
-            response = self._call_ollama_with_timeout(
-                model=model,
+            result = self._call_llm(
                 messages=[{'role': 'user', 'content': prompt}],
-                options={'temperature': 0.7, 'num_predict': 400},
-                timeout=45  # 45 second timeout for full analysis
+                timeout=45
             )
             
             if response is None:
