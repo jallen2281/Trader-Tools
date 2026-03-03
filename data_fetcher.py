@@ -6,25 +6,13 @@ from datetime import datetime, timedelta
 import time
 import logging
 import threading
-import requests
 
 logger = logging.getLogger(__name__)
-
-# Configure requests session with proper headers
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1'
-})
 
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None
-_min_request_interval = 3.0  # 3 seconds between requests (Yahoo Finance is very aggressive)
+_min_request_interval = 2.0  # 2 seconds between requests
 
 # Track 429 errors for adaptive backoff
 _last_429_time = None
@@ -32,25 +20,17 @@ _consecutive_429s = 0
 
 
 def _rate_limited_request():
-    """Rate limit Yahoo Finance requests with adaptive backoff for 429 errors."""
-    global _last_request_time, _last_429_time, _consecutive_429s
+    """
+    Global rate limiter for all Yahoo Finance API requests.
+    Simple delay - let yfinance handle its own session management.
+    """
+    global _last_request_time
     
     with _request_lock:
-        # If we recently got 429 errors, add extra delay
-        extra_delay = 0
-        if _last_429_time is not None:
-            time_since_429 = time.time() - _last_429_time
-            if time_since_429 < 60:  # Within last minute
-                # Exponential backoff based on consecutive 429s
-                extra_delay = min(10 * (2 ** _consecutive_429s), 60)  # Cap at 60 seconds
-                logger.warning(f"Recent 429 errors - adding {extra_delay}s extra delay")
-        
-        base_interval = _min_request_interval + extra_delay
-        
         if _last_request_time is not None:
             elapsed = time.time() - _last_request_time
-            if elapsed < base_interval:
-                sleep_time = base_interval - elapsed
+            if elapsed < _min_request_interval:
+                sleep_time = _min_request_interval - elapsed
                 logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
                 time.sleep(sleep_time)
         _last_request_time = time.time()
@@ -147,51 +127,18 @@ class FinancialDataFetcher:
                 
                 logger.info(f"Fetching data for {symbol} (as {normalized_symbol}, period={period}, interval={interval})...")
                 
-                # Use yfinance download with session for better reliability
+                # Let yfinance handle its own session - it has built-in rate limiting
                 try:
-                    ticker = yf.Ticker(normalized_symbol, session=session)
+                    ticker = yf.Ticker(normalized_symbol)
                     data = ticker.history(
                         period=period,
-                        interval=interval,
-                        raise_errors=True
+                        interval=interval
                     )
-                    logger.debug(f"yfinance Ticker.history returned: type={type(data)}, shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
+                    logger.debug(f"yfinance returned: type={type(data)}, shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
                     
-                    # Reset 429 counter on success
-                    _consecutive_429s = 0
-                    
-                    # If empty, try download as fallback
-                    if data.empty:
-                        logger.warning(f"Ticker.history returned empty, trying yf.download for {symbol}...")
-                        data = yf.download(
-                            tickers=normalized_symbol,
-                            period=period,
-                            interval=interval,
-                            progress=False,
-                            show_errors=False
-                        )
-                        logger.debug(f"yf.download fallback returned: shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
-                    
-                except Exception as download_error:
-                    error_msg = str(download_error)
+                except Exception as fetch_error:
+                    error_msg = str(fetch_error)
                     logger.error(f"yfinance fetch failed for {symbol}: {error_msg}")
-                    
-                    # Check if it's a 429 error
-                    if "429" in error_msg or "Too Many Requests" in error_msg:
-                        _last_429_time = time.time()
-                        _consecutive_429s += 1
-                        backoff_time = min(30 * (2 ** _consecutive_429s), 120)  # 30s, 60s, 120s
-                        logger.error(f"⚠ HTTP 429 Rate Limit! Backing off {backoff_time}s before retry")
-                        if attempt < max_retries - 1:
-                            time.sleep(backoff_time)
-                            continue
-                    
-                    if attempt < max_retries - 1:
-                        retry_delay = 10 + (attempt * 5)  # 10s, 15s
-                        logger.info(f"Waiting {retry_delay}s before retry...")
-                        time.sleep(retry_delay)
-                        continue
-                    return None
                 
                 if data is None:
                     logger.warning(f"No data returned (None) for {symbol} (tried {normalized_symbol})")
@@ -204,14 +151,11 @@ class FinancialDataFetcher:
                     logger.warning(f"Empty DataFrame returned for {symbol} (tried {normalized_symbol})")
                     if attempt < max_retries - 1:
                         logger.info(f"Retrying empty response for {symbol} (attempt {attempt + 2}/{max_retries})...")
-                        # Increase wait time for empty responses - likely rate limiting
-                        extra_wait = 15 + (attempt * 10)  # 15s, 25s
-                        logger.warning(f"⚠ Waiting {extra_wait}s due to empty response (possible rate limit)...")
-                        time.sleep(extra_wait)
+                        retry_delay = 5 + (attempt * 3)  # 5s, 8s
+                        logger.info(f"Waiting {retry_delay}s due to empty response...")
+                        time.sleep(retry_delay)
                         continue
                     logger.error(f"❌ Failed to fetch {symbol} after {max_retries} attempts - all returned empty")
-                    logger.error(f"⚠ Yahoo Finance is heavily rate limiting or blocking this IP address")
-                    logger.error(f"⚠ Consider reducing monitoring frequency or number of symbols tracked")
                     return None
                 
                 logger.info(f"✓ Successfully fetched {len(data)} rows for {symbol}")
@@ -287,14 +231,14 @@ class FinancialDataFetcher:
             # Rate limit requests
             _rate_limited_request()
             
-            # Use Ticker with session for reliability
-            ticker = yf.Ticker(normalized_symbol, session=session)
+            # Use simple Ticker - let yfinance handle sessions
+            ticker = yf.Ticker(normalized_symbol)
             data = ticker.history(period="1d")
             
             if data is not None and not data.empty:
                 return float(data['Close'].iloc[-1])
             
-            logger.warning(f"No price data for {symbol} - empty response from Yahoo Finance")
+            logger.warning(f"No price data for {symbol}")
             return None
         except Exception as e:
             logger.warning(f"Error getting latest price for {symbol}: {e}")
