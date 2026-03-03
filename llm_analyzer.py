@@ -60,34 +60,68 @@ class LLMAnalyzer:
             self.client = False
     
     def _call_llm(self, messages: List[Dict], timeout: int = 45) -> Optional[str]:
-        """Call LLM provider (RKLLM or Ollama) with timeout."""
+        """Call LLM provider (RKLLM or Ollama) with timeout and automatic fallback."""
         if self.provider == 'rkllm':
-            return self._call_rkllm(messages, timeout)
+            result = self._call_rkllm(messages, timeout)
+            # If RKLLM fails (busy/error), try Ollama as fallback
+            if result is None and hasattr(self.config, 'OLLAMA_BASE_URL'):
+                print("→ RKLLM unavailable, falling back to Ollama...")
+                return self._call_ollama(messages, timeout)
+            return result
         else:
             return self._call_ollama(messages, timeout)
     
-    def _call_rkllm(self, messages: List[Dict], timeout: int = 45) -> Optional[str]:
-        """Call RKLLM server with OpenAI-compatible API."""
-        try:
-            url = f"{self.config.RKLLM_BASE_URL}{self.config.RKLLM_ENDPOINT}"
-            response = requests.post(
-                url,
-                json={"messages": messages},
-                timeout=timeout
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            # Parse OpenAI-compatible response
-            if 'choices' in data and len(data['choices']) > 0:
-                return data['choices'][0]['message']['content']
-            elif 'content' in data:
-                return data['content']
-            else:
-                return data.get('response', str(data))
-        except Exception as e:
-            print(f"✗ RKLLM error: {e}")
-            return None
+    def _call_rkllm(self, messages: List[Dict], timeout: int = 45, retries: int = 3) -> Optional[str]:
+        """Call RKLLM server with OpenAI-compatible API and retry on 503."""
+        import time
+        
+        for attempt in range(retries):
+            try:
+                url = f"{self.config.RKLLM_BASE_URL}{self.config.RKLLM_ENDPOINT}"
+                response = requests.post(
+                    url,
+                    json={"messages": messages},
+                    timeout=timeout
+                )
+                
+                # Handle 503 Service Unavailable (server busy)
+                if response.status_code == 503:
+                    if attempt < retries - 1:
+                        wait_time = (attempt + 1) * 2  # 2s, 4s, 6s backoff
+                        print(f"⚠ RKLLM server busy (503), retrying in {wait_time}s... (attempt {attempt + 1}/{retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"✗ RKLLM server busy after {retries} attempts, falling back to Ollama")
+                        return None
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                # Parse OpenAI-compatible response
+                if 'choices' in data and len(data['choices']) > 0:
+                    return data['choices'][0]['message']['content']
+                elif 'content' in data:
+                    return data['content']
+                else:
+                    return data.get('response', str(data))
+                    
+            except requests.exceptions.Timeout:
+                print(f"⚠ RKLLM request timeout (attempt {attempt + 1}/{retries})")
+                if attempt < retries - 1:
+                    time.sleep(2)
+                    continue
+                return None
+            except Exception as e:
+                if attempt < retries - 1 and '503' in str(e):
+                    wait_time = (attempt + 1) * 2
+                    print(f"⚠ RKLLM error (503), retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                print(f"✗ RKLLM error: {e}")
+                return None
+        
+        return None
     
     def _call_ollama(self, messages: List[Dict], timeout: int = 45) -> Optional[str]:
         """Call Ollama with timeout."""
