@@ -527,6 +527,7 @@ def generate_technical_chart():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/health', methods=['GET'])
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Simple health check endpoint."""
