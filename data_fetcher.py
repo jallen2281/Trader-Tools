@@ -21,9 +21,6 @@ session.headers.update({
     'Upgrade-Insecure-Requests': '1'
 })
 
-# Configure yfinance to use our session
-yf.pdr_override()
-
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None
