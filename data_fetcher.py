@@ -9,6 +9,9 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+# Configure yfinance to be more reliable
+yf.pdr_override()
+
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None
@@ -117,31 +120,29 @@ class FinancialDataFetcher:
                 
                 logger.info(f"Fetching data for {symbol} (as {normalized_symbol}, period={period}, interval={interval})...")
                 
-                ticker = yf.Ticker(normalized_symbol)
-                
-                # Try to fetch history with error handling
+                # Use yfinance download instead of Ticker for better reliability
                 try:
-                    data = ticker.history(period=period, interval=interval)
-                    logger.debug(f"yfinance returned data type: {type(data)}, empty: {data.empty if hasattr(data, 'empty') else 'N/A'}")
-                except TypeError as te:
-                    logger.error(f"TypeError fetching {symbol}: {te}")
-                    # Sometimes yfinance has issues, try with different parameters
+                    data = yf.download(
+                        tickers=normalized_symbol,
+                        period=period,
+                        interval=interval,
+                        progress=False,
+                        show_errors=False
+                    )
+                    logger.debug(f"yfinance download returned: type={type(data)}, shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
+                except Exception as download_error:
+                    logger.error(f"yfinance download failed for {symbol}: {download_error}", exc_info=True)
+                    # Fallback to Ticker method
                     try:
-                        data = ticker.history(period=period)
-                    except Exception as retry_error:
-                        logger.error(f"Retry also failed for {symbol}: {retry_error}")
+                        logger.info(f"Trying Ticker fallback for {symbol}...")
+                        ticker = yf.Ticker(normalized_symbol)
+                        data = ticker.history(period=period, interval=interval)
+                        logger.debug(f"Ticker fallback returned: type={type(data)}, empty={data.empty if hasattr(data, 'empty') else 'N/A'}")
+                    except Exception as ticker_error:
+                        logger.error(f"Ticker fallback also failed for {symbol}: {ticker_error}", exc_info=True)
                         if attempt < max_retries - 1:
                             continue
                         return None
-                except AttributeError as ae:
-                    logger.error(f"AttributeError fetching {symbol}: {ae}")
-                    logger.error("This may indicate yfinance version issues")
-                    return None
-                except Exception as fetch_error:
-                    logger.error(f"Unexpected error fetching {symbol}: {fetch_error}", exc_info=True)
-                    if attempt < max_retries - 1:
-                        continue
-                    return None
                 
                 if data is None:
                     logger.warning(f"No data returned (None) for {symbol} (tried {normalized_symbol})")
@@ -230,10 +231,18 @@ class FinancialDataFetcher:
             # Rate limit requests
             _rate_limited_request()
             
-            ticker = yf.Ticker(normalized_symbol)
-            data = ticker.history(period="1d")
+            # Use download for reliability
+            data = yf.download(
+                tickers=normalized_symbol,
+                period="1d",
+                progress=False,
+                show_errors=False
+            )
+            
             if data is not None and not data.empty:
                 return float(data['Close'].iloc[-1])
+            
+            logger.warning(f"No price data for {symbol}")
             return None
         except Exception as e:
             logger.warning(f"Error getting latest price for {symbol}: {e}")

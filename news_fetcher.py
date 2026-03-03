@@ -13,6 +13,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# Configure yfinance
+yf.pdr_override()
+
 # Import rate limiter from data_fetcher
 from data_fetcher import _rate_limited_request
 
