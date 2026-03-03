@@ -424,8 +424,8 @@ class NewsFetcher:
             
             for symbol, name in indices.items():
                 try:
-# Use yfinance 1.2.0+ built-in session handling
-            ticker = yf.Ticker(symbol)
+                    # Use yfinance 1.2.0+ built-in session handling
+                    ticker = yf.Ticker(symbol)
                     info = ticker.info
                     
                     market_data[symbol] = {
