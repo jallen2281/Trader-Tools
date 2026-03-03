@@ -1,12 +1,28 @@
 """Module for fetching financial data from various sources."""
 import yfinance as yf
 import pandas as pd
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from datetime import datetime, timedelta
 import time
 import logging
 import threading
 import random
+
+# Import defeatbeta as secondary source and fallback
+try:
+    from defeatbeta_fetcher import fetch_stock_data as defeatbeta_fetch, \
+                                     get_latest_price as defeatbeta_price, \
+                                     fetch_financial_metrics, \
+                                     is_available as defeatbeta_available
+    DEFEATBETA_ENABLED = True
+    logger = logging.getLogger(__name__)
+    if defeatbeta_available():
+        logger.info("✓ DefeatBeta API available as secondary source")
+except ImportError:
+    DEFEATBETA_ENABLED = False
+    defeatbeta_fetch = None
+    defeatbeta_price = None
+    fetch_financial_metrics = None
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +64,9 @@ class FinancialDataFetcher:
         """Initialize the data fetcher."""
         self.cache = {}
         self.cache_ttl = timedelta(minutes=10)  # Cache for 10 minutes to reduce API load
+        self.use_defeatbeta_fallback = DEFEATBETA_ENABLED
+        self.defeatbeta_as_secondary = DEFEATBETA_ENABLED
+        
         # Common index symbol mappings
         self.symbol_map = {
             'SPX': '^GSPC',
@@ -95,10 +114,11 @@ class FinancialDataFetcher:
         symbol: str, 
         period: str = "6mo",
         interval: str = "1d",
-        max_retries: int = 2  # Reduce retries since we have longer delays
+        max_retries: int = 2,  # Reduce retries since we have longer delays
+        include_defeatbeta_metrics: bool = False  # Get extra metrics from DefeatBeta
     ) -> Optional[pd.DataFrame]:
         """
-        Fetch stock data from Yahoo Finance with retry logic for rate limiting.
+        Fetch stock data from Yahoo Finance with DefeatBeta as fallback and secondary source.
         
         Args:
             symbol: Stock ticker symbol (e.g., 'AAPL', 'MSFT', 'SPX')
@@ -198,8 +218,24 @@ class FinancialDataFetcher:
                     logger.info(f"Retrying {symbol} due to error: {e}")
                     continue
         
-        # All retries exhausted
-        logger.error(f"✗ Failed to fetch {symbol} after {max_retries} attempts")
+        # All retries exhausted - try DefeatBeta fallback
+        if self.use_defeatbeta_fallback and defeatbeta_fetch:
+            logger.warning(f"⚠ yfinance failed for {symbol}, falling back to DefeatBeta API...")
+            try:
+                df = defeatbeta_fetch(normalized_symbol, period)
+                if df is not None and not df.empty:
+                    logger.info(f"✓ DefeatBeta fallback succeeded for {symbol} ({len(df)} rows)")
+                    df['Symbol'] = symbol
+                    df['Returns'] = df['Close'].pct_change()
+                    df['Cumulative_Returns'] = (1 + df['Returns']).cumprod()
+                    self._save_to_cache(cache_key, df)
+                    return df
+                else:
+                    logger.error(f"✗ DefeatBeta fallback also failed for {symbol}")
+            except Exception as e:
+                logger.error(f"✗ DefeatBeta fallback error for {symbol}: {e}")
+        
+        logger.error(f"✗ All data sources exhausted for {symbol}")
         return None
     
     def fetch_multiple_symbols(
@@ -228,7 +264,7 @@ class FinancialDataFetcher:
     
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """
-        Get the latest price for a symbol.
+        Get the latest price for a symbol with DefeatBeta fallback.
         
         Args:
             symbol: Stock ticker symbol
@@ -250,10 +286,31 @@ class FinancialDataFetcher:
             if data is not None and not data.empty:
                 return float(data['Close'].iloc[-1])
             
-            logger.warning(f"No price data for {symbol}")
+            logger.warning(f"No price data from yfinance for {symbol}")
+            
+            # Fallback to DefeatBeta
+            if self.use_defeatbeta_fallback and defeatbeta_price:
+                logger.info(f"Trying DefeatBeta for {symbol} price...")
+                price = defeatbeta_price(normalized_symbol)
+                if price:
+                    logger.info(f"✓ DefeatBeta provided price for {symbol}: ${price:.2f}")
+                    return price
+            
             return None
         except Exception as e:
-            logger.warning(f"Error getting latest price for {symbol}: {e}")
+            logger.warning(f"Error getting latest price from yfinance for {symbol}: {e}")
+            
+            # Fallback to DefeatBeta on error
+            if self.use_defeatbeta_fallback and defeatbeta_price:
+                try:
+                    normalized_symbol = self.normalize_symbol(symbol)
+                    price = defeatbeta_price(normalized_symbol)
+                    if price:
+                        logger.info(f"✓ DefeatBeta fallback price for {symbol}: ${price:.2f}")
+                        return price
+                except Exception as db_err:
+                    logger.error(f"DefeatBeta fallback also failed for {symbol}: {db_err}")
+            
             return None
     
     def get_company_info(self, symbol: str) -> dict:
@@ -299,3 +356,38 @@ class FinancialDataFetcher:
                 'market_cap': 'N/A',
                 'description': 'N/A'
             }
+    
+    def get_enriched_metrics(self, symbol: str) -> Dict[str, any]:
+        """
+        Get enriched financial metrics by combining yfinance + DefeatBeta data.
+        DefeatBeta provides: TTM P/E, ROE, Market Cap, and other fundamentals.
+        
+        Args:
+            symbol: Stock ticker symbol
+        
+        Returns:
+            Dictionary with combined metrics from both sources
+        """
+        metrics = {}
+        normalized_symbol = self.normalize_symbol(symbol)
+        
+        # Get yfinance info first
+        try:
+            ticker = yf.Ticker(normalized_symbol)
+            info = ticker.info
+            if info and isinstance(info, dict):
+                metrics['yf_pe'] = info.get('trailingPE')
+                metrics['yf_forward_pe'] = info.get('forwardPE')
+                metrics['yf_market_cap'] = info.get('marketCap')
+                metrics['yf_dividend_yield'] = info.get('dividendYield')
+                metrics['yf_beta'] = info.get('beta')
+                logger.debug(f\"Got yfinance metrics for {symbol}\")\n        except Exception as e:\n            logger.warning(f\"Could not get yfinance metrics for {symbol}: {e}\")\n        
+        # Enrich with DefeatBeta metrics (secondary source)
+        if self.defeatbeta_as_secondary and fetch_financial_metrics:
+            try:
+                db_metrics = fetch_financial_metrics(normalized_symbol)
+                if db_metrics:
+                    metrics['db_roe'] = db_metrics.get('roe')
+                    metrics['db_ttm_pe'] = db_metrics.get('pe_ratio')
+                    metrics['db_market_cap'] = db_metrics.get('market_cap')
+                    logger.info(f\"✓ Enriched {symbol} with DefeatBeta metrics: {list(db_metrics.keys())}\")\n            except Exception as e:\n                logger.debug(f\"Could not get DefeatBeta metrics for {symbol}: {e}\")\n        \n        return metrics if metrics else None
