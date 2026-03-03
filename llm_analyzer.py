@@ -230,11 +230,11 @@ class LLMAnalyzer:
                 timeout=45
             )
             
-            if response is None:
+            if result is None:
                 return "AI analysis timed out. Technical analysis shows: " + json.dumps(indicators, indent=2)
             
-            print(f"✓ Text-only analysis completed")
-            return response['message']['content']
+            print(f"✓ {self.provider.upper()} analysis completed")
+            return result
             
         except Exception as e:
             error_str = str(e).lower()
