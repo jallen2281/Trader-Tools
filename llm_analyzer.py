@@ -29,23 +29,15 @@ class LLMAnalyzer:
     def _initialize_rkllm(self):
         """Initialize RKLLM client."""
         try:
-            # Test connection to RKLLM server
-            url = f"{self.config.RKLLM_BASE_URL}{self.config.RKLLM_ENDPOINT}"
-            response = requests.post(
-                url,
-                json={"messages": [{"role": "user", "content": "test"}]},
-                timeout=5
-            )
-            if response.status_code == 200:
+            # Skip test connection - just verify URL is configured
+            if self.config.RKLLM_BASE_URL:
                 self.client = True
-                print(f"✓ Connected to RKLLM at {self.config.RKLLM_BASE_URL}")
+                print(f"✓ RKLLM configured at {self.config.RKLLM_BASE_URL}{self.config.RKLLM_ENDPOINT}")
             else:
-                raise Exception(f"RKLLM returned status {response.status_code}")
+                raise Exception("RKLLM_BASE_URL not configured")
         except Exception as e:
-            print(f"✗ Could not connect to RKLLM: {e}")
-            print(f"  Trying Ollama as fallback...")
-            self.provider = 'ollama'
-            self._initialize_ollama()
+            print(f"✗ Could not initialize RKLLM: {e}")
+            self.client = False
     
     def _initialize_ollama(self):
         """Initialize Ollama client."""
@@ -60,14 +52,9 @@ class LLMAnalyzer:
             self.client = False
     
     def _call_llm(self, messages: List[Dict], timeout: int = 45) -> Optional[str]:
-        """Call LLM provider (RKLLM or Ollama) with timeout and automatic fallback."""
+        """Call LLM provider (RKLLM or Ollama) with timeout."""
         if self.provider == 'rkllm':
-            result = self._call_rkllm(messages, timeout)
-            # If RKLLM fails (busy/error), try Ollama as fallback
-            if result is None and hasattr(self.config, 'OLLAMA_BASE_URL'):
-                print("→ RKLLM unavailable, falling back to Ollama...")
-                return self._call_ollama(messages, timeout)
-            return result
+            return self._call_rkllm(messages, timeout)
         else:
             return self._call_ollama(messages, timeout)
     
