@@ -27,17 +27,33 @@ yf.pdr_override()
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None
-_min_request_interval = 1.0  # Increase to 1 second between requests
+_min_request_interval = 3.0  # 3 seconds between requests (Yahoo Finance is very aggressive)
+
+# Track 429 errors for adaptive backoff
+_last_429_time = None
+_consecutive_429s = 0
 
 
 def _rate_limited_request():
-    """Rate limit Yahoo Finance requests across all instances."""
-    global _last_request_time
+    """Rate limit Yahoo Finance requests with adaptive backoff for 429 errors."""
+    global _last_request_time, _last_429_time, _consecutive_429s
+    
     with _request_lock:
+        # If we recently got 429 errors, add extra delay
+        extra_delay = 0
+        if _last_429_time is not None:
+            time_since_429 = time.time() - _last_429_time
+            if time_since_429 < 60:  # Within last minute
+                # Exponential backoff based on consecutive 429s
+                extra_delay = min(10 * (2 ** _consecutive_429s), 60)  # Cap at 60 seconds
+                logger.warning(f"Recent 429 errors - adding {extra_delay}s extra delay")
+        
+        base_interval = _min_request_interval + extra_delay
+        
         if _last_request_time is not None:
             elapsed = time.time() - _last_request_time
-            if elapsed < _min_request_interval:
-                sleep_time = _min_request_interval - elapsed
+            if elapsed < base_interval:
+                sleep_time = base_interval - elapsed
                 logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
                 time.sleep(sleep_time)
         _last_request_time = time.time()
@@ -49,7 +65,7 @@ class FinancialDataFetcher:
     def __init__(self):
         """Initialize the data fetcher."""
         self.cache = {}
-        self.cache_ttl = timedelta(minutes=2)  # Cache for 2 minutes (reduced from 5)
+        self.cache_ttl = timedelta(minutes=5)  # Cache for 5 minutes to reduce API load
         # Common index symbol mappings
         self.symbol_map = {
             'SPX': '^GSPC',
@@ -97,7 +113,7 @@ class FinancialDataFetcher:
         symbol: str, 
         period: str = "6mo",
         interval: str = "1d",
-        max_retries: int = 3
+        max_retries: int = 2  # Reduce retries since we have longer delays
     ) -> Optional[pd.DataFrame]:
         """
         Fetch stock data from Yahoo Finance with retry logic for rate limiting.
@@ -113,6 +129,8 @@ class FinancialDataFetcher:
         """
         # Normalize symbol (e.g., SPX -> ^GSPC)
         normalized_symbol = self.normalize_symbol(symbol)
+        
+        global _consecutive_429s
         
         # Check cache first
         cache_key = f"{normalized_symbol}_{period}_{interval}"
@@ -142,6 +160,9 @@ class FinancialDataFetcher:
                     )
                     logger.debug(f"yfinance Ticker.history returned: type={type(data)}, shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
                     
+                    # Reset 429 counter on success
+                    _consecutive_429s = 0
+                    
                     # If empty, try download as fallback
                     if data.empty:
                         logger.warning(f"Ticker.history returned empty, trying yf.download for {symbol}...")
@@ -155,8 +176,23 @@ class FinancialDataFetcher:
                         logger.debug(f"yf.download fallback returned: shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
                     
                 except Exception as download_error:
-                    logger.error(f"yfinance fetch failed for {symbol}: {download_error}", exc_info=True)
+                    error_msg = str(download_error)
+                    logger.error(f"yfinance fetch failed for {symbol}: {error_msg}")
+                    
+                    # Check if it's a 429 error
+                    if "429" in error_msg or "Too Many Requests" in error_msg:
+                        _last_429_time = time.time()
+                        _consecutive_429s += 1
+                        backoff_time = min(30 * (2 ** _consecutive_429s), 120)  # 30s, 60s, 120s
+                        logger.error(f"⚠ HTTP 429 Rate Limit! Backing off {backoff_time}s before retry")
+                        if attempt < max_retries - 1:
+                            time.sleep(backoff_time)
+                            continue
+                    
                     if attempt < max_retries - 1:
+                        retry_delay = 10 + (attempt * 5)  # 10s, 15s
+                        logger.info(f"Waiting {retry_delay}s before retry...")
+                        time.sleep(retry_delay)
                         continue
                     return None
                 
@@ -172,12 +208,13 @@ class FinancialDataFetcher:
                     if attempt < max_retries - 1:
                         logger.info(f"Retrying empty response for {symbol} (attempt {attempt + 2}/{max_retries})...")
                         # Increase wait time for empty responses - likely rate limiting
-                        extra_wait = 5 + (attempt * 3)  # 5s, 8s, 11s
-                        logger.info(f"Waiting extra {extra_wait}s due to empty response...")
+                        extra_wait = 15 + (attempt * 10)  # 15s, 25s
+                        logger.warning(f"⚠ Waiting {extra_wait}s due to empty response (possible rate limit)...")
                         time.sleep(extra_wait)
                         continue
                     logger.error(f"❌ Failed to fetch {symbol} after {max_retries} attempts - all returned empty")
-                    logger.error(f"⚠ Yahoo Finance may be blocking this IP address or rate limiting heavily")
+                    logger.error(f"⚠ Yahoo Finance is heavily rate limiting or blocking this IP address")
+                    logger.error(f"⚠ Consider reducing monitoring frequency or number of symbols tracked")
                     return None
                 
                 logger.info(f"✓ Successfully fetched {len(data)} rows for {symbol}")
