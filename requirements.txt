@@ -1,5 +1,6 @@
 flask==3.0.0
 yfinance>=1.2.0
+defeatbeta-api>=0.0.47
 pandas==2.1.4
 numpy==1.26.2
 plotly==5.18.0
