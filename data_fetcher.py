@@ -10,16 +10,6 @@ import random
 
 logger = logging.getLogger(__name__)
 
-# Try to use curl_cffi for browser impersonation to bypass bot detection
-try:
-    from curl_cffi import requests as curl_requests
-    # Create a session that impersonates Chrome browser
-    _browser_session = curl_requests.Session(impersonate="chrome")
-    logger.info("✓ Using curl_cffi browser impersonation to bypass Yahoo Finance bot detection")
-except ImportError:
-    logger.warning("⚠ curl_cffi not available - Yahoo Finance may block requests")
-    _browser_session = None
-
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None
@@ -145,16 +135,9 @@ class FinancialDataFetcher:
                 
                 logger.info(f"Fetching data for {symbol} (as {normalized_symbol}, period={period}, interval={interval})...")
                 
-                # Use browser impersonation session if available
+                # Use yfinance 1.2.0+ which has better bot detection handling
                 try:
-                    if _browser_session is not None:
-                        # Use curl_cffi session to impersonate Chrome and bypass bot detection
-                        ticker = yf.Ticker(normalized_symbol, session=_browser_session)
-                        logger.debug(f"Using Chrome impersonation for {symbol}")
-                    else:
-                        # Fallback to standard yfinance
-                        ticker = yf.Ticker(normalized_symbol)
-                    
+                    ticker = yf.Ticker(normalized_symbol)
                     data = ticker.history(
                         period=period,
                         interval=interval
@@ -260,12 +243,8 @@ class FinancialDataFetcher:
             # Rate limit requests
             _rate_limited_request()
             
-            # Use browser impersonation if available
-            if _browser_session is not None:
-                ticker = yf.Ticker(normalized_symbol, session=_browser_session)
-            else:
-                ticker = yf.Ticker(normalized_symbol)
-            
+            # Use yfinance 1.2.0+ default behavior
+            ticker = yf.Ticker(normalized_symbol)
             data = ticker.history(period="1d")
             
             if data is not None and not data.empty:
