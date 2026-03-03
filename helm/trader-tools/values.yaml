@@ -118,8 +118,8 @@ config:
   defaultInterval: 1d
   
   # Monitoring (increased to reduce Yahoo Finance API load)
-  monitoringInterval: 300  # 5 minutes
-  alertCheckInterval: 300  # 5 minutes
+  monitoringInterval: 900  # 15 minutes (increased from 5 min)
+  alertCheckInterval: 900  # 15 minutes (increased from 5 min)
   
   # Feature Flags
   enablePatternRecognition: true

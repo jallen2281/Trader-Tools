@@ -91,8 +91,8 @@ if PHASE2_ENABLED:
         logger.info("✓ ML Pattern Detector initialized")
         
         # Initialize monitoring service with longer interval to reduce API load
-        monitoring_svc = init_monitoring_service(app, check_interval=300)  # 5 minutes
-        logger.info("✓ Real-time Monitoring Service initialized (5min interval)")
+        monitoring_svc = init_monitoring_service(app, check_interval=900)  # 15 minutes
+        logger.info("✓ Real-time Monitoring Service initialized (15min interval)")
         
         # Register authentication routes
         auth_routes = get_auth_routes(google_oauth)

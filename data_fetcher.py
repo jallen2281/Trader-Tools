@@ -6,13 +6,14 @@ from datetime import datetime, timedelta
 import time
 import logging
 import threading
+import random
 
 logger = logging.getLogger(__name__)
 
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None
-_min_request_interval = 2.0  # 2 seconds between requests
+_min_request_interval = 5.0  # 5 seconds base interval (increased from 2s)
 
 # Track 429 errors for adaptive backoff
 _last_429_time = None
@@ -22,16 +23,20 @@ _consecutive_429s = 0
 def _rate_limited_request():
     """
     Global rate limiter for all Yahoo Finance API requests.
-    Simple delay - let yfinance handle its own session management.
+    Simple delay with randomization - let yfinance handle its own session management.
     """
     global _last_request_time
     
     with _request_lock:
+        # Add random jitter to look more human-like (1-3 seconds extra)
+        jitter = random.uniform(1.0, 3.0)
+        base_interval = _min_request_interval + jitter
+        
         if _last_request_time is not None:
             elapsed = time.time() - _last_request_time
-            if elapsed < _min_request_interval:
-                sleep_time = _min_request_interval - elapsed
-                logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
+            if elapsed < base_interval:
+                sleep_time = base_interval - elapsed
+                logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s (base={_min_request_interval}, jitter={jitter:.2f})")
                 time.sleep(sleep_time)
         _last_request_time = time.time()
 
@@ -42,7 +47,7 @@ class FinancialDataFetcher:
     def __init__(self):
         """Initialize the data fetcher."""
         self.cache = {}
-        self.cache_ttl = timedelta(minutes=5)  # Cache for 5 minutes to reduce API load
+        self.cache_ttl = timedelta(minutes=10)  # Cache for 10 minutes to reduce API load
         # Common index symbol mappings
         self.symbol_map = {
             'SPX': '^GSPC',
@@ -118,8 +123,11 @@ class FinancialDataFetcher:
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
-                    wait_time = (2 ** attempt)  # Exponential backoff: 2s, 4s, 8s
-                    logger.warning(f"⚠ Retry {attempt}/{max_retries} for {symbol} after {wait_time}s backoff...")
+                    # Exponential backoff with randomization: 5-7s, 10-14s
+                    wait_base = (2 ** attempt) * 5
+                    wait_jitter = random.uniform(0, wait_base * 0.4)  # Up to 40% jitter
+                    wait_time = wait_base + wait_jitter
+                    logger.warning(f"⚠ Retry {attempt}/{max_retries} for {symbol} after {wait_time:.1f}s backoff...")
                     time.sleep(wait_time)
                 
                 # Rate limit requests
@@ -151,11 +159,15 @@ class FinancialDataFetcher:
                     logger.warning(f"Empty DataFrame returned for {symbol} (tried {normalized_symbol})")
                     if attempt < max_retries - 1:
                         logger.info(f"Retrying empty response for {symbol} (attempt {attempt + 2}/{max_retries})...")
-                        retry_delay = 5 + (attempt * 3)  # 5s, 8s
-                        logger.info(f"Waiting {retry_delay}s due to empty response...")
+                        # Longer delays for empty responses: 10-15s, 20-30s
+                        retry_base = 10 * (attempt + 1)
+                        retry_jitter = random.uniform(0, 5)
+                        retry_delay = retry_base + retry_jitter
+                        logger.info(f"Waiting {retry_delay:.1f}s due to empty response...")
                         time.sleep(retry_delay)
                         continue
                     logger.error(f"❌ Failed to fetch {symbol} after {max_retries} attempts - all returned empty")
+                    logger.error(f"⚠ Yahoo Finance is blocking this cluster's IP address")
                     return None
                 
                 logger.info(f"✓ Successfully fetched {len(data)} rows for {symbol}")
