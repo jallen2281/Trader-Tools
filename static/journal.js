@@ -117,15 +117,21 @@ class TradeJournal {
                 }
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-
             const data = await response.json();
+
+            // Handle empty trades gracefully
+            if (data.empty || (data.error && data.message)) {
+                this.showEmptyState(container, data.message || data.error);
+                return;
+            }
 
             if (data.error) {
                 this.showError(container, data.error);
                 return;
+            }
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${data.error || 'Unknown error'}`);
             }
 
             this.cache.performance = data;
@@ -153,15 +159,21 @@ class TradeJournal {
                 }
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-
             const data = await response.json();
+
+            // Handle empty trades gracefully
+            if (data.empty || (data.error && data.message)) {
+                this.showEmptyState(container, data.message || data.error);
+                return;
+            }
 
             if (data.error) {
                 this.showError(container, data.error);
                 return;
+            }
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${data.error || 'Unknown error'}`);
             }
 
             this.cache.insights = data;
@@ -411,6 +423,15 @@ class TradeJournal {
             <div class="error-state">
                 <span class="icon">⚠️</span>
                 <p>${message}</p>
+            </div>
+        `;
+    }
+
+    showEmptyState(container, message) {
+        container.innerHTML = `
+            <div class="empty-state" style="padding: 40px; text-align: center; color: #888;">
+                <div style="font-size: 48px; margin-bottom: 16px;">📊</div>
+                <div style="font-size: 16px;">${message}</div>
             </div>
         `;
     }

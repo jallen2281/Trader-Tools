@@ -2234,18 +2234,28 @@ def get_correlation_matrix():
         # Get user_id from either session or current_user
         user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
         if not user_id:
+            logger.warning("Correlation matrix requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
         
         period = request.args.get('period', '3mo')
+        logger.debug(f"Fetching correlation matrix for user {user_id}, period={period}")
         result = correlation_analyzer.get_portfolio_correlation_matrix(user_id, period)
         
         if 'error' in result:
+            logger.info(f"Correlation matrix error for user {user_id}: {result['error']}")
+            # Return 200 for empty portfolio (not an error condition)
+            if 'No portfolio found' in result['error'] or 'Need at least 2 symbols' in result['error']:
+                return jsonify({
+                    'error': result['error'],
+                    'empty': True,
+                    'message': 'Add stocks to your portfolio to see correlation analysis'
+                }), 200
             return jsonify(result), 400
         
         return jsonify(result), 200
     
     except Exception as e:
-        logger.error(f"Error fetching correlation matrix: {e}")
+        logger.error(f"Error fetching correlation matrix: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/correlation/diversification', methods=['GET'])
@@ -2259,17 +2269,27 @@ def get_diversification():
         # Get user_id from either session or current_user
         user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
         if not user_id:
+            logger.warning("Diversification metrics requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
         
+        logger.debug(f"Fetching diversification metrics for user {user_id}")
         result = correlation_analyzer.get_diversification_metrics(user_id)
         
         if 'error' in result:
+            logger.info(f"Diversification metrics error for user {user_id}: {result['error']}")
+            # Return 200 for empty portfolio (not an error condition)
+            if 'No portfolio found' in result['error']:
+                return jsonify({
+                    'error': result['error'],
+                    'empty': True,
+                    'message': 'Add stocks to your portfolio to see diversification metrics'
+                }), 200
             return jsonify(result), 400
         
         return jsonify(result), 200
     
     except Exception as e:
-        logger.error(f"Error fetching diversification metrics: {e}")
+        logger.error(f"Error fetching diversification metrics: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/correlation/time-series', methods=['GET'])
@@ -2311,18 +2331,29 @@ def get_journal_history():
         # Get user_id from either session or current_user
         user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
         if not user_id:
+            logger.warning("Journal history requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
         
         days = int(request.args.get('days', 90))
+        logger.debug(f"Fetching trade history for user {user_id}, days={days}")
         result = trade_journal.get_trade_history(user_id, days)
         
         if 'error' in result:
+            logger.info(f"Trade history error for user {user_id}: {result['error']}")
+            # Return 200 for empty trades (not an error condition)
+            if 'No trades found' in result['error'] or 'No transaction' in result['error']:
+                return jsonify({
+                    'error': result['error'],
+                    'empty': True,
+                    'message': 'Your trade history will appear here once you record trades',
+                    'trades': []
+                }), 200
             return jsonify(result), 400
         
         return jsonify(result), 200
     
     except Exception as e:
-        logger.error(f"Error fetching trade history: {e}")
+        logger.error(f"Error fetching trade history: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/journal/performance', methods=['GET'])
@@ -2336,18 +2367,28 @@ def get_journal_performance():
         # Get user_id from either session or current_user
         user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
         if not user_id:
+            logger.warning("Journal performance requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
         
         days = int(request.args.get('days', 90))
+        logger.debug(f"Fetching journal performance for user {user_id}, days={days}")
         result = trade_journal.analyze_performance(user_id, days)
         
         if 'error' in result:
+            logger.info(f"Journal performance error for user {user_id}: {result['error']}")
+            # Return 200 for empty trades (not an error condition)
+            if 'No trades found' in result['error'] or 'No transaction' in result['error']:
+                return jsonify({
+                    'error': result['error'],
+                    'empty': True,
+                    'message': 'Record your trades to see performance analytics'
+                }), 200
             return jsonify(result), 400
         
         return jsonify(result), 200
     
     except Exception as e:
-        logger.error(f"Error analyzing performance: {e}")
+        logger.error(f"Error analyzing performance: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/journal/insights', methods=['GET'])
@@ -2361,18 +2402,28 @@ def get_journal_insights():
         # Get user_id from either session or current_user
         user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
         if not user_id:
+            logger.warning("Journal insights requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
         
         days = int(request.args.get('days', 90))
+        logger.debug(f"Generating AI insights for user {user_id}, days={days}")
         result = trade_journal.get_ai_insights(user_id, days)
         
         if 'error' in result:
+            logger.info(f"Journal insights error for user {user_id}: {result['error']}")
+            # Return 200 for empty trades (not an error condition)
+            if 'No trades found' in result['error'] or 'No transaction' in result['error']:
+                return jsonify({
+                    'error': result['error'],
+                    'empty': True,
+                    'message': 'Record your trades to get AI-powered insights'
+                }), 200
             return jsonify(result), 400
         
         return jsonify(result), 200
     
     except Exception as e:
-        logger.error(f"Error generating AI insights: {e}")
+        logger.error(f"Error generating AI insights: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/journal/note', methods=['POST'])

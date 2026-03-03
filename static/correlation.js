@@ -120,15 +120,21 @@ class CorrelationHeatMap {
                 }
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-
             const data = await response.json();
+
+            // Handle empty portfolio gracefully
+            if (data.empty || (data.error && data.message)) {
+                this.showEmptyState(this.heatmapContainer, data.message || data.error);
+                return;
+            }
 
             if (data.error) {
                 this.showError(this.heatmapContainer, data.error);
                 return;
+            }
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${data.error || 'Unknown error'}`);
             }
 
             this.renderHeatMap(data);
@@ -148,6 +154,35 @@ class CorrelationHeatMap {
                 method: 'GET',
                 credentials: 'same-origin',
                 headers: {
+                    'X-API-Key': localStorage.getItem('apiKey') || ''
+                }
+            });
+
+            const data = await response.json();
+
+            // Handle empty portfolio gracefully
+            if (data.empty || (data.error && data.message)) {
+                this.showEmptyState(this.diversificationContainer, data.message || data.error);
+                return;
+            }
+
+            if (data.error) {
+                this.showError(this.diversificationContainer, data.error);
+                return;
+            }
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${data.error || 'Unknown error'}`);
+            }
+
+            this.renderDiversificationMetrics(data);
+            console.log('Diversification Metrics loaded', data);
+
+        } catch (error) {
+            console.error('Error loading diversification metrics:', error);
+            this.showError(this.diversificationContainer, 'Failed to load diversification metrics');
+        }
+    } {
                     'X-API-Key': localStorage.getItem('apiKey') || ''
                 }
             });
@@ -473,6 +508,15 @@ class CorrelationHeatMap {
 
     showError(container, message) {
         container.innerHTML = `<div class="error-state">❌ ${message}</div>`;
+    }
+
+    showEmptyState(container, message) {
+        container.innerHTML = `
+            <div class="empty-state" style="padding: 40px; text-align: center; color: #888;">
+                <div style="font-size: 48px; margin-bottom: 16px;">📊</div>
+                <div style="font-size: 16px;">${message}</div>
+            </div>
+        `;
     }
 
     startAutoRefresh() {
