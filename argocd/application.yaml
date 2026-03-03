@@ -70,11 +70,11 @@ spec:
               hosts:
                 - tradertools.kegbot.net
         
-        # Auto-scaling
+        # Auto-scaling (reduce replicas to lower API load)
         autoscaling:
           enabled: true
-          minReplicas: 2
-          maxReplicas: 10
+          minReplicas: 1  # Reduced from 2 to minimize Yahoo Finance API calls
+          maxReplicas: 4  # Reduced from 10
           targetCPUUtilizationPercentage: 70
           targetMemoryUtilizationPercentage: 80
         

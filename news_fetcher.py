@@ -9,8 +9,13 @@ import logging
 from typing import List, Dict, Optional
 import requests
 from config import Config
+import time
 
 logger = logging.getLogger(__name__)
+
+# Import rate limiter from data_fetcher
+from data_fetcher import _rate_limited_request
+
 
 class NewsFetcher:
     """Fetch and analyze market news and events"""
@@ -43,6 +48,9 @@ class NewsFetcher:
             
             for symbol in symbols:
                 try:
+                    # Rate limit requests to avoid overwhelming Yahoo Finance
+                    _rate_limited_request()
+                    
                     ticker = yf.Ticker(symbol)
                     ticker_news = ticker.news
                     
@@ -102,6 +110,9 @@ class NewsFetcher:
             List of news articles with sentiment
         """
         try:
+            # Rate limit requests
+            _rate_limited_request()
+            
             ticker = yf.Ticker(symbol)
             news = ticker.news
             

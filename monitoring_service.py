@@ -11,13 +11,13 @@ from data_fetcher import FinancialDataFetcher
 class MonitoringService:
     """Background service for real-time market monitoring"""
     
-    def __init__(self, app=None, check_interval=60):
+    def __init__(self, app=None, check_interval=300):
         """
         Initialize monitoring service
         
         Args:
             app: Flask application instance
-            check_interval: Seconds between checks (default 60)
+            check_interval: Seconds between checks (default 300 = 5 minutes to reduce API load)
         """
         self.app = app
         self.check_interval = check_interval

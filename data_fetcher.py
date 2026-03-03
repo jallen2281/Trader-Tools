@@ -5,8 +5,27 @@ from typing import Optional, Tuple
 from datetime import datetime, timedelta
 import time
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
+
+# Global rate limiter to prevent overwhelming Yahoo Finance API
+_request_lock = threading.Lock()
+_last_request_time = None
+_min_request_interval = 0.5  # Minimum 500ms between requests
+
+
+def _rate_limited_request():
+    """Rate limit Yahoo Finance requests across all instances."""
+    global _last_request_time
+    with _request_lock:
+        if _last_request_time is not None:
+            elapsed = time.time() - _last_request_time
+            if elapsed < _min_request_interval:
+                sleep_time = _min_request_interval - elapsed
+                logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
+                time.sleep(sleep_time)
+        _last_request_time = time.time()
 
 
 class FinancialDataFetcher:
@@ -15,6 +34,7 @@ class FinancialDataFetcher:
     def __init__(self):
         """Initialize the data fetcher."""
         self.cache = {}
+        self.cache_ttl = timedelta(minutes=5)  # Cache for 5 minutes
         # Common index symbol mappings
         self.symbol_map = {
             'SPX': '^GSPC',
@@ -26,6 +46,23 @@ class FinancialDataFetcher:
             'RUT': '^RUT',
             'VIX': '^VIX'
         }
+    
+    def _get_from_cache(self, cache_key: str) -> Optional[pd.DataFrame]:
+        """Get data from cache if not expired."""
+        if cache_key in self.cache:
+            data, timestamp = self.cache[cache_key]
+            if datetime.now() - timestamp < self.cache_ttl:
+                logger.debug(f"Cache HIT for {cache_key}")
+                return data
+            else:
+                logger.debug(f"Cache EXPIRED for {cache_key}")
+                del self.cache[cache_key]
+        return None
+    
+    def _save_to_cache(self, cache_key: str, data: pd.DataFrame):
+        """Save data to cache with timestamp."""
+        self.cache[cache_key] = (data, datetime.now())
+        logger.debug(f"Cached data for {cache_key}")
     
     def normalize_symbol(self, symbol: str) -> str:
         """
@@ -62,12 +99,21 @@ class FinancialDataFetcher:
         # Normalize symbol (e.g., SPX -> ^GSPC)
         normalized_symbol = self.normalize_symbol(symbol)
         
+        # Check cache first
+        cache_key = f"{normalized_symbol}_{period}_{interval}"
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data is not None:
+            return cached_data
+        
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
                     wait_time = (2 ** attempt)  # Exponential backoff: 2s, 4s, 8s
                     logger.warning(f"⚠ Retry {attempt}/{max_retries} for {symbol} after {wait_time}s backoff...")
                     time.sleep(wait_time)
+                
+                # Rate limit requests
+                _rate_limited_request()
                 
                 print(f"Fetching data for {symbol} (as {normalized_symbol})...")
                 
@@ -109,6 +155,9 @@ class FinancialDataFetcher:
                 data['Symbol'] = symbol
                 data['Returns'] = data['Close'].pct_change()
                 data['Cumulative_Returns'] = (1 + data['Returns']).cumprod()
+                
+                # Cache the result
+                self._save_to_cache(cache_key, data)
                 
                 return data
                 
@@ -169,13 +218,16 @@ class FinancialDataFetcher:
             # Normalize symbol
             normalized_symbol = self.normalize_symbol(symbol)
             
+            # Rate limit requests
+            _rate_limited_request()
+            
             ticker = yf.Ticker(normalized_symbol)
             data = ticker.history(period="1d")
             if data is not None and not data.empty:
                 return float(data['Close'].iloc[-1])
             return None
         except Exception as e:
-            print(f"Error getting latest price for {symbol}: {e}")
+            logger.warning(f"Error getting latest price for {symbol}: {e}")
             return None
     
     def get_company_info(self, symbol: str) -> dict:
