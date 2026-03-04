@@ -51,15 +51,19 @@ class LLMAnalyzer:
             print("Make sure Ollama is running: 'ollama serve'")
             self.client = False
     
-    def _call_llm(self, messages: List[Dict], timeout: int = 45) -> Optional[str]:
+    def _call_llm(self, messages: List[Dict], timeout: int = 300) -> Optional[str]:
         """Call LLM provider (RKLLM or Ollama) with timeout."""
         if self.provider == 'rkllm':
             return self._call_rkllm(messages, timeout)
         else:
             return self._call_ollama(messages, timeout)
     
-    def _call_rkllm(self, messages: List[Dict], timeout: int = 45, retries: int = 3) -> Optional[str]:
-        """Call RKLLM server with OpenAI-compatible API and retry on 503."""
+    def _call_rkllm(self, messages: List[Dict], timeout: int = 300, retries: int = 12) -> Optional[str]:
+        """Call RKLLM server with OpenAI-compatible API and retry on 503.
+        
+        RKLLM returns 503 while still processing a previous request.
+        We poll with backoff until it returns 200 or we exhaust retries.
+        """
         import time
         
         for attempt in range(retries):
@@ -71,10 +75,10 @@ class LLMAnalyzer:
                     timeout=timeout
                 )
                 
-                # Handle 503 Service Unavailable (server busy)
+                # Handle 503 Service Unavailable (server busy processing)
                 if response.status_code == 503:
                     if attempt < retries - 1:
-                        wait_time = (attempt + 1) * 2  # 2s, 4s, 6s backoff
+                        wait_time = min(30, 5 * (attempt + 1))  # 5s, 10s, 15s ... 30s cap
                         print(f"⚠ RKLLM server busy (503), retrying in {wait_time}s... (attempt {attempt + 1}/{retries})")
                         time.sleep(wait_time)
                         continue
@@ -94,14 +98,14 @@ class LLMAnalyzer:
                     return data.get('response', str(data))
                     
             except requests.exceptions.Timeout:
-                print(f"⚠ RKLLM request timeout (attempt {attempt + 1}/{retries})")
+                print(f"⚠ RKLLM request timeout after {timeout}s (attempt {attempt + 1}/{retries})")
                 if attempt < retries - 1:
-                    time.sleep(2)
+                    time.sleep(5)
                     continue
                 return None
             except Exception as e:
                 if attempt < retries - 1 and '503' in str(e):
-                    wait_time = (attempt + 1) * 2
+                    wait_time = min(30, 5 * (attempt + 1))
                     print(f"⚠ RKLLM error (503), retrying in {wait_time}s...")
                     time.sleep(wait_time)
                     continue
@@ -123,7 +127,7 @@ class LLMAnalyzer:
             return response['message']['content']
         return None
     
-    def _call_ollama_with_timeout(self, model: str, messages: List[Dict], options: Dict, timeout: int = 20) -> Optional[Dict]:
+    def _call_ollama_with_timeout(self, model: str, messages: List[Dict], options: Dict, timeout: int = 300) -> Optional[Dict]:
         """Call Ollama with timeout to prevent hanging."""
         result = [None]
         exception = [None]
@@ -248,7 +252,7 @@ class LLMAnalyzer:
             
             result = self._call_llm(
                 messages=[{'role': 'user', 'content': prompt}],
-                timeout=45
+                timeout=300
             )
             
             if result is None:

@@ -422,10 +422,10 @@ class PortfolioAnalyzer:
             return float(option_holding.premium_paid)
     
     def _calculate_daily_change(self, user_id, current_value):
-        """Calculate daily portfolio change"""
+        """Calculate daily portfolio change from previous close prices"""
         try:
+            # First try snapshot-based calculation
             yesterday = datetime.now() - timedelta(days=1)
-            
             last_snapshot = PortfolioSnapshot.query.filter(
                 PortfolioSnapshot.user_id == user_id,
                 PortfolioSnapshot.timestamp >= yesterday
@@ -435,15 +435,31 @@ class PortfolioAnalyzer:
                 previous_value = float(last_snapshot.total_value)
                 change = current_value - previous_value
                 change_pct = (change / previous_value * 100) if previous_value > 0 else 0
-                
-                return {
-                    'value': round(change, 2),
-                    'pct': round(change_pct, 2)
-                }
+                return {'value': round(change, 2), 'pct': round(change_pct, 2)}
             
-            return {'value': 0, 'pct': 0}
+            # Fallback: calculate from previous close prices
+            holdings = Portfolio.query.filter_by(user_id=user_id).all()
+            if not holdings:
+                return {'value': 0, 'pct': 0}
             
-        except:
+            daily_change = 0
+            previous_total = 0
+            for h in holdings:
+                try:
+                    ticker = yf.Ticker(h.symbol)
+                    hist = ticker.history(period='5d')
+                    if len(hist) >= 2:
+                        prev_close = hist['Close'].iloc[-2]
+                        curr_close = hist['Close'].iloc[-1]
+                        daily_change += float(h.quantity) * (curr_close - prev_close)
+                        previous_total += float(h.quantity) * prev_close
+                except Exception:
+                    pass
+            
+            change_pct = (daily_change / previous_total * 100) if previous_total > 0 else 0
+            return {'value': round(daily_change, 2), 'pct': round(change_pct, 2)}
+            
+        except Exception:
             return {'value': 0, 'pct': 0}
     
     def _calculate_portfolio_risk(self, stock_holdings, options_holdings):

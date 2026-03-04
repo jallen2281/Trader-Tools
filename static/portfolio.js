@@ -992,18 +992,21 @@ function toggleSellFields() {
         editGroup.style.display = 'none';
         dateGroup.style.display = 'none';
         document.getElementById('sellQuantity').required = false;
+        document.getElementById('sellPrice').required = true;
     } else if (action === 'partial') {
         quantityGroup.style.display = 'block';
         priceGroup.style.display = 'block';
         editGroup.style.display = 'none';
         dateGroup.style.display = 'none';
         document.getElementById('sellQuantity').required = true;
+        document.getElementById('sellPrice').required = true;
     } else if (action === 'edit') {
         quantityGroup.style.display = 'none';
         priceGroup.style.display = 'none';
         editGroup.style.display = 'block';
         dateGroup.style.display = 'block';
         document.getElementById('sellQuantity').required = false;
+        document.getElementById('sellPrice').required = false;
     }
 }
 
