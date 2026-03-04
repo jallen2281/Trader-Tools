@@ -381,7 +381,10 @@ class FinancialDataFetcher:
                 metrics['yf_market_cap'] = info.get('marketCap')
                 metrics['yf_dividend_yield'] = info.get('dividendYield')
                 metrics['yf_beta'] = info.get('beta')
-                logger.debug(f\"Got yfinance metrics for {symbol}\")\n        except Exception as e:\n            logger.warning(f\"Could not get yfinance metrics for {symbol}: {e}\")\n        
+                logger.debug(f"Got yfinance metrics for {symbol}")
+        except Exception as e:
+            logger.warning(f"Could not get yfinance metrics for {symbol}: {e}")
+
         # Enrich with DefeatBeta metrics (secondary source)
         if self.defeatbeta_as_secondary and fetch_financial_metrics:
             try:
@@ -390,4 +393,8 @@ class FinancialDataFetcher:
                     metrics['db_roe'] = db_metrics.get('roe')
                     metrics['db_ttm_pe'] = db_metrics.get('pe_ratio')
                     metrics['db_market_cap'] = db_metrics.get('market_cap')
-                    logger.info(f\"✓ Enriched {symbol} with DefeatBeta metrics: {list(db_metrics.keys())}\")\n            except Exception as e:\n                logger.debug(f\"Could not get DefeatBeta metrics for {symbol}: {e}\")\n        \n        return metrics if metrics else None
+                    logger.info(f"✓ Enriched {symbol} with DefeatBeta metrics: {list(db_metrics.keys())}")
+            except Exception as e:
+                logger.debug(f"Could not get DefeatBeta metrics for {symbol}: {e}")
+
+        return metrics if metrics else None
