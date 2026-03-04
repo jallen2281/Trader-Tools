@@ -876,8 +876,8 @@ def list_portfolio_holdings():
         
         return jsonify({
             'holdings': [h.to_dict() for h in holdings],
-            'total_value': sum(h.quantity * h.current_price for h in holdings if h.current_price),
-            'total_cost': sum(h.quantity * h.average_cost for h in holdings)
+            'total_value': sum(float(h.quantity) * float(h.current_price) for h in holdings if h.current_price),
+            'total_cost': sum(float(h.quantity) * float(h.average_cost) for h in holdings)
         })
         
     except Exception as e:
@@ -923,9 +923,11 @@ def manage_portfolio():
             ).first()
             
             if existing:
-                # Update average cost
-                total_cost = (existing.quantity * existing.average_cost) + (quantity * price)
-                total_quantity = existing.quantity + quantity
+                # Update average cost - cast DB Decimal values to float to avoid type mismatch
+                existing_quantity = float(existing.quantity)
+                existing_avg_cost = float(existing.average_cost)
+                total_cost = (existing_quantity * existing_avg_cost) + (quantity * price)
+                total_quantity = existing_quantity + quantity
                 existing.average_cost = total_cost / total_quantity
                 existing.quantity = total_quantity
                 # Keep original purchase date for existing positions
@@ -1797,14 +1799,17 @@ def record_portfolio_transaction():
         db.session.add(transaction)
         
         # Update or delete holding
-        if sell_all or (quantity and quantity >= holding.quantity):
+        holding_quantity = float(holding.quantity)
+        sell_quantity = float(quantity) if quantity else holding_quantity
+        
+        if sell_all or sell_quantity >= holding_quantity:
             # Selling entire position
             db.session.delete(holding)
             logger.info(f"Sold all of {holding.symbol} at ${price} for user {user_id}")
         elif quantity:
             # Partial sell
-            holding.quantity -= quantity
-            logger.info(f"Sold {quantity} shares of {holding.symbol} at ${price} for user {user_id}")
+            holding.quantity = holding_quantity - sell_quantity
+            logger.info(f"Sold {sell_quantity} shares of {holding.symbol} at ${price} for user {user_id}")
         
         db.session.commit()
         
