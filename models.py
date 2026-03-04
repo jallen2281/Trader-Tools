@@ -70,8 +70,8 @@ class Alert(db.Model):
     alert_type = db.Column(db.String(50), nullable=False)  # 'price', 'technical', 'sentiment', 'risk', 'greeks', 'pnl'
     
     # Price alerts (legacy)
-    target_price = db.Column(db.Numeric(10, 2))
-    current_price = db.Column(db.Numeric(10, 2))
+    target_price = db.Column(db.Numeric(10, 2, asdecimal=False))
+    current_price = db.Column(db.Numeric(10, 2, asdecimal=False))
     
     # Phase 4: Smart alert conditions
     condition = db.Column(db.String(200))  # "rsi < 30", "sentiment == 'Very Bearish'", "pnl_pct > 20"
@@ -121,9 +121,9 @@ class Portfolio(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     symbol = db.Column(db.String(10), nullable=False, index=True)
     asset_type = db.Column(db.String(20), nullable=False)  # 'stock', 'option', 'etf'
-    quantity = db.Column(db.Numeric(15, 6), nullable=False)
-    average_cost = db.Column(db.Numeric(10, 4), nullable=False)
-    current_price = db.Column(db.Numeric(10, 4))
+    quantity = db.Column(db.Numeric(15, 6, asdecimal=False), nullable=False)
+    average_cost = db.Column(db.Numeric(10, 4, asdecimal=False), nullable=False)
+    current_price = db.Column(db.Numeric(10, 4, asdecimal=False))
     purchase_date = db.Column(db.DateTime, default=datetime.utcnow)
     last_updated = db.Column(db.DateTime, default=datetime.utcnow)
     
@@ -165,9 +165,9 @@ class Transaction(db.Model):
     symbol = db.Column(db.String(10), nullable=False, index=True)
     asset_type = db.Column(db.String(20), nullable=False)  # 'stock', 'option', 'etf'
     transaction_type = db.Column(db.String(10), nullable=False)  # 'buy' or 'sell'
-    quantity = db.Column(db.Numeric(15, 6), nullable=False)
-    price = db.Column(db.Numeric(10, 4), nullable=False)
-    commission = db.Column(db.Numeric(10, 2), default=0)
+    quantity = db.Column(db.Numeric(15, 6, asdecimal=False), nullable=False)
+    price = db.Column(db.Numeric(10, 4, asdecimal=False), nullable=False)
+    commission = db.Column(db.Numeric(10, 2, asdecimal=False), default=0)
     transaction_date = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     notes = db.Column(db.Text)
     
@@ -193,11 +193,11 @@ class OptionsPosition(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     underlying_symbol = db.Column(db.String(10), nullable=False, index=True)
     option_type = db.Column(db.String(10), nullable=False)  # 'call' or 'put'
-    strike_price = db.Column(db.Numeric(10, 2), nullable=False)
+    strike_price = db.Column(db.Numeric(10, 2, asdecimal=False), nullable=False)
     expiration_date = db.Column(db.Date, nullable=False, index=True)
     quantity = db.Column(db.Integer, nullable=False)
-    premium_paid = db.Column(db.Numeric(10, 4), nullable=False)
-    current_premium = db.Column(db.Numeric(10, 4))
+    premium_paid = db.Column(db.Numeric(10, 4, asdecimal=False), nullable=False)
+    current_premium = db.Column(db.Numeric(10, 4, asdecimal=False))
     purchase_date = db.Column(db.DateTime, default=datetime.utcnow)
     status = db.Column(db.String(20), default='open')  # 'open', 'closed', 'exercised', 'expired'
     
@@ -258,12 +258,12 @@ class MLPattern(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     symbol = db.Column(db.String(10), nullable=False, index=True)
     pattern_type = db.Column(db.String(50), nullable=False, index=True)
-    confidence = db.Column(db.Numeric(5, 4), nullable=False)
+    confidence = db.Column(db.Numeric(5, 4, asdecimal=False), nullable=False)
     prediction = db.Column(db.String(20), nullable=False)  # 'bullish', 'bearish', 'neutral'
     time_horizon = db.Column(db.String(20))
     detected_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     pattern_data = db.Column(JSON)
-    price_at_detection = db.Column(db.Numeric(10, 4))
+    price_at_detection = db.Column(db.Numeric(10, 4, asdecimal=False))
     
     def to_dict(self):
         return {
@@ -286,14 +286,14 @@ class MLPrediction(db.Model):
     symbol = db.Column(db.String(10), nullable=False, index=True)
     prediction_type = db.Column(db.String(50), nullable=False)
     predicted_direction = db.Column(db.String(20), nullable=False)  # 'up', 'down', 'sideways'
-    predicted_price = db.Column(db.Numeric(10, 4))
-    confidence = db.Column(db.Numeric(5, 4), nullable=False)
+    predicted_price = db.Column(db.Numeric(10, 4, asdecimal=False))
+    confidence = db.Column(db.Numeric(5, 4, asdecimal=False), nullable=False)
     time_horizon = db.Column(db.String(20))
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     target_date = db.Column(db.DateTime, index=True)
-    actual_price = db.Column(db.Numeric(10, 4))
+    actual_price = db.Column(db.Numeric(10, 4, asdecimal=False))
     actual_direction = db.Column(db.String(20))
-    accuracy_score = db.Column(db.Numeric(5, 4))
+    accuracy_score = db.Column(db.Numeric(5, 4, asdecimal=False))
     model_version = db.Column(db.String(50))
     
     def to_dict(self):
@@ -354,11 +354,11 @@ class MarketCondition(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     
     # Volatility Indices
-    vix = db.Column(db.Numeric(10, 2))  # S&P 500 volatility (^VIX)
-    vxn = db.Column(db.Numeric(10, 2))  # Nasdaq 100 volatility (^VXN)
-    rvx = db.Column(db.Numeric(10, 2))  # Russell 2000 volatility (^RVX)
-    vix_change = db.Column(db.Numeric(10, 2))  # Today's VIX change
-    vix_percentile = db.Column(db.Numeric(5, 2))  # Historical percentile (0-100)
+    vix = db.Column(db.Numeric(10, 2, asdecimal=False))  # S&P 500 volatility (^VIX)
+    vxn = db.Column(db.Numeric(10, 2, asdecimal=False))  # Nasdaq 100 volatility (^VXN)
+    rvx = db.Column(db.Numeric(10, 2, asdecimal=False))  # Russell 2000 volatility (^RVX)
+    vix_change = db.Column(db.Numeric(10, 2, asdecimal=False))  # Today's VIX change
+    vix_percentile = db.Column(db.Numeric(5, 2, asdecimal=False))  # Historical percentile (0-100)
     
     # Market Sentiment
     market_sentiment = db.Column(db.String(20))  # 'fear', 'greed', 'neutral', 'extreme_fear', 'extreme_greed'
@@ -366,12 +366,12 @@ class MarketCondition(db.Model):
     volatility_regime = db.Column(db.String(20))  # 'low', 'normal', 'elevated', 'high', 'extreme'
     
     # Major Indices
-    spx_price = db.Column(db.Numeric(10, 2))
-    spx_change = db.Column(db.Numeric(10, 2))
-    spx_change_pct = db.Column(db.Numeric(5, 2))
-    ndx_price = db.Column(db.Numeric(10, 2))
-    ndx_change = db.Column(db.Numeric(10, 2))
-    ndx_change_pct = db.Column(db.Numeric(5, 2))
+    spx_price = db.Column(db.Numeric(10, 2, asdecimal=False))
+    spx_change = db.Column(db.Numeric(10, 2, asdecimal=False))
+    spx_change_pct = db.Column(db.Numeric(5, 2, asdecimal=False))
+    ndx_price = db.Column(db.Numeric(10, 2, asdecimal=False))
+    ndx_change = db.Column(db.Numeric(10, 2, asdecimal=False))
+    ndx_change_pct = db.Column(db.Numeric(5, 2, asdecimal=False))
     
     # VIX Term Structure
     vix_futures_contango = db.Column(db.Boolean)  # True if contango, False if backwardation
@@ -406,28 +406,28 @@ class PortfolioSnapshot(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     
     # Portfolio values
-    total_value = db.Column(db.Numeric(15, 2), nullable=False)
-    total_cost_basis = db.Column(db.Numeric(15, 2), nullable=False)
-    total_pnl = db.Column(db.Numeric(15, 2), nullable=False)
-    total_pnl_pct = db.Column(db.Numeric(10, 4), nullable=False)
+    total_value = db.Column(db.Numeric(15, 2, asdecimal=False), nullable=False)
+    total_cost_basis = db.Column(db.Numeric(15, 2, asdecimal=False), nullable=False)
+    total_pnl = db.Column(db.Numeric(15, 2, asdecimal=False), nullable=False)
+    total_pnl_pct = db.Column(db.Numeric(10, 4, asdecimal=False), nullable=False)
     
     # Daily changes
-    daily_change = db.Column(db.Numeric(15, 2))
-    daily_change_pct = db.Column(db.Numeric(10, 4))
+    daily_change = db.Column(db.Numeric(15, 2, asdecimal=False))
+    daily_change_pct = db.Column(db.Numeric(10, 4, asdecimal=False))
     
     # Allocation breakdown
-    stock_value = db.Column(db.Numeric(15, 2))
-    options_value = db.Column(db.Numeric(15, 2))
-    cash_value = db.Column(db.Numeric(15, 2))
+    stock_value = db.Column(db.Numeric(15, 2, asdecimal=False))
+    options_value = db.Column(db.Numeric(15, 2, asdecimal=False))
+    cash_value = db.Column(db.Numeric(15, 2, asdecimal=False))
     
     # Risk metrics
-    portfolio_beta = db.Column(db.Numeric(10, 4))
-    portfolio_var = db.Column(db.Numeric(15, 2))
-    portfolio_sharpe = db.Column(db.Numeric(10, 4))
+    portfolio_beta = db.Column(db.Numeric(10, 4, asdecimal=False))
+    portfolio_var = db.Column(db.Numeric(15, 2, asdecimal=False))
+    portfolio_sharpe = db.Column(db.Numeric(10, 4, asdecimal=False))
     
     # Market context
-    spx_price = db.Column(db.Numeric(10, 2))
-    vix_level = db.Column(db.Numeric(10, 2))
+    spx_price = db.Column(db.Numeric(10, 2, asdecimal=False))
+    vix_level = db.Column(db.Numeric(10, 2, asdecimal=False))
     
     def to_dict(self):
         return {
@@ -458,7 +458,7 @@ class AlertSuggestion(db.Model):
     symbol = db.Column(db.String(10), nullable=False, index=True)
     type = db.Column(db.String(50), nullable=False, index=True)  # 'pattern', 'resistance', 'volume', 'profit_taking', etc.
     message = db.Column(db.Text, nullable=False)
-    trigger_price = db.Column(db.Numeric(10, 2))
+    trigger_price = db.Column(db.Numeric(10, 2, asdecimal=False))
     direction = db.Column(db.String(10))  # 'above', 'below', 'cross'
     priority = db.Column(db.Integer, default=2)  # 1-3, higher is more important
     reason = db.Column(db.Text)
