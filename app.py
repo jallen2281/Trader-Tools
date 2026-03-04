@@ -583,10 +583,16 @@ def generate_technical_chart():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Simple health check endpoint."""
+    import subprocess
+    try:
+        git_rev = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        git_rev = 'unknown'
     logger.debug("Health check requested")
     return jsonify({
         'status': 'healthy',
         'message': 'Server is running',
+        'git_commit': git_rev,
         'routes_registered': [str(rule) for rule in app.url_map.iter_rules()]
     })
 
@@ -924,10 +930,12 @@ def manage_portfolio():
             
             if existing:
                 # Update average cost - cast DB Decimal values to float to avoid type mismatch
+                logger.info(f"Updating existing {symbol}: qty type={type(existing.quantity).__name__}, avg_cost type={type(existing.average_cost).__name__}")
                 existing_quantity = float(existing.quantity)
                 existing_avg_cost = float(existing.average_cost)
                 total_cost = (existing_quantity * existing_avg_cost) + (quantity * price)
                 total_quantity = existing_quantity + quantity
+                logger.info(f"Computed: total_cost={total_cost}, total_quantity={total_quantity}")
                 existing.average_cost = total_cost / total_quantity
                 existing.quantity = total_quantity
                 # Keep original purchase date for existing positions
