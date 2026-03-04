@@ -583,11 +583,7 @@ def generate_technical_chart():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Simple health check endpoint."""
-    import subprocess
-    try:
-        git_rev = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], stderr=subprocess.DEVNULL).decode().strip()
-    except Exception:
-        git_rev = 'unknown'
+    git_rev = os.environ.get('GIT_COMMIT', 'unknown')
     logger.debug("Health check requested")
     return jsonify({
         'status': 'healthy',
@@ -595,6 +591,12 @@ def health_check():
         'git_commit': git_rev,
         'routes_registered': [str(rule) for rule in app.url_map.iter_rules()]
     })
+
+
+@app.route('/api/version', methods=['GET'])
+def version():
+    """Return the deployed commit SHA for deployment verification."""
+    return jsonify({'commit': os.environ.get('GIT_COMMIT', 'unknown')})
 
 
 @app.route('/api/status', methods=['GET'])

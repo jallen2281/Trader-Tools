@@ -35,6 +35,10 @@ RUN useradd -m -u 1000 appuser && \
 # Copy installed packages from builder
 COPY --from=builder /root/.local /home/appuser/.local
 
+# Bake git commit SHA into the image
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+
 # Copy application files
 COPY --chown=appuser:appuser *.py ./
 COPY --chown=appuser:appuser *.sql ./
