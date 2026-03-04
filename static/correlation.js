@@ -182,29 +182,6 @@ class CorrelationHeatMap {
             console.error('Error loading diversification metrics:', error);
             this.showError(this.diversificationContainer, 'Failed to load diversification metrics');
         }
-    } {
-                    'X-API-Key': localStorage.getItem('apiKey') || ''
-                }
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-
-            const data = await response.json();
-
-            if (data.error) {
-                this.showError(this.diversificationContainer, data.error);
-                return;
-            }
-
-            this.renderDiversificationMetrics(data);
-            console.log('Correlation Heat Map: Diversification metrics loaded', data);
-
-        } catch (error) {
-            console.error('Error loading diversification metrics:', error);
-            this.showError(this.diversificationContainer, 'Failed to load diversification metrics');
-        }
     }
 
     renderHeatMap(data) {

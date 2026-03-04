@@ -823,8 +823,11 @@ async function addPosition(event) {
             });
             
             if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to add position');
+                const errData = await response.json();
+                const msg = errData.error || 'Failed to add position';
+                const tb = errData.traceback ? '\n\nTraceback:\n' + errData.traceback : '';
+                console.error('Server error details:', msg, tb);
+                throw new Error(msg);
             }
             
             showToast(`✓ Added ${quantity} shares of ${symbol} at $${price}`, 'success');

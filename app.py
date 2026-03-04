@@ -980,7 +980,8 @@ def manage_portfolio():
     
     except Exception as e:
         logger.error(f"Error managing portfolio: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
 
 @app.route('/api/transactions', methods=['GET'])
