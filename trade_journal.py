@@ -213,7 +213,8 @@ class TradeJournal:
                         'avg_hold_time': 0,
                         'best_trade': None,
                         'worst_trade': None,
-                        'total_trades': 0
+                        'total_trades': 0,
+                        'total_transactions': len(transactions)
                     }
                 }
             
@@ -244,7 +245,8 @@ class TradeJournal:
                     'avg_hold_time': round(avg_hold_time, 1),
                     'best_trade': best_trade,
                     'worst_trade': worst_trade,
-                    'total_trades': len(realized_gains)
+                    'total_trades': len(realized_gains),
+                    'total_transactions': len(transactions)
                 }
             }
             

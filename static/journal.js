@@ -267,8 +267,9 @@ class TradeJournal {
                 </div>
                 
                 <div class="metric-card">
-                    <div class="metric-label">Total Trades</div>
-                    <div class="metric-value">${metrics.total_trades}</div>
+                    <div class="metric-label">Total Transactions</div>
+                    <div class="metric-value">${metrics.total_transactions || 0}</div>
+                    <div class="metric-detail">${metrics.total_trades} closed</div>
                 </div>
             </div>
             

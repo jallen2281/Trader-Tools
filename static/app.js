@@ -276,18 +276,80 @@ function initializeAlerts() {
         createNewAlert();
     });
 
-    // Update alert count
-    window.addEventListener('alertschange', () => {
-        updateAlertCount();
-        renderAlertsList();
-    });
+    // Request browser notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
 
-    updateAlertCount();
+    // Load alerts from database API
+    fetchSidebarAlerts();
+    // Poll for new/triggered alerts every 60 seconds
+    setInterval(fetchSidebarAlerts, 60000);
 }
 
-function updateAlertCount() {
-    const count = alertsManager.getActive().length;
-    document.getElementById('alertCount').textContent = count;
+let _lastTriggeredIds = new Set();
+
+async function fetchSidebarAlerts() {
+    try {
+        const [activeRes, triggeredRes] = await Promise.all([
+            fetch('/api/alerts'),
+            fetch('/api/alerts/triggered')
+        ]);
+        const activeData = activeRes.ok ? await activeRes.json() : {};
+        const triggeredData = triggeredRes.ok ? await triggeredRes.json() : {};
+        const activeAlerts = activeData.alerts || activeData || [];
+        const triggeredAlerts = triggeredData.alerts || triggeredData || [];
+
+        // Update badge count
+        const count = Array.isArray(activeAlerts) ? activeAlerts.length : 0;
+        document.getElementById('alertCount').textContent = count;
+
+        // Render in sidebar
+        renderSidebarAlerts(activeAlerts, triggeredAlerts);
+
+        // Browser notifications for newly triggered alerts
+        if ('Notification' in window && Notification.permission === 'granted') {
+            const triggered = Array.isArray(triggeredAlerts) ? triggeredAlerts : [];
+            for (const alert of triggered) {
+                const id = alert.id || alert.symbol;
+                if (!_lastTriggeredIds.has(id)) {
+                    _lastTriggeredIds.add(id);
+                    new Notification(`Alert: ${alert.symbol}`, {
+                        body: alert.message || `${alert.alert_type} alert triggered`,
+                        icon: '📊',
+                        tag: `alert-${id}`
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to fetch alerts:', e);
+    }
+}
+
+function renderSidebarAlerts(activeAlerts, triggeredAlerts) {
+    const container = document.getElementById('sidebarAlertsList');
+    if (!container) return;
+
+    const alerts = Array.isArray(activeAlerts) ? activeAlerts : [];
+    const triggered = Array.isArray(triggeredAlerts) ? triggeredAlerts : [];
+    const all = [...triggered.slice(0, 3), ...alerts.slice(0, 5)];
+
+    if (all.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="font-size:0.85em;padding:4px 0;">No alerts set</div>';
+        return;
+    }
+
+    container.innerHTML = all.map(a => {
+        const isTriggered = a.status === 'triggered';
+        const icon = isTriggered ? '🚨' : (a.alert_type === 'price_above' ? '📈' : '📉');
+        const cls = isTriggered ? 'color:#e74c3c' : 'color:#2ecc71';
+        return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.85em;">
+            <span>${icon}</span>
+            <span style="flex:1"><strong>${a.symbol}</strong> ${a.alert_type || ''}</span>
+            <span style="${cls};font-weight:600">${isTriggered ? 'TRIGGERED' : 'ACTIVE'}</span>
+        </div>`;
+    }).join('');
 }
 
 function openAlertsModal() {
@@ -295,7 +357,7 @@ function openAlertsModal() {
     renderAlertsList();
 }
 
-function createNewAlert() {
+async function createNewAlert() {
     const symbol = document.getElementById('alertSymbol').value.trim().toUpperCase();
     const type = document.getElementById('alertType').value;
     const price = parseFloat(document.getElementById('alertPrice').value);
@@ -306,56 +368,88 @@ function createNewAlert() {
         return;
     }
 
-    alertsManager.add(symbol, type, price, notes);
+    try {
+        const alertType = type === 'high' ? 'price_above' : 'price_below';
+        const condition = type === 'high' ? `price > ${price}` : `price < ${price}`;
+        const res = await fetch('/api/alerts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                symbol: symbol,
+                alert_type: alertType,
+                condition: condition,
+                notes: notes
+            })
+        });
+        if (!res.ok) throw new Error('Failed to create alert');
+    } catch (e) {
+        console.error('Error creating alert:', e);
+    }
     
     // Clear form
     document.getElementById('alertSymbol').value = '';
     document.getElementById('alertPrice').value = '';
     document.getElementById('alertNotes').value = '';
 
-    // Start monitoring if not already
-    if (alertsManager.getActive().length > 0 && !alertsManager.checkInterval) {
-        alertsManager.startMonitoring(1);
-    }
-
     renderAlertsList();
+    fetchSidebarAlerts();
 }
 
-function renderAlertsList() {
+async function renderAlertsList() {
     const container = document.getElementById('alertsList');
-    const alerts = alertsManager.getAll();
+    try {
+        const [activeRes, triggeredRes] = await Promise.all([
+            fetch('/api/alerts'),
+            fetch('/api/alerts/triggered')
+        ]);
+        const activeData = activeRes.ok ? await activeRes.json() : {};
+        const triggeredData = triggeredRes.ok ? await triggeredRes.json() : {};
+        const active = activeData.alerts || activeData || [];
+        const triggered = triggeredData.alerts || triggeredData || [];
+        const alerts = [...(Array.isArray(triggered) ? triggered : []), ...(Array.isArray(active) ? active : [])];
 
-    if (alerts.length === 0) {
-        container.innerHTML = '<div class="empty-state">No alerts set</div>';
-        return;
-    }
+        if (alerts.length === 0) {
+            container.innerHTML = '<div class="empty-state">No alerts set</div>';
+            return;
+        }
 
-    container.innerHTML = alerts.map(alert => {
-        const statusClass = alert.triggered ? 'triggered' : 'active';
-        const statusText = alert.triggered ? 'TRIGGERED' : 'ACTIVE';
-        const typeIcon = alert.type === 'high' ? '📈' : '📉';
+        container.innerHTML = alerts.map(a => {
+            const isTriggered = a.status === 'triggered';
+            const statusClass = isTriggered ? 'triggered' : 'active';
+            const statusText = isTriggered ? 'TRIGGERED' : 'ACTIVE';
+            const typeIcon = a.alert_type === 'price_above' ? '📈' : '📉';
+            const priceDisplay = a.threshold ? `$${parseFloat(a.threshold).toFixed(2)}` : '';
 
-        return `
-            <div class="alert-item ${statusClass}">
-                <div class="alert-info">
-                    <div class="alert-symbol">${typeIcon} ${alert.symbol}</div>
-                    <div class="alert-details">
-                        ${alert.type === 'high' ? 'Above' : 'Below'} $${alert.price.toFixed(2)}
-                        ${alert.notes ? `<br><small>${alert.notes}</small>` : ''}
+            return `
+                <div class="alert-item ${statusClass}">
+                    <div class="alert-info">
+                        <div class="alert-symbol">${typeIcon} ${a.symbol}</div>
+                        <div class="alert-details">
+                            ${a.alert_type === 'price_above' ? 'Above' : 'Below'} ${priceDisplay}
+                            ${a.notes ? `<br><small>${a.notes}</small>` : ''}
+                        </div>
+                    </div>
+                    <div class="alert-status">
+                        <span class="alert-badge ${statusClass}">${statusText}</span>
+                        <button class="btn-icon" onclick="deleteAlert(${a.id})">🗑️</button>
                     </div>
                 </div>
-                <div class="alert-status">
-                    <span class="alert-badge ${statusClass}">${statusText}</span>
-                    <button class="btn-icon" onclick="deleteAlert(${alert.id})">🗑️</button>
-                </div>
-            </div>
-        `;
-    }).join('');
+            `;
+        }).join('');
+    } catch (e) {
+        console.error('Error loading alerts:', e);
+        container.innerHTML = '<div class="empty-state">Error loading alerts</div>';
+    }
 }
 
-function deleteAlert(alertId) {
-    alertsManager.remove(alertId);
+async function deleteAlert(alertId) {
+    try {
+        await fetch(`/api/alerts/${alertId}`, { method: 'DELETE' });
+    } catch (e) {
+        console.error('Error deleting alert:', e);
+    }
     renderAlertsList();
+    fetchSidebarAlerts();
 }
 
 // =======================
