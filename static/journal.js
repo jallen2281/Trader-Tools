@@ -225,13 +225,21 @@ class TradeJournal {
     renderPerformance(data) {
         const container = document.getElementById('performance-summary');
         const metrics = data.metrics;
+        const openPositions = data.open_positions || [];
 
         const totalClass = metrics.total_realized >= 0 ? 'positive' : 'negative';
+        const unrealizedClass = (metrics.unrealized_pnl || 0) >= 0 ? 'positive' : 'negative';
         const winRateClass = metrics.win_rate >= 60 ? 'good' : metrics.win_rate >= 40 ? 'moderate' : 'poor';
 
         container.innerHTML = `
             <h3>📊 Performance Summary</h3>
             <div class="metrics-grid">
+                <div class="metric-card large ${unrealizedClass}">
+                    <div class="metric-label">Unrealized P&L</div>
+                    <div class="metric-value">$${(metrics.unrealized_pnl || 0).toFixed(2)}</div>
+                    <div class="metric-detail">${openPositions.length} open position${openPositions.length !== 1 ? 's' : ''}</div>
+                </div>
+
                 <div class="metric-card large ${totalClass}">
                     <div class="metric-label">Total Realized P&L</div>
                     <div class="metric-value">$${metrics.total_realized.toFixed(2)}</div>
@@ -264,6 +272,24 @@ class TradeJournal {
                 </div>
             </div>
             
+            ${openPositions.length > 0 ? `
+                <div class="best-worst-section">
+                    ${openPositions.map(p => {
+                        const posClass = p.unrealized >= 0 ? 'best' : 'worst';
+                        const icon = p.unrealized >= 0 ? '📈' : '📉';
+                        const valClass = p.unrealized >= 0 ? 'gain' : 'loss';
+                        return `<div class="trade-highlight ${posClass}">
+                            <span class="icon">${icon}</span>
+                            <div>
+                                <strong>${p.symbol}</strong> ${p.quantity} @ $${p.avg_cost}
+                                → $${p.current_price}
+                                <span class="${valClass}">$${p.unrealized.toFixed(2)}</span>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>
+            ` : ''}
+
             ${metrics.best_trade ? `
                 <div class="best-worst-section">
                     <div class="trade-highlight best">

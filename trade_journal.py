@@ -173,12 +173,38 @@ class TradeJournal:
                         else:
                             positions[symbol] = {'quantity': 0, 'total_cost': 0}
             
+            # Calculate unrealized P&L for open positions
+            unrealized_total = 0
+            open_positions = []
+            for symbol, pos in positions.items():
+                if pos['quantity'] > 0:
+                    try:
+                        import yfinance as yf
+                        ticker = yf.Ticker(symbol)
+                        hist = ticker.history(period='1d')
+                        if not hist.empty:
+                            current_price = hist['Close'].iloc[-1]
+                            avg_cost = pos['total_cost'] / pos['quantity']
+                            unrealized = (current_price - avg_cost) * pos['quantity']
+                            unrealized_total += unrealized
+                            open_positions.append({
+                                'symbol': symbol,
+                                'quantity': pos['quantity'],
+                                'avg_cost': round(avg_cost, 2),
+                                'current_price': round(current_price, 2),
+                                'unrealized': round(unrealized, 2)
+                            })
+                    except Exception:
+                        pass
+            
             # Calculate metrics
             if not realized_gains:
                 return {
                     'realized_trades': [],
+                    'open_positions': open_positions,
                     'metrics': {
                         'total_realized': 0,
+                        'unrealized_pnl': round(unrealized_total, 2),
                         'winners': 0,
                         'losers': 0,
                         'win_rate': 0,
@@ -206,8 +232,10 @@ class TradeJournal:
             
             return {
                 'realized_trades': realized_gains,
+                'open_positions': open_positions,
                 'metrics': {
                     'total_realized': round(total_realized, 2),
+                    'unrealized_pnl': round(unrealized_total, 2),
                     'winners': len(winners),
                     'losers': len(losers),
                     'win_rate': round(len(winners) / len(realized_gains) * 100, 1) if realized_gains else 0,
@@ -264,19 +292,20 @@ Performance Metrics:
 
 Provide 3-4 key insights about their trading patterns and 3-4 actionable recommendations for improvement. Be specific and constructive."""
 
-            # Get AI analysis
-            ai_response = self.llm_analyzer.analyze(
+            # Get AI analysis using text-only path
+            ai_response = self.llm_analyzer._analyze_text_only(
                 symbol="PORTFOLIO",
-                chart_data={},
-                additional_context=context
+                indicators={},
+                patterns=[],
+                context=context
             )
             
             # Parse response into insights and recommendations
             insights = []
             recommendations = []
             
-            if ai_response and 'analysis' in ai_response:
-                analysis_text = ai_response['analysis']
+            if ai_response and not ai_response.startswith('Error') and not ai_response.startswith('AI analysis timed out'):
+                analysis_text = ai_response
                 
                 # Simple parsing - look for sections
                 lines = analysis_text.split('\n')
@@ -314,7 +343,7 @@ Provide 3-4 key insights about their trading patterns and 3-4 actionable recomme
             return {
                 'insights': insights[:4],
                 'recommendations': recommendations[:4],
-                'ai_analysis': ai_response.get('analysis', '') if ai_response else '',
+                'ai_analysis': ai_response if isinstance(ai_response, str) else '',
                 'metrics_summary': metrics
             }
             
