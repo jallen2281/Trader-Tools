@@ -483,10 +483,21 @@
                 <option value="all">All Accounts</option>
             </select>
             <span id="accountStyleBadge" style="padding:4px 12px;border-radius:20px;font-size:0.8em;font-weight:600;display:none;"></span>
+            <span id="accountCashBadge" style="padding:4px 12px;border-radius:20px;font-size:0.8em;font-weight:600;background:rgba(16,185,129,0.15);color:#10b981;display:none;cursor:pointer;" onclick="editAccountCash()" title="Click to edit cash balance">💵 $0.00</span>
             <div style="margin-left:auto;display:flex;gap:8px;">
                 <button onclick="openAccountManager()" class="btn btn-secondary" style="font-size:0.85em;padding:8px 14px;">⚙️ Manage Accounts</button>
                 <button onclick="openCreateAccountModal()" class="btn btn-primary" style="font-size:0.85em;padding:8px 14px;">+ New Account</button>
             </div>
+        </div>
+        
+        <!-- Cash Optimization Widget -->
+        <div id="cashOptimizationWidget" style="display:none;background:var(--card-bg);border-radius:12px;padding:15px 20px;margin-bottom:20px;box-shadow:var(--shadow);border:1px solid var(--border);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h3 style="margin:0;color:var(--text-primary);">💡 Cash Optimization</h3>
+                <button onclick="document.getElementById('cashOptimizationWidget').style.display='none'" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text-secondary);">&times;</button>
+            </div>
+            <div id="cashOptMessage" style="padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:0.9em;"></div>
+            <div id="cashOptSuggestions" style="display:grid;gap:8px;"></div>
         </div>
         
         <!-- Portfolio Summary -->

@@ -879,12 +879,15 @@ def list_portfolio_accounts():
             holdings = Portfolio.query.filter_by(user_id=current_user.id, account_id=acc.id).all()
             total_value = sum(float(h.quantity) * float(h.current_price or h.average_cost) for h in holdings)
             total_cost = sum(float(h.quantity) * float(h.average_cost) for h in holdings)
+            cash = float(acc.cash_balance) if acc.cash_balance else 0
             result.append({
                 **acc.to_dict(),
                 'total_value': round(total_value, 2),
                 'total_cost': round(total_cost, 2),
                 'gain_loss': round(total_value - total_cost, 2),
-                'holdings_count': len(holdings)
+                'holdings_count': len(holdings),
+                'total_account_value': round(total_value + cash, 2),
+                'cash_pct': round((cash / (total_value + cash) * 100) if (total_value + cash) > 0 else 0, 1)
             })
         
         # Also get unassigned holdings count
@@ -922,7 +925,8 @@ def create_portfolio_account():
             user_id=current_user.id,
             name=name,
             investment_style=investment_style,
-            description=description
+            description=description,
+            cash_balance=float(data.get('cash_balance', 0))
         )
         db.session.add(account)
         db.session.commit()
@@ -953,6 +957,8 @@ def update_portfolio_account(account_id):
                 account.investment_style = data['investment_style']
         if 'description' in data:
             account.description = data['description'].strip()
+        if 'cash_balance' in data:
+            account.cash_balance = max(0, float(data['cash_balance']))
         
         db.session.commit()
         return jsonify({'account': account.to_dict(), 'message': 'Account updated'})
@@ -982,6 +988,129 @@ def delete_portfolio_account(account_id):
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error deleting account: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/accounts/<int:account_id>/cash', methods=['PUT'])
+def update_account_cash(account_id):
+    """Update cash balance for an account."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    try:
+        account = PortfolioAccount.query.filter_by(id=account_id, user_id=current_user.id).first()
+        if not account:
+            return jsonify({'error': 'Account not found'}), 404
+        
+        data = request.get_json()
+        account.cash_balance = max(0, float(data.get('cash_balance', 0)))
+        db.session.commit()
+        return jsonify({'message': 'Cash balance updated', 'cash_balance': float(account.cash_balance)})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error updating cash: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/cash-optimization', methods=['GET'])
+def get_cash_optimization():
+    """Get cash optimization suggestions based on account style and holdings."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    try:
+        account_id = request.args.get('account_id', type=int)
+        if not account_id:
+            return jsonify({'error': 'account_id is required'}), 400
+        
+        account = PortfolioAccount.query.filter_by(id=account_id, user_id=current_user.id).first()
+        if not account:
+            return jsonify({'error': 'Account not found'}), 404
+        
+        cash = float(account.cash_balance) if account.cash_balance else 0
+        if cash <= 0:
+            return jsonify({'suggestions': [], 'message': 'No free cash to optimize'})
+        
+        holdings = Portfolio.query.filter_by(user_id=current_user.id, account_id=account_id).all()
+        invested_value = sum(float(h.quantity) * float(h.current_price or h.average_cost) for h in holdings)
+        total_account = invested_value + cash
+        cash_pct = (cash / total_account * 100) if total_account > 0 else 100
+        
+        held_symbols = {h.symbol for h in holdings}
+        style = account.investment_style or 'moderate'
+        
+        # Suggestions based on investment style
+        suggestions = []
+        
+        # Style-specific ETF suggestions
+        style_etfs = {
+            'aggressive': [
+                {'symbol': 'QQQ', 'name': 'Invesco QQQ Trust (Nasdaq 100)', 'reason': 'High-growth tech exposure for aggressive portfolios', 'allocation': 30},
+                {'symbol': 'ARKK', 'name': 'ARK Innovation ETF', 'reason': 'Disruptive innovation exposure', 'allocation': 15},
+                {'symbol': 'SOXX', 'name': 'iShares Semiconductor ETF', 'reason': 'Semiconductor sector growth play', 'allocation': 15},
+                {'symbol': 'VGT', 'name': 'Vanguard Info Tech ETF', 'reason': 'Broad tech sector allocation', 'allocation': 20},
+                {'symbol': 'TQQQ', 'name': 'ProShares UltraPro QQQ', 'reason': '3x leveraged Nasdaq for high-risk plays', 'allocation': 10},
+            ],
+            'moderate': [
+                {'symbol': 'VOO', 'name': 'Vanguard S&P 500 ETF', 'reason': 'Core S&P 500 index exposure', 'allocation': 35},
+                {'symbol': 'QQQ', 'name': 'Invesco QQQ Trust', 'reason': 'Growth tilt via Nasdaq 100', 'allocation': 20},
+                {'symbol': 'SCHD', 'name': 'Schwab US Dividend Equity', 'reason': 'Reliable dividend income', 'allocation': 20},
+                {'symbol': 'BND', 'name': 'Vanguard Total Bond Market', 'reason': 'Fixed income ballast', 'allocation': 15},
+                {'symbol': 'VNQ', 'name': 'Vanguard Real Estate ETF', 'reason': 'Real estate diversification', 'allocation': 10},
+            ],
+            'conservative': [
+                {'symbol': 'BND', 'name': 'Vanguard Total Bond Market', 'reason': 'Core bond holding for stability', 'allocation': 30},
+                {'symbol': 'SCHD', 'name': 'Schwab US Dividend Equity', 'reason': 'High-quality dividend stocks', 'allocation': 25},
+                {'symbol': 'VIG', 'name': 'Vanguard Dividend Appreciation', 'reason': 'Dividend growth for income', 'allocation': 20},
+                {'symbol': 'SHY', 'name': 'iShares 1-3 Year Treasury', 'reason': 'Short-term treasury safety', 'allocation': 15},
+                {'symbol': 'VTIP', 'name': 'Vanguard Short-Term TIPS', 'reason': 'Inflation protection', 'allocation': 10},
+            ],
+            'balanced': [
+                {'symbol': 'VTI', 'name': 'Vanguard Total Stock Market', 'reason': 'Broad US equity exposure', 'allocation': 30},
+                {'symbol': 'VXUS', 'name': 'Vanguard Total International', 'reason': 'International diversification', 'allocation': 20},
+                {'symbol': 'BND', 'name': 'Vanguard Total Bond Market', 'reason': 'Bond allocation for balance', 'allocation': 20},
+                {'symbol': 'SCHD', 'name': 'Schwab US Dividend Equity', 'reason': 'Dividend income stream', 'allocation': 15},
+                {'symbol': 'GLD', 'name': 'SPDR Gold Shares', 'reason': 'Gold as inflation hedge', 'allocation': 15},
+            ]
+        }
+        
+        etfs = style_etfs.get(style, style_etfs['moderate'])
+        
+        for etf in etfs:
+            already_held = etf['symbol'] in held_symbols
+            dollar_amount = round(cash * etf['allocation'] / 100, 2)
+            suggestions.append({
+                'symbol': etf['symbol'],
+                'name': etf['name'],
+                'reason': etf['reason'],
+                'allocation_pct': etf['allocation'],
+                'dollar_amount': dollar_amount,
+                'already_held': already_held,
+                'action': 'Add to position' if already_held else 'New position'
+            })
+        
+        # Cash analysis
+        if cash_pct > 30:
+            urgency = 'high'
+            message = f'{cash_pct:.0f}% of your account is in cash — significant drag on returns. Consider deploying capital.'
+        elif cash_pct > 15:
+            urgency = 'medium'
+            message = f'{cash_pct:.0f}% cash allocation is above typical targets. Consider partially investing.'
+        else:
+            urgency = 'low'
+            message = f'{cash_pct:.0f}% cash is a reasonable reserve. Optional to optimize further.'
+        
+        return jsonify({
+            'account_name': account.name,
+            'style': style,
+            'cash_balance': cash,
+            'invested_value': round(invested_value, 2),
+            'total_account_value': round(total_account, 2),
+            'cash_pct': round(cash_pct, 1),
+            'urgency': urgency,
+            'message': message,
+            'suggestions': suggestions
+        })
+    except Exception as e:
+        logger.error(f"Error getting cash optimization: {e}")
         return jsonify({'error': str(e)}), 500
 
 # Phase 2: Portfolio endpoints

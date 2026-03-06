@@ -123,6 +123,7 @@ class PortfolioAccount(db.Model):
     name = db.Column(db.String(100), nullable=False)
     investment_style = db.Column(db.String(30), default='moderate')  # 'aggressive', 'moderate', 'conservative', 'balanced'
     description = db.Column(db.Text)
+    cash_balance = db.Column(db.Numeric(15, 2, asdecimal=False), default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     holdings = db.relationship('Portfolio', backref='account', lazy=True)
@@ -137,6 +138,7 @@ class PortfolioAccount(db.Model):
             'name': self.name,
             'investment_style': self.investment_style,
             'description': self.description,
+            'cash_balance': float(self.cash_balance) if self.cash_balance else 0,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'holdings_count': len(self.holdings) if self.holdings else 0
         }

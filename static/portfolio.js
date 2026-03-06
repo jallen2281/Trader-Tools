@@ -1374,6 +1374,7 @@ async function loadAccounts() {
 
 function switchAccount() {
     updateAccountStyleBadge();
+    updateCashBadge();
     loadPortfolioData();
 }
 
@@ -1395,6 +1396,164 @@ function updateAccountStyleBadge() {
         badge.style.display = 'none';
     }
 }
+
+function updateCashBadge() {
+    const badge = document.getElementById('accountCashBadge');
+    const selector = document.getElementById('accountSelector');
+    const widget = document.getElementById('cashOptimizationWidget');
+    if (!badge || !selector) return;
+    
+    const val = selector.value;
+    const account = portfolioAccounts.find(a => a.id == val);
+    
+    if (account) {
+        const cash = account.cash_balance || 0;
+        badge.innerHTML = `💵 $${cash.toLocaleString('en-US', {minimumFractionDigits: 2})}`;
+        badge.style.display = 'inline-block';
+        if (cash > 0) {
+            loadCashOptimization(account.id);
+        } else if (widget) {
+            widget.style.display = 'none';
+        }
+    } else {
+        badge.style.display = 'none';
+        if (widget) widget.style.display = 'none';
+    }
+}
+
+async function editAccountCash() {
+    const selector = document.getElementById('accountSelector');
+    if (!selector) return;
+    const account = portfolioAccounts.find(a => a.id == selector.value);
+    if (!account) { showToast('Select a specific account first', 'error'); return; }
+    
+    const existing = document.getElementById('editCashModal');
+    if (existing) existing.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'editCashModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10001;';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    
+    modal.innerHTML = `
+        <div style="background:var(--modal-bg);border-radius:12px;padding:30px;max-width:400px;width:90%;color:var(--text-primary);">
+            <h3 style="margin:0 0 16px;">💵 Update Cash Balance</h3>
+            <p style="color:var(--text-secondary);font-size:0.9em;margin-bottom:16px;">Account: ${account.name}</p>
+            <div style="position:relative;margin-bottom:16px;">
+                <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);font-weight:600;">$</span>
+                <input type="number" id="cashBalanceInput" value="${account.cash_balance || 0}" min="0" step="0.01" style="width:100%;padding:12px 12px 12px 28px;border:1px solid var(--border);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:1.1em;">
+            </div>
+            <div style="display:flex;gap:8px;">
+                <button onclick="document.getElementById('editCashModal').remove()" style="flex:1;padding:10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text-primary);">Cancel</button>
+                <button onclick="saveCashBalance(${account.id})" style="flex:1;padding:10px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Save</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    document.getElementById('cashBalanceInput').focus();
+}
+
+async function saveCashBalance(accountId) {
+    const input = document.getElementById('cashBalanceInput');
+    const cash = parseFloat(input.value) || 0;
+    
+    try {
+        const res = await fetch(`/api/portfolio/accounts/${accountId}/cash`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cash_balance: cash })
+        });
+        if (!res.ok) throw new Error('Failed to update');
+        
+        document.getElementById('editCashModal')?.remove();
+        showToast('Cash balance updated', 'success');
+        await loadAccounts();
+        updateCashBadge();
+        // Re-open account manager if it was open
+        if (document.getElementById('accountManagerModal')) {
+            document.getElementById('accountManagerModal').remove();
+            openAccountManager();
+        }
+    } catch (e) {
+        showToast('Failed to update cash balance', 'error');
+    }
+}
+
+async function loadCashOptimization(accountId) {
+    const widget = document.getElementById('cashOptimizationWidget');
+    if (!widget) return;
+    
+    try {
+        const res = await fetch(`/api/portfolio/cash-optimization?account_id=${accountId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        if (!data.suggestions || data.suggestions.length === 0) {
+            widget.style.display = 'none';
+            return;
+        }
+        
+        const urgColors = { high: 'rgba(239,68,68,0.15)', medium: 'rgba(245,158,11,0.15)', low: 'rgba(16,185,129,0.15)' };
+        const urgText = { high: '#ef4444', medium: '#f59e0b', low: '#10b981' };
+        
+        document.getElementById('cashOptMessage').style.background = urgColors[data.urgency] || urgColors.low;
+        document.getElementById('cashOptMessage').style.color = urgText[data.urgency] || urgText.low;
+        document.getElementById('cashOptMessage').innerHTML = `<strong>${data.urgency === 'high' ? '⚠️' : data.urgency === 'medium' ? '💡' : '✅'} ${data.message}</strong><br><span style="font-size:0.85em;">Free cash: $${data.cash_balance.toLocaleString('en-US', {minimumFractionDigits: 2})} | Invested: $${data.invested_value.toLocaleString('en-US', {minimumFractionDigits: 2})} | Cash: ${data.cash_pct}%</span>`;
+        
+        document.getElementById('cashOptSuggestions').innerHTML = data.suggestions.map(s => `
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-tertiary);border-radius:8px;border:1px solid var(--border);">
+                <div style="font-weight:700;font-size:1em;min-width:55px;color:var(--primary);">${s.symbol}</div>
+                <div style="flex:1;">
+                    <div style="font-size:0.85em;color:var(--text-primary);font-weight:500;">${s.name}</div>
+                    <div style="font-size:0.8em;color:var(--text-secondary);">${s.reason}</div>
+                </div>
+                <div style="text-align:right;white-space:nowrap;">
+                    <div style="font-weight:600;color:var(--text-primary);">$${s.dollar_amount.toLocaleString('en-US', {minimumFractionDigits: 2})}</div>
+                    <div style="font-size:0.8em;color:var(--text-secondary);">${s.allocation_pct}%${s.already_held ? ' 📌' : ''}</div>
+                </div>
+            </div>
+        `).join('');
+        
+        widget.style.display = 'block';
+    } catch (e) {
+        console.error('Error loading cash optimization:', e);
+    }
+}
+window.editAccountCash = editAccountCash;
+window.saveCashBalance = saveCashBalance;
+
+function editAccountCashById(accountId) {
+    const account = portfolioAccounts.find(a => a.id === accountId);
+    if (!account) return;
+    
+    const existing = document.getElementById('editCashModal');
+    if (existing) existing.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'editCashModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10002;';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    
+    modal.innerHTML = `
+        <div style="background:var(--modal-bg);border-radius:12px;padding:30px;max-width:400px;width:90%;color:var(--text-primary);">
+            <h3 style="margin:0 0 16px;">💵 Update Cash Balance</h3>
+            <p style="color:var(--text-secondary);font-size:0.9em;margin-bottom:16px;">Account: ${account.name}</p>
+            <div style="position:relative;margin-bottom:16px;">
+                <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);font-weight:600;">$</span>
+                <input type="number" id="cashBalanceInput" value="${account.cash_balance || 0}" min="0" step="0.01" style="width:100%;padding:12px 12px 12px 28px;border:1px solid var(--border);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:1.1em;">
+            </div>
+            <div style="display:flex;gap:8px;">
+                <button onclick="document.getElementById('editCashModal').remove()" style="flex:1;padding:10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text-primary);">Cancel</button>
+                <button onclick="saveCashBalance(${account.id})" style="flex:1;padding:10px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Save</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    document.getElementById('cashBalanceInput').focus();
+}
+window.editAccountCashById = editAccountCashById;
 
 function openCreateAccountModal() {
     const existing = document.getElementById('createAccountModal');
@@ -1428,6 +1587,13 @@ function openCreateAccountModal() {
                 <label>Description (optional)</label>
                 <input type="text" id="newAccountDesc" placeholder="Brief description..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);">
             </div>
+            <div class="form-group">
+                <label>Starting Cash Balance</label>
+                <div style="position:relative;">
+                    <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);font-weight:600;">$</span>
+                    <input type="number" id="newAccountCash" value="0" min="0" step="0.01" placeholder="0.00" style="width:100%;padding:10px 10px 10px 28px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);">
+                </div>
+            </div>
             <button onclick="createAccount()" style="width:100%;padding:12px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;">Create Account</button>
         </div>
     `;
@@ -1440,6 +1606,7 @@ async function createAccount() {
     const name = document.getElementById('newAccountName').value.trim();
     const style = document.getElementById('newAccountStyle').value;
     const desc = document.getElementById('newAccountDesc').value.trim();
+    const cash = parseFloat(document.getElementById('newAccountCash')?.value) || 0;
     
     if (!name) { showToast('Account name is required', 'error'); return; }
     
@@ -1447,7 +1614,7 @@ async function createAccount() {
         const res = await fetch('/api/portfolio/accounts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, investment_style: style, description: desc })
+            body: JSON.stringify({ name, investment_style: style, description: desc, cash_balance: cash })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to create account');
@@ -1473,6 +1640,8 @@ function openAccountManager() {
         ? '<p style="color:var(--text-secondary);text-align:center;padding:20px;">No accounts yet. Create one to organize your holdings.</p>'
         : portfolioAccounts.map(acc => {
             const style = STYLE_COLORS[acc.investment_style] || STYLE_COLORS.moderate;
+            const cash = acc.cash_balance || 0;
+            const totalAcct = (acc.total_value || 0) + cash;
             return `
                 <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;margin-bottom:12px;border:1px solid var(--border);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -1480,13 +1649,18 @@ function openAccountManager() {
                         <span style="padding:4px 10px;border-radius:12px;font-size:0.8em;font-weight:600;background:${style.bg};color:${style.color};">${style.label}</span>
                     </div>
                     ${acc.description ? `<div style="color:var(--text-secondary);font-size:0.9em;margin-bottom:8px;">${acc.description}</div>` : ''}
-                    <div style="display:flex;gap:16px;font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
+                    <div style="display:flex;gap:16px;font-size:0.85em;color:var(--text-secondary);margin-bottom:8px;flex-wrap:wrap;">
                         <span>📊 ${acc.holdings_count} holdings</span>
                         <span>💰 $${(acc.total_value || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
                         <span style="color:${(acc.gain_loss||0) >= 0 ? 'var(--success)' : 'var(--danger)'};">P&L: $${(acc.gain_loss || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
                     </div>
+                    <div style="display:flex;gap:16px;font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
+                        <span>💵 Cash: $${cash.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
+                        <span>📈 Total: $${totalAcct.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
+                    </div>
                     <div style="display:flex;gap:8px;">
                         <button onclick="editAccountStyle(${acc.id}, '${acc.investment_style}')" style="flex:1;padding:8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text-primary);font-size:0.85em;">Edit Style</button>
+                        <button onclick="editAccountCashById(${acc.id})" style="flex:1;padding:8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text-primary);font-size:0.85em;">💵 Edit Cash</button>
                         <button onclick="deleteAccount(${acc.id}, '${acc.name}')" style="padding:8px 14px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:6px;cursor:pointer;color:#ef4444;font-size:0.85em;">🗑️</button>
                     </div>
                 </div>

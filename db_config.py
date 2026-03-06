@@ -73,6 +73,13 @@ def init_database(app):
             db.session.commit()
             print("✓ Added account_id to transactions table")
         
+        # Migrate: add cash_balance to portfolio_accounts if missing
+        acct_cols = [c['name'] for c in inspector.get_columns('portfolio_accounts')]
+        if 'cash_balance' not in acct_cols:
+            db.session.execute(text('ALTER TABLE portfolio_accounts ADD COLUMN cash_balance NUMERIC(15,2) DEFAULT 0'))
+            db.session.commit()
+            print("✓ Added cash_balance to portfolio_accounts table")
+        
         # Drop old unique constraint and recreate (SQLite can't ALTER constraints, so we skip if column exists)
         print("✓ Database tables created successfully")
     
