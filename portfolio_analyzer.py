@@ -54,7 +54,7 @@ class PortfolioAnalyzer:
             self._update_portfolio_prices(stock_holdings, options_holdings)
             
             # Calculate totals
-            stock_value = sum(float(h.quantity * h.current_price) for h in stock_holdings)
+            stock_value = sum(float(h.quantity * (h.current_price or h.average_cost)) for h in stock_holdings)
             stock_cost = sum(float(h.quantity * h.average_cost) for h in stock_holdings)
             
             options_value = 0

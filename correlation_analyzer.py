@@ -80,13 +80,21 @@ class CorrelationAnalyzer:
                     if 'Close' in data.columns:
                         close_prices = data[['Close']].copy()
                         close_prices.columns = symbols
+                    elif isinstance(data.columns, pd.MultiIndex) and 'Close' in data.columns.get_level_values(0):
+                        close_prices = data['Close'].copy()
+                        if isinstance(close_prices, pd.Series):
+                            close_prices = close_prices.to_frame(name=symbols[0])
                     else:
                         close_prices = data.copy()
                         close_prices.columns = symbols
                 else:
-                    # Multiple symbols: datahas MultiIndex columns
+                    # Multiple symbols: data has MultiIndex columns
                     if isinstance(data.columns, pd.MultiIndex):
-                        close_prices = data['Close'].copy()
+                        if 'Close' in data.columns.get_level_values(0):
+                            close_prices = data['Close'].copy()
+                        else:
+                            # Try swapped level order (Ticker, Price)
+                            close_prices = data.xs('Close', level=1, axis=1).copy()
                     else:
                         # Fallback: if for some reason it's not MultiIndex
                         close_prices = data.copy()

@@ -3237,20 +3237,15 @@ def get_correlation_matrix():
         
         if 'error' in result:
             logger.info(f"Correlation matrix error for user {user_id}: {result['error']}")
-            # Return 200 for empty portfolio (not an error condition)
-            if 'No portfolio found' in result['error'] or 'Need at least 2 symbols' in result['error']:
-                return jsonify({
-                    'error': result['error'],
-                    'empty': True,
-                    'message': 'Add stocks to your portfolio to see correlation analysis'
-                }), 200
-            return jsonify(result), 400
+            result.setdefault('empty', True)
+            result.setdefault('message', result['error'])
+            return jsonify(result), 200
         
         return jsonify(result), 200
     
     except Exception as e:
         logger.error(f"Error fetching correlation matrix: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e), 'empty': True, 'message': 'Correlation analysis temporarily unavailable'}), 200
 
 @app.route('/api/correlation/diversification', methods=['GET'])
 @require_api_auth
@@ -3271,20 +3266,15 @@ def get_diversification():
         
         if 'error' in result:
             logger.info(f"Diversification metrics error for user {user_id}: {result['error']}")
-            # Return 200 for empty portfolio (not an error condition)
-            if 'No portfolio found' in result['error']:
-                return jsonify({
-                    'error': result['error'],
-                    'empty': True,
-                    'message': 'Add stocks to your portfolio to see diversification metrics'
-                }), 200
-            return jsonify(result), 400
+            result.setdefault('empty', True)
+            result.setdefault('message', result['error'])
+            return jsonify(result), 200
         
         return jsonify(result), 200
     
     except Exception as e:
         logger.error(f"Error fetching diversification metrics: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e), 'empty': True, 'message': 'Diversification analysis temporarily unavailable'}), 200
 
 @app.route('/api/correlation/time-series', methods=['GET'])
 @require_api_auth
