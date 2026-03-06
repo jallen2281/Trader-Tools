@@ -1906,6 +1906,14 @@ def update_holding(holding_id):
                 except:
                     pass
         
+        if 'account_id' in data:
+            new_account_id = data['account_id']
+            if new_account_id is not None:
+                account = PortfolioAccount.query.filter_by(id=new_account_id, user_id=user_id).first()
+                if not account:
+                    return jsonify({'error': 'Account not found'}), 404
+            holding.account_id = new_account_id
+        
         db.session.commit()
         
         logger.info(f"Updated holding {holding.symbol} (ID: {holding_id}) for user {user_id}")

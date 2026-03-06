@@ -281,6 +281,14 @@ async function openHoldingModal(holdingId, type = 'stock') {
         
         document.getElementById('modalSymbol').textContent = data.symbol;
         
+        // Build account options for dropdown
+        const accountOptions = portfolioAccounts.map(acc => {
+            const selected = acc.id === data.account_id ? 'selected' : '';
+            const style = STYLE_COLORS[acc.investment_style] || STYLE_COLORS.balanced;
+            return `<option value="${acc.id}" ${selected}>${acc.name} (${style.label})</option>`;
+        }).join('');
+        const noAccountSelected = !data.account_id ? 'selected' : '';
+        
         const detailsDiv = document.getElementById('holdingDetails');
         detailsDiv.innerHTML = `
             <div style="margin-bottom: 20px;">
@@ -306,6 +314,19 @@ async function openHoldingModal(holdingId, type = 'stock') {
                     </div>
                 </div>
             </div>
+            
+            ${portfolioAccounts.length > 0 ? `
+            <div style="margin-bottom: 20px; padding: 15px; background: var(--light); border-radius: 8px;">
+                <h3 style="margin-bottom: 10px;">📂 Account</h3>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <select id="holdingAccountSelect" style="flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color, #ccc); background: var(--card-bg, #fff); color: var(--text-color, #333); font-size: 0.95em;">
+                        <option value="" ${noAccountSelected}>No Account</option>
+                        ${accountOptions}
+                    </select>
+                    <button onclick="changeHoldingAccount(${holdingId}, '${type}')" class="btn btn-primary" style="padding: 8px 16px; white-space: nowrap;">Move</button>
+                </div>
+            </div>
+            ` : ''}
             
             <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button onclick="openSellPositionModal(${holdingId}, '${type}')" class="btn btn-primary" style="flex: 1;">💰 Sell/Edit Position</button>
@@ -353,6 +374,35 @@ async function openHoldingModal(holdingId, type = 'stock') {
 
 // Make function globally accessible
 window.openHoldingModal = openHoldingModal;
+
+async function changeHoldingAccount(holdingId, type) {
+    const select = document.getElementById('holdingAccountSelect');
+    const newAccountId = select.value ? parseInt(select.value) : null;
+    
+    try {
+        const response = await fetch(`/api/portfolio/holding/${holdingId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: newAccountId })
+        });
+        
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.error || 'Failed to move holding');
+        }
+        
+        const accountName = newAccountId 
+            ? portfolioAccounts.find(a => a.id === newAccountId)?.name || 'account'
+            : 'No Account';
+        showToast(`Moved to ${accountName}`, 'success');
+        closeHoldingModal();
+        loadHoldings();
+    } catch (error) {
+        console.error('Error changing holding account:', error);
+        showToast(error.message, 'error');
+    }
+}
+window.changeHoldingAccount = changeHoldingAccount;
 
 function getActionClass(action) {
     const classMap = {

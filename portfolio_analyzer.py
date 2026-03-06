@@ -173,8 +173,14 @@ class PortfolioAnalyzer:
                 'pnl_pct': round(pnl_pct, 2),
                 'risk_contribution': risk_contrib,
                 'recommendation': recommendation,
-                'phase3': phase3_analysis
+                'phase3': phase3_analysis,
+                'account_id': getattr(holding, 'account_id', None),
+                'account_name': holding.account.name if getattr(holding, 'account_id', None) and hasattr(holding, 'account') and holding.account else None
             }
+            
+            # Add stock-specific data
+            if holding_type == 'stock' and hasattr(holding, 'purchase_date') and holding.purchase_date:
+                result['purchase_date'] = holding.purchase_date.isoformat()
             
             # Add option-specific data
             if holding_type == 'option':
