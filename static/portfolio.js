@@ -315,7 +315,6 @@ async function openHoldingModal(holdingId, type = 'stock') {
                 </div>
             </div>
             
-            ${portfolioAccounts.length > 0 ? `
             <div style="margin-bottom: 20px; padding: 15px; background: var(--light); border-radius: 8px;">
                 <h3 style="margin-bottom: 10px;">📂 Account</h3>
                 <div style="display: flex; align-items: center; gap: 10px;">
@@ -326,7 +325,6 @@ async function openHoldingModal(holdingId, type = 'stock') {
                     <button onclick="changeHoldingAccount(${holdingId}, '${type}')" class="btn btn-primary" style="padding: 8px 16px; white-space: nowrap;">Move</button>
                 </div>
             </div>
-            ` : ''}
             
             <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button onclick="openSellPositionModal(${holdingId}, '${type}')" class="btn btn-primary" style="flex: 1;">💰 Sell/Edit Position</button>
