@@ -22,6 +22,32 @@ class CorrelationAnalyzer:
         self.cache = {}
         self.cache_duration = timedelta(hours=1)
     
+    @staticmethod
+    def _extract_close_prices(data, symbols):
+        """Extract close prices from yfinance download data, handling all MultiIndex formats."""
+        if not isinstance(data.columns, pd.MultiIndex):
+            # Single ticker or flat columns
+            if 'Close' in data.columns:
+                close_prices = data[['Close']].copy()
+                if len(symbols) == 1:
+                    close_prices.columns = symbols
+                return close_prices
+            return data.copy()
+        
+        # MultiIndex columns - try both level orderings
+        level_values_0 = data.columns.get_level_values(0).unique().tolist()
+        level_values_1 = data.columns.get_level_values(1).unique().tolist()
+        
+        if 'Close' in level_values_0:
+            # Old format: (Price, Ticker) - e.g. ('Close', 'AAPL')
+            return data['Close'].copy()
+        elif 'Close' in level_values_1:
+            # New format: (Ticker, Price) - e.g. ('AAPL', 'Close')
+            return data.xs('Close', level=1, axis=1).copy()
+        else:
+            logger.error(f"Cannot find 'Close' in columns. Level 0: {level_values_0}, Level 1: {level_values_1}")
+            raise ValueError(f"Cannot extract close prices from columns: {data.columns.tolist()[:10]}")
+    
     def get_portfolio_correlation_matrix(self, user_id: int, period: str = '3mo') -> Dict:
         """
         Calculate correlation matrix for user's portfolio holdings
@@ -75,29 +101,10 @@ class CorrelationAnalyzer:
             
             # Get close prices - handle both single and multi-symbol cases
             try:
-                if len(symbols) == 1:
-                    # Single symbol: data has simple column structure
-                    if 'Close' in data.columns:
-                        close_prices = data[['Close']].copy()
-                        close_prices.columns = symbols
-                    elif isinstance(data.columns, pd.MultiIndex) and 'Close' in data.columns.get_level_values(0):
-                        close_prices = data['Close'].copy()
-                        if isinstance(close_prices, pd.Series):
-                            close_prices = close_prices.to_frame(name=symbols[0])
-                    else:
-                        close_prices = data.copy()
-                        close_prices.columns = symbols
-                else:
-                    # Multiple symbols: data has MultiIndex columns
-                    if isinstance(data.columns, pd.MultiIndex):
-                        if 'Close' in data.columns.get_level_values(0):
-                            close_prices = data['Close'].copy()
-                        else:
-                            # Try swapped level order (Ticker, Price)
-                            close_prices = data.xs('Close', level=1, axis=1).copy()
-                    else:
-                        # Fallback: if for some reason it's not MultiIndex
-                        close_prices = data.copy()
+                close_prices = self._extract_close_prices(data, symbols)
+                # Ensure it's a DataFrame
+                if isinstance(close_prices, pd.Series):
+                    close_prices = close_prices.to_frame(name=symbols[0])
             except Exception as e:
                 logger.error(f"Error extracting close prices: {e}")
                 return {'error': f'Failed to extract price data: {str(e)}'}
@@ -359,7 +366,10 @@ class CorrelationAnalyzer:
                 if data.empty:
                     continue
                 
-                close_prices = data['Close']
+                try:
+                    close_prices = self._extract_close_prices(data, symbols)
+                except Exception:
+                    continue
                 returns = close_prices.pct_change().dropna()
                 correlation = returns.corr().iloc[0, 1]
                 
