@@ -2,15 +2,17 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport"="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Financial Analysis Platform - AI Powered Trading Insights</title>
     <link rel="icon" type="image/svg+xml" href="/static/robot-icon.svg">
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
     <div class="app-container">
+        <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">☰</button>
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
         <!-- Sidebar with Watchlist -->
-        <aside class="sidebar">
+        <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <h2>📊 Watchlist</h2>
                 <button id="refreshWatchlist" class="icon-btn" title="Refresh Prices">🔄</button>
@@ -380,5 +382,21 @@
     <script src="/static/notifications.js"></script>
     <script src="/static/volatile_stocks.js"></script>
     <script src="/static/app.js"></script>
+    <script>
+        // Mobile sidebar toggle
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const sidebar = document.getElementById('sidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+        if (sidebarToggle && sidebar) {
+            sidebarToggle.addEventListener('click', () => {
+                sidebar.classList.toggle('open');
+                sidebarOverlay.classList.toggle('active');
+            });
+            sidebarOverlay.addEventListener('click', () => {
+                sidebar.classList.remove('open');
+                sidebarOverlay.classList.remove('active');
+            });
+        }
+    </script>
 </body>
 </html>

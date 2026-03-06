@@ -1,4 +1,4 @@
-"""Module for generating financial charts and visualizations."""
+﻿"""Module for generating financial charts and visualizations."""
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
@@ -14,11 +14,31 @@ from config import Config
 class ChartGenerator:
     """Generates various types of financial charts with technical indicators."""
     
+    # Dark theme colors matching the web UI
+    BG_COLOR = '#1a1a1a'
+    CARD_COLOR = '#242424'
+    TEXT_COLOR = '#e5e5e5'
+    GRID_COLOR = '#404040'
+    
     def __init__(self):
         """Initialize the chart generator."""
         self.config = Config()
         self.colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        # Apply dark theme globally
+        plt.rcParams.update({
+            'figure.facecolor': self.BG_COLOR,
+            'axes.facecolor': self.CARD_COLOR,
+            'axes.edgecolor': self.GRID_COLOR,
+            'axes.labelcolor': self.TEXT_COLOR,
+            'text.color': self.TEXT_COLOR,
+            'xtick.color': self.TEXT_COLOR,
+            'ytick.color': self.TEXT_COLOR,
+            'grid.color': self.GRID_COLOR,
+            'legend.facecolor': self.CARD_COLOR,
+            'legend.edgecolor': self.GRID_COLOR,
+            'legend.labelcolor': self.TEXT_COLOR,
+        })
     
     def calculate_rsi(self, data: pd.Series, period: int = 14) -> pd.Series:
         """Calculate Relative Strength Index (RSI)"""
@@ -89,7 +109,17 @@ class ChartGenerator:
             wick='inherit',
             volume='in'
         )
-        s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
+        s = mpf.make_mpf_style(
+            marketcolors=mc,
+            gridstyle=':',
+            y_on_right=False,
+            facecolor=self.CARD_COLOR,
+            figcolor=self.BG_COLOR,
+            gridcolor=self.GRID_COLOR,
+            rc={'axes.labelcolor': self.TEXT_COLOR,
+                'xtick.color': self.TEXT_COLOR,
+                'ytick.color': self.TEXT_COLOR}
+        )
         
         # Create figure
         fig, axes = mpf.plot(
@@ -105,12 +135,12 @@ class ChartGenerator:
         
         # Save or convert to base64
         if save_path:
-            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             plt.close(fig)
             return save_path
         else:
             buf = BytesIO()
-            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             buf.seek(0)
             plt.close(fig)
             img_base64 = base64.b64encode(buf.read()).decode('utf-8')
@@ -151,12 +181,12 @@ class ChartGenerator:
         
         # Save or convert to base64
         if save_path:
-            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             plt.close(fig)
             return save_path
         else:
             buf = BytesIO()
-            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             buf.seek(0)
             plt.close(fig)
             img_base64 = base64.b64encode(buf.read()).decode('utf-8')
@@ -202,12 +232,12 @@ class ChartGenerator:
         
         # Save or convert to base64
         if save_path:
-            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             plt.close(fig)
             return save_path
         else:
             buf = BytesIO()
-            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             buf.seek(0)
             plt.close(fig)
             img_base64 = base64.b64encode(buf.read()).decode('utf-8')
@@ -289,12 +319,12 @@ class ChartGenerator:
         
         # Save or convert to base64
         if save_path:
-            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             plt.close(fig)
             return save_path
         else:
             buf = BytesIO()
-            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             buf.seek(0)
             plt.close(fig)
             img_base64 = base64.b64encode(buf.read()).decode('utf-8')
@@ -433,12 +463,12 @@ class ChartGenerator:
         
         # Save or convert to base64
         if save_path:
-            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(save_path, dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             plt.close(fig)
             return save_path
         else:
             buf = BytesIO()
-            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight')
+            fig.savefig(buf, format='png', dpi=self.config.CHART_DPI, bbox_inches='tight', facecolor=self.BG_COLOR)
             buf.seek(0)
             plt.close(fig)
             img_base64 = base64.b64encode(buf.read()).decode('utf-8')

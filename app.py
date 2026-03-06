@@ -23,7 +23,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -1847,6 +1847,124 @@ def get_rebalancing_suggestions():
     except Exception as e:
         logger.error(f"Error generating rebalancing suggestions: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/history', methods=['GET'])
+@require_api_auth
+def get_portfolio_history():
+    """Get portfolio value history for charting"""
+    try:
+        user_id = current_user.id
+        period = request.args.get('period', '1m')
+        
+        period_map = {
+            '1d': 1, '1w': 7, '1m': 30, '6m': 180,
+            '1y': 365, '3y': 1095, '5y': 1825, 'max': 9999
+        }
+        days = period_map.get(period, 30)
+        
+        from datetime import datetime, timedelta
+        since = datetime.utcnow() - timedelta(days=days)
+        
+        snapshots = PortfolioSnapshot.query.filter(
+            PortfolioSnapshot.user_id == user_id,
+            PortfolioSnapshot.timestamp >= since
+        ).order_by(PortfolioSnapshot.timestamp.asc()).all()
+        
+        if snapshots:
+            history = [s.to_dict() for s in snapshots]
+        else:
+            # Build history from transactions + current prices
+            history = _build_portfolio_history(user_id, days)
+        
+        # Save a snapshot while we're here
+        try:
+            portfolio_analyzer.save_portfolio_snapshot(user_id)
+        except Exception:
+            pass
+        
+        return jsonify({'history': history, 'period': period})
+    
+    except Exception as e:
+        logger.error(f"Error fetching portfolio history: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def _build_portfolio_history(user_id, days):
+    """Build portfolio value history from transactions when no snapshots exist"""
+    from datetime import datetime, timedelta
+    import yfinance as yf
+    
+    transactions = Transaction.query.filter(
+        Transaction.user_id == user_id
+    ).order_by(Transaction.transaction_date.asc()).all()
+    
+    if not transactions:
+        return []
+    
+    # Build position state over time
+    holdings = Portfolio.query.filter_by(user_id=user_id).all()
+    if not holdings:
+        return []
+    
+    symbols = list(set(h.symbol for h in holdings))
+    
+    end = datetime.now()
+    start = end - timedelta(days=min(days, 365))
+    
+    # Fetch historical prices for all symbols
+    price_data = {}
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(start=start, end=end)
+            if not hist.empty:
+                price_data[symbol] = hist['Close']
+        except Exception:
+            continue
+    
+    if not price_data:
+        return []
+    
+    # Get common dates
+    import pandas as pd
+    all_dates = set()
+    for series in price_data.values():
+        all_dates.update(series.index.date)
+    dates = sorted(all_dates)
+    
+    # Build cost basis per symbol from transactions
+    positions = {}
+    for h in holdings:
+        positions[h.symbol] = {
+            'quantity': float(h.quantity),
+            'cost_basis': float(h.total_cost) if h.total_cost else float(h.quantity * h.purchase_price)
+        }
+    
+    # Calculate portfolio value for each date
+    history = []
+    for date in dates:
+        total_value = 0
+        total_cost = sum(p['cost_basis'] for p in positions.values())
+        for symbol, pos in positions.items():
+            if symbol in price_data:
+                series = price_data[symbol]
+                # Find closest price on or before this date
+                mask = series.index.date <= date
+                if mask.any():
+                    price = float(series[mask].iloc[-1])
+                    total_value += price * pos['quantity']
+        
+        if total_value > 0:
+            pnl = total_value - total_cost
+            pnl_pct = (pnl / total_cost * 100) if total_cost > 0 else 0
+            history.append({
+                'timestamp': datetime.combine(date, datetime.min.time()).isoformat(),
+                'total_value': round(total_value, 2),
+                'total_cost_basis': round(total_cost, 2),
+                'total_pnl': round(pnl, 2),
+                'total_pnl_pct': round(pnl_pct, 4)
+            })
+    
+    return history
 
 @app.route('/api/alerts', methods=['GET'])
 @require_api_auth

@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadPortfolioData();
     loadVixData();
     loadActiveAlerts();
+    initPortfolioChart();
     
     // Auto-refresh every 60 seconds
     setInterval(() => {
@@ -626,6 +627,186 @@ async function deleteAlert(alertId) {
 
 // Make function globally accessible
 window.deleteAlert = deleteAlert;
+
+/**
+ * Portfolio Value Chart
+ */
+let portfolioChart = null;
+let currentChartPeriod = '1m';
+
+function initPortfolioChart() {
+    const buttons = document.querySelectorAll('.period-btn');
+    buttons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            buttons.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentChartPeriod = btn.dataset.period;
+            loadPortfolioHistory(currentChartPeriod);
+        });
+    });
+    loadPortfolioHistory(currentChartPeriod);
+}
+
+async function loadPortfolioHistory(period) {
+    const canvas = document.getElementById('portfolioValueChart');
+    if (!canvas) return;
+    
+    try {
+        const res = await fetch(`/api/portfolio/history?period=${period}`);
+        const data = await res.json();
+        const history = data.history || [];
+        
+        if (history.length === 0) {
+            renderEmptyChart(canvas);
+            return;
+        }
+        
+        renderPortfolioChart(canvas, history);
+        renderPortfolioMetrics(history);
+    } catch (e) {
+        console.error('Error loading portfolio history:', e);
+        renderEmptyChart(canvas);
+    }
+}
+
+function renderPortfolioChart(canvas, history) {
+    const ctx = canvas.getContext('2d');
+    const isDark = document.body.classList.contains('dark-mode');
+    
+    const labels = history.map(h => {
+        const d = new Date(h.timestamp);
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    });
+    const values = history.map(h => h.total_value);
+    const costBasis = history.map(h => h.total_cost_basis);
+    
+    const isUp = values.length > 1 && values[values.length - 1] >= values[0];
+    const lineColor = isUp ? '#10b981' : '#ef4444';
+    const fillColor = isUp ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)';
+    
+    if (portfolioChart) portfolioChart.destroy();
+    
+    portfolioChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'Portfolio Value',
+                    data: values,
+                    borderColor: lineColor,
+                    backgroundColor: fillColor,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: values.length > 60 ? 0 : 2,
+                    borderWidth: 2
+                },
+                {
+                    label: 'Cost Basis',
+                    data: costBasis,
+                    borderColor: isDark ? '#666' : '#ccc',
+                    borderDash: [5, 5],
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    borderWidth: 1
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: {
+                    labels: { color: isDark ? '#e5e5e5' : '#1f2937', font: { size: 12 } }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => `${ctx.dataset.label}: $${ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2})}`
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: isDark ? '#a0a0a0' : '#6b7280', maxTicksLimit: 12 },
+                    grid: { color: isDark ? '#333' : '#e5e7eb' }
+                },
+                y: {
+                    ticks: {
+                        color: isDark ? '#a0a0a0' : '#6b7280',
+                        callback: v => '$' + v.toLocaleString()
+                    },
+                    grid: { color: isDark ? '#333' : '#e5e7eb' }
+                }
+            }
+        }
+    });
+}
+
+function renderEmptyChart(canvas) {
+    if (portfolioChart) portfolioChart.destroy();
+    const container = document.getElementById('portfolioMetrics');
+    if (container) container.innerHTML = '<p style="color: var(--text-secondary); text-align: center; grid-column: 1/-1;">No portfolio history yet. Data will build over time.</p>';
+}
+
+function renderPortfolioMetrics(history) {
+    const container = document.getElementById('portfolioMetrics');
+    if (!container || history.length === 0) return;
+    
+    const latest = history[history.length - 1];
+    const first = history[0];
+    const values = history.map(h => h.total_value);
+    
+    const periodReturn = latest.total_value - first.total_value;
+    const periodReturnPct = first.total_value > 0 ? (periodReturn / first.total_value * 100) : 0;
+    const highValue = Math.max(...values);
+    const lowValue = Math.min(...values);
+    const drawdown = highValue > 0 ? ((latest.total_value - highValue) / highValue * 100) : 0;
+    const volatility = calcVolatility(values);
+    
+    const retClass = periodReturn >= 0 ? 'color:#10b981' : 'color:#ef4444';
+    const ddClass = drawdown < -5 ? 'color:#ef4444' : 'color:var(--text-primary)';
+    
+    container.innerHTML = `
+        <div class="metric-mini">
+            <div class="metric-label">Period Return</div>
+            <div class="metric-value" style="${retClass}">${periodReturn >= 0 ? '+' : ''}$${periodReturn.toFixed(2)}</div>
+        </div>
+        <div class="metric-mini">
+            <div class="metric-label">Period Return %</div>
+            <div class="metric-value" style="${retClass}">${periodReturnPct >= 0 ? '+' : ''}${periodReturnPct.toFixed(2)}%</div>
+        </div>
+        <div class="metric-mini">
+            <div class="metric-label">Period High</div>
+            <div class="metric-value">$${highValue.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+        </div>
+        <div class="metric-mini">
+            <div class="metric-label">Period Low</div>
+            <div class="metric-value">$${lowValue.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+        </div>
+        <div class="metric-mini">
+            <div class="metric-label">Max Drawdown</div>
+            <div class="metric-value" style="${ddClass}">${drawdown.toFixed(2)}%</div>
+        </div>
+        <div class="metric-mini">
+            <div class="metric-label">Volatility</div>
+            <div class="metric-value">${volatility.toFixed(2)}%</div>
+        </div>
+    `;
+}
+
+function calcVolatility(values) {
+    if (values.length < 2) return 0;
+    const returns = [];
+    for (let i = 1; i < values.length; i++) {
+        if (values[i-1] > 0) returns.push((values[i] - values[i-1]) / values[i-1]);
+    }
+    if (returns.length === 0) return 0;
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length;
+    return Math.sqrt(variance) * Math.sqrt(252) * 100;
+}
 
 /**
  * Refresh all data

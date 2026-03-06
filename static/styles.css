@@ -114,7 +114,7 @@ body {
 }
 
 .portfolio-stat .stat-label {
-    color: #666;
+    color: var(--text-secondary);
     font-size: 0.9em;
 }
 
@@ -165,7 +165,8 @@ body {
 }
 
 .watchlist-items {
-    max-height: 400px;
+    flex: 1;
+    min-height: 200px;
     overflow-y: auto;
 }
 
@@ -476,12 +477,12 @@ body {
 
 .indicator .label {
     font-weight: 600;
-    color: #666;
+    color: var(--text-secondary);
 }
 
 .indicator .value {
     font-weight: 700;
-    color: var(--dark);
+    color: var(--text-primary);
 }
 
 .chart-card {
@@ -494,7 +495,7 @@ body {
 
 .analysis-text {
     line-height: 1.6;
-    color: #555;
+    color: var(--text-secondary);
     white-space: pre-wrap;
 }
 
@@ -1456,6 +1457,24 @@ body {
     font-size: 1.1em;
 }
 
+/* Hamburger menu toggle */
+.sidebar-toggle {
+    display: none;
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 1001;
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    width: 44px;
+    height: 44px;
+    font-size: 1.5em;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+}
+
 /* Responsive */
 @media (max-width: 1024px) {
     .app-container {
@@ -1465,7 +1484,59 @@ body {
     .sidebar {
         width: 100%;
         height: auto;
-        max-height: 300px;
+        max-height: none;
+    }
+    
+    .sidebar-toggle {
+        display: block;
+    }
+    
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: -320px;
+        width: 300px;
+        height: 100vh;
+        max-height: 100vh;
+        z-index: 1000;
+        transition: left 0.3s ease;
+    }
+    
+    .sidebar.open {
+        left: 0;
+    }
+    
+    .sidebar-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 999;
+    }
+    
+    .sidebar-overlay.active {
+        display: block;
+    }
+    
+    .header-actions {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+    
+    .header-actions .btn-secondary,
+    .header-actions .btn-primary {
+        font-size: 0.8em;
+        padding: 6px 10px;
+    }
+    
+    .app-header {
+        flex-direction: column;
+        gap: 10px;
+        padding: 15px;
+    }
+    
+    .app-header h1 {
+        font-size: 1.2em;
     }
     
     .form-row {
@@ -1482,6 +1553,26 @@ body {
     
     .modal-large {
         width: 100%;
+    }
+    
+    .indicators-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 480px) {
+    .app-header h1 {
+        font-size: 1em;
+    }
+    
+    .header-actions .btn-secondary,
+    .header-actions .btn-primary {
+        font-size: 0.75em;
+        padding: 5px 8px;
+    }
+    
+    .search-card h2 {
+        font-size: 1.1em;
     }
 }
 
