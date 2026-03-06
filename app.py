@@ -2351,7 +2351,7 @@ def _build_portfolio_history(user_id, days):
     for h in holdings:
         positions[h.symbol] = {
             'quantity': float(h.quantity),
-            'cost_basis': float(h.total_cost) if h.total_cost else float(h.quantity * h.purchase_price)
+            'cost_basis': float(h.quantity) * float(h.average_cost)
         }
     
     # Calculate portfolio value for each date
