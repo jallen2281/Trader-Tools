@@ -2280,16 +2280,17 @@ def get_portfolio_history():
         from datetime import datetime, timedelta
         since = datetime.utcnow() - timedelta(days=days)
         
-        snapshots = PortfolioSnapshot.query.filter(
-            PortfolioSnapshot.user_id == user_id,
-            PortfolioSnapshot.timestamp >= since
-        ).order_by(PortfolioSnapshot.timestamp.asc()).all()
+        # Always build history from real price data
+        history = _build_portfolio_history(user_id, days)
         
-        if snapshots:
-            history = [s.to_dict() for s in snapshots]
-        else:
-            # Build history from transactions + current prices
-            history = _build_portfolio_history(user_id, days)
+        # Fall back to snapshots only if price history is empty
+        if not history:
+            snapshots = PortfolioSnapshot.query.filter(
+                PortfolioSnapshot.user_id == user_id,
+                PortfolioSnapshot.timestamp >= since
+            ).order_by(PortfolioSnapshot.timestamp.asc()).all()
+            if snapshots:
+                history = [s.to_dict() for s in snapshots]
         
         # Save a snapshot while we're here
         try:
