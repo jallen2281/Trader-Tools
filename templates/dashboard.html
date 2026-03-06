@@ -61,6 +61,16 @@
                 </div>
                 <a href="/portfolio" class="btn-secondary" style="width: 100%; margin-top: 10px;">View Full Portfolio</a>
             </div>
+
+            <div class="sidebar-section">
+                <h3>📈 Quick Links</h3>
+                <a href="/portfolio" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">💼 Portfolio</a>
+                <a href="/community" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">💬 Community</a>
+                <a href="/copytrading" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">🎯 Copy Trading</a>
+                {% if current_user.is_authenticated and current_user.is_admin() %}
+                <a href="/admin" class="btn-secondary" style="width:100%;display:block;text-align:center;">🛡️ Admin Panel</a>
+                {% endif %}
+            </div>
         </aside>
 
         <!-- Main Content -->

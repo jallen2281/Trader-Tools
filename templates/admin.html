@@ -102,8 +102,21 @@
         <div class="sidebar-overlay" id="sidebarOverlay"></div>
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <h2>🛡️ Admin</h2>
+                <h2>� Watchlist</h2>
+                <button id="refreshWatchlist" class="icon-btn" title="Refresh Prices">🔄</button>
             </div>
+            <div class="watchlist-add">
+                <input type="text" id="watchlistSymbolInput" placeholder="Add symbol..." />
+                <button id="addToWatchlist">+</button>
+            </div>
+            <div id="watchlistItems" class="watchlist-items"></div>
+
+            <div class="sidebar-section">
+                <h3>🔔 Active Alerts (<span id="alertCount">0</span>)</h3>
+                <div id="sidebarAlertsList" class="sidebar-alerts-list"></div>
+                <button id="manageAlerts" class="btn-secondary">Manage Alerts</button>
+            </div>
+
             <div class="sidebar-section">
                 <h3>📈 Navigation</h3>
                 <a href="/dashboard" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">Dashboard</a>
@@ -152,7 +165,9 @@
         </main>
     </div>
 
+    <script src="{{ url_for('static', filename='watchlist.js') }}"></script>
     <script src="{{ url_for('static', filename='admin.js') }}"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
     <script>
         const sidebarToggle = document.getElementById('sidebarToggle');
         const sidebar = document.getElementById('sidebar');
@@ -161,9 +176,6 @@
             sidebarToggle.addEventListener('click', () => { sidebar.classList.toggle('open'); sidebarOverlay.classList.toggle('active'); });
             sidebarOverlay.addEventListener('click', () => { sidebar.classList.remove('open'); sidebarOverlay.classList.remove('active'); });
         }
-        document.addEventListener('DOMContentLoaded', () => {
-            if (localStorage.getItem('darkMode') === 'true') document.body.classList.add('dark-mode');
-        });
     </script>
 </body>
 </html>

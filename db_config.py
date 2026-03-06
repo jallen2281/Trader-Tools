@@ -125,6 +125,13 @@ def init_database(app):
         
         # Drop old unique constraint and recreate (SQLite can't ALTER constraints, so we skip if column exists)
         print("✓ Database tables created successfully")
+        
+        # Ensure at least one admin exists - promote the first user
+        admin_count = db.session.execute(text("SELECT COUNT(*) FROM users WHERE role = 'admin'")).scalar()
+        if admin_count == 0:
+            db.session.execute(text("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)"))
+            db.session.commit()
+            print("✓ Promoted first user to admin")
     
     return db
 

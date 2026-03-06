@@ -45,6 +45,8 @@ function initializeWatchlist() {
     const input = document.getElementById('watchlistSymbolInput');
     const refreshBtn = document.getElementById('refreshWatchlist');
 
+    if (!addBtn || !input || !refreshBtn) return;
+
     // Load and display watchlist
     renderWatchlist();
 
@@ -268,13 +270,17 @@ function initializeAlerts() {
     const manageBtn = document.getElementById('manageAlerts');
     const createBtn = document.getElementById('createAlert');
 
+    if (!manageBtn) return;
+
     manageBtn.addEventListener('click', () => {
         openAlertsModal();
     });
 
-    createBtn.addEventListener('click', () => {
-        createNewAlert();
-    });
+    if (createBtn) {
+        createBtn.addEventListener('click', () => {
+            createNewAlert();
+        });
+    }
 
     // Request browser notification permission
     if ('Notification' in window && Notification.permission === 'default') {
@@ -353,7 +359,9 @@ function renderSidebarAlerts(activeAlerts, triggeredAlerts) {
 }
 
 function openAlertsModal() {
-    document.getElementById('alertsModal').style.display = 'flex';
+    const modal = document.getElementById('alertsModal');
+    if (!modal) { window.location.href = '/dashboard'; return; }
+    modal.style.display = 'flex';
     renderAlertsList();
 }
 
@@ -458,6 +466,8 @@ async function deleteAlert(alertId) {
 
 function initializeComparison() {
     const openBtn = document.getElementById('openComparison');
+    if (!openBtn) return;
+
     const addBtn = document.getElementById('addComparisonSymbol');
     const generateBtn = document.getElementById('generateComparison');
     const input = document.getElementById('comparisonSymbolInput');
@@ -577,6 +587,8 @@ async function generateComparisonChart() {
 
 function initializeAnalysis() {
     const form = document.getElementById('analyzeForm');
+    if (!form) return;
+
     const addAlertBtn = document.getElementById('addAlertBtn');
     const addWatchlistBtn = document.getElementById('addToWatchlistBtn');
 
@@ -1179,6 +1191,8 @@ async function loadPortfolioWidget() {
 
 function initializeTechnicalChart() {
     const openBtn = document.getElementById('openTechnicalChart');
+    if (!openBtn) return;
+
     const generateBtn = document.getElementById('generateTechnicalChart');
     const modal = document.getElementById('technicalChartModal');
     const closeBtn = modal.querySelector('.modal-close');
