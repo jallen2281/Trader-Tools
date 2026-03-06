@@ -109,8 +109,22 @@ class CorrelationAnalyzer:
                 logger.error(f"Error extracting close prices: {e}")
                 return {'error': f'Failed to extract price data: {str(e)}'}
             
+            # Drop columns (symbols) that are entirely NaN (failed downloads / delisted)
+            valid_before = list(close_prices.columns)
+            close_prices = close_prices.dropna(axis=1, how='all')
+            dropped = set(valid_before) - set(close_prices.columns)
+            if dropped:
+                logger.warning(f"Dropped symbols with no price data: {dropped}")
+                symbols = [s for s in symbols if s in close_prices.columns]
+            
+            if len(symbols) < 2:
+                return {
+                    'error': f'Need at least 2 symbols with data for correlation (dropped: {", ".join(dropped) if dropped else "none"})',
+                    'symbols': symbols
+                }
+            
             # Calculate returns
-            returns = close_prices.pct_change().dropna()
+            returns = close_prices.pct_change(fill_method=None).dropna()
             
             # Check if we have enough data
             if returns.empty or len(returns) < 2:
@@ -370,7 +384,7 @@ class CorrelationAnalyzer:
                     close_prices = self._extract_close_prices(data, symbols)
                 except Exception:
                     continue
-                returns = close_prices.pct_change().dropna()
+                returns = close_prices.pct_change(fill_method=None).dropna()
                 correlation = returns.corr().iloc[0, 1]
                 
                 results.append({

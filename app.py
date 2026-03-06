@@ -1507,8 +1507,10 @@ def get_dividends():
     try:
         query = Dividend.query.filter_by(user_id=current_user.id)
         account_id = request.args.get('account_id')
-        if account_id:
+        if account_id and account_id.isdigit():
             query = query.filter_by(account_id=int(account_id))
+        elif account_id == 'unassigned':
+            query = query.filter(Dividend.account_id.is_(None))
         symbol = request.args.get('symbol')
         if symbol:
             query = query.filter_by(symbol=symbol.upper())
@@ -1581,15 +1583,19 @@ def get_dividend_summary():
         from sqlalchemy import func as sqlfunc
         account_id = request.args.get('account_id')
         base_query = Dividend.query.filter_by(user_id=current_user.id)
-        if account_id:
+        if account_id and account_id.isdigit():
             base_query = base_query.filter_by(account_id=int(account_id))
+        elif account_id == 'unassigned':
+            base_query = base_query.filter(Dividend.account_id.is_(None))
 
         # Total dividend income
         total_income = db.session.query(sqlfunc.sum(Dividend.total_amount)).filter(
             Dividend.user_id == current_user.id
         )
-        if account_id:
+        if account_id and account_id.isdigit():
             total_income = total_income.filter(Dividend.account_id == int(account_id))
+        elif account_id == 'unassigned':
+            total_income = total_income.filter(Dividend.account_id.is_(None))
         total_income = total_income.scalar() or 0
 
         # Per-symbol breakdown
@@ -1598,8 +1604,10 @@ def get_dividend_summary():
             sqlfunc.sum(Dividend.total_amount),
             sqlfunc.count(Dividend.id)
         ).filter(Dividend.user_id == current_user.id)
-        if account_id:
+        if account_id and account_id.isdigit():
             symbol_query = symbol_query.filter(Dividend.account_id == int(account_id))
+        elif account_id == 'unassigned':
+            symbol_query = symbol_query.filter(Dividend.account_id.is_(None))
         symbol_rows = symbol_query.group_by(Dividend.symbol).all()
 
         by_symbol = [{'symbol': row[0], 'total': round(float(row[1]), 2), 'count': row[2]} for row in symbol_rows]
@@ -1610,8 +1618,10 @@ def get_dividend_summary():
             Dividend.user_id == current_user.id,
             Dividend.pay_date >= year_start
         )
-        if account_id:
+        if account_id and account_id.isdigit():
             ytd_query = ytd_query.filter(Dividend.account_id == int(account_id))
+        elif account_id == 'unassigned':
+            ytd_query = ytd_query.filter(Dividend.account_id.is_(None))
         ytd_income = ytd_query.scalar() or 0
 
         # Monthly average (last 12 months)
@@ -1620,8 +1630,10 @@ def get_dividend_summary():
             Dividend.user_id == current_user.id,
             Dividend.pay_date >= year_ago
         )
-        if account_id:
+        if account_id and account_id.isdigit():
             recent_query = recent_query.filter(Dividend.account_id == int(account_id))
+        elif account_id == 'unassigned':
+            recent_query = recent_query.filter(Dividend.account_id.is_(None))
         recent_total = recent_query.scalar() or 0
         monthly_avg = round(float(recent_total) / 12, 2)
 
