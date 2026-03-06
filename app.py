@@ -2308,13 +2308,6 @@ def _build_portfolio_history(user_id, days):
     from datetime import datetime, timedelta
     import yfinance as yf
     
-    transactions = Transaction.query.filter(
-        Transaction.user_id == user_id
-    ).order_by(Transaction.transaction_date.asc()).all()
-    
-    if not transactions:
-        return []
-    
     # Build position state over time
     holdings = Portfolio.query.filter_by(user_id=user_id).all()
     if not holdings:
@@ -2323,7 +2316,21 @@ def _build_portfolio_history(user_id, days):
     symbols = list(set(h.symbol for h in holdings))
     
     end = datetime.now()
-    start = end - timedelta(days=min(days, 365))
+    
+    # Find earliest purchase date across all holdings
+    earliest = None
+    for h in holdings:
+        if h.purchase_date:
+            pd_date = h.purchase_date if isinstance(h.purchase_date, datetime) else datetime.combine(h.purchase_date, datetime.min.time())
+            if earliest is None or pd_date < earliest:
+                earliest = pd_date
+    
+    # Use earliest purchase date or fall back to days parameter
+    period_start = end - timedelta(days=days)
+    if earliest and earliest < period_start:
+        start = earliest
+    else:
+        start = period_start
     
     # Fetch historical prices for all symbols
     price_data = {}
