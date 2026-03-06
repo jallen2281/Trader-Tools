@@ -2317,6 +2317,7 @@ def _build_portfolio_history(user_id, days):
     symbols = list(set(h.symbol for h in holdings))
     
     end = datetime.now()
+    period_start = end - timedelta(days=days)
     
     # Find earliest purchase date across all holdings
     earliest = None
@@ -2326,9 +2327,8 @@ def _build_portfolio_history(user_id, days):
             if earliest is None or pd_date < earliest:
                 earliest = pd_date
     
-    # Use earliest purchase date or fall back to days parameter
-    period_start = end - timedelta(days=days)
-    if earliest and earliest < period_start:
+    # For 'max' (9999 days), use earliest purchase date; otherwise respect the period
+    if days >= 9999 and earliest:
         start = earliest
     else:
         start = period_start
