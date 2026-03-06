@@ -15,7 +15,7 @@ from chart_generator import ChartGenerator
 from pattern_recognizer import PatternRecognizer
 from llm_analyzer import LLMAnalyzer
 from config import Config
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import traceback
 import pandas as pd
@@ -23,7 +23,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -1111,6 +1111,144 @@ def get_cash_optimization():
         })
     except Exception as e:
         logger.error(f"Error getting cash optimization: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# Dividend tracking endpoints
+@app.route('/api/portfolio/dividends', methods=['GET'])
+def get_dividends():
+    """Get dividend history with optional filters."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        query = Dividend.query.filter_by(user_id=current_user.id)
+        account_id = request.args.get('account_id')
+        if account_id:
+            query = query.filter_by(account_id=int(account_id))
+        symbol = request.args.get('symbol')
+        if symbol:
+            query = query.filter_by(symbol=symbol.upper())
+        dividends = query.order_by(Dividend.pay_date.desc(), Dividend.recorded_at.desc()).all()
+        return jsonify([d.to_dict() for d in dividends])
+    except Exception as e:
+        logger.error(f"Error getting dividends: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/dividends', methods=['POST'])
+def record_dividend():
+    """Record a new dividend payment."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        data = request.get_json()
+        if not data or not data.get('symbol') or not data.get('total_amount'):
+            return jsonify({'error': 'symbol and total_amount are required'}), 400
+        symbol = data['symbol'].upper().strip()
+        total_amount = float(data['total_amount'])
+        shares = float(data.get('shares', 0))
+        amount_per_share = float(data.get('amount_per_share', 0))
+        if shares > 0 and amount_per_share == 0 and total_amount > 0:
+            amount_per_share = total_amount / shares
+        elif amount_per_share > 0 and shares > 0 and total_amount == 0:
+            total_amount = amount_per_share * shares
+        dividend = Dividend(
+            user_id=current_user.id,
+            account_id=int(data['account_id']) if data.get('account_id') else None,
+            symbol=symbol,
+            amount_per_share=amount_per_share,
+            shares=shares,
+            total_amount=total_amount,
+            ex_date=datetime.strptime(data['ex_date'], '%Y-%m-%d').date() if data.get('ex_date') else None,
+            pay_date=datetime.strptime(data['pay_date'], '%Y-%m-%d').date() if data.get('pay_date') else None,
+            reinvested=data.get('reinvested', False),
+            notes=data.get('notes', '')
+        )
+        db.session.add(dividend)
+        db.session.commit()
+        return jsonify(dividend.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error recording dividend: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/dividends/<int:dividend_id>', methods=['DELETE'])
+def delete_dividend(dividend_id):
+    """Delete a dividend record."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        dividend = Dividend.query.filter_by(id=dividend_id, user_id=current_user.id).first()
+        if not dividend:
+            return jsonify({'error': 'Dividend not found'}), 404
+        db.session.delete(dividend)
+        db.session.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error deleting dividend: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/dividends/summary', methods=['GET'])
+def get_dividend_summary():
+    """Get aggregate dividend summary."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        from sqlalchemy import func as sqlfunc
+        account_id = request.args.get('account_id')
+        base_query = Dividend.query.filter_by(user_id=current_user.id)
+        if account_id:
+            base_query = base_query.filter_by(account_id=int(account_id))
+
+        # Total dividend income
+        total_income = db.session.query(sqlfunc.sum(Dividend.total_amount)).filter(
+            Dividend.user_id == current_user.id
+        )
+        if account_id:
+            total_income = total_income.filter(Dividend.account_id == int(account_id))
+        total_income = total_income.scalar() or 0
+
+        # Per-symbol breakdown
+        symbol_query = db.session.query(
+            Dividend.symbol,
+            sqlfunc.sum(Dividend.total_amount),
+            sqlfunc.count(Dividend.id)
+        ).filter(Dividend.user_id == current_user.id)
+        if account_id:
+            symbol_query = symbol_query.filter(Dividend.account_id == int(account_id))
+        symbol_rows = symbol_query.group_by(Dividend.symbol).all()
+
+        by_symbol = [{'symbol': row[0], 'total': round(float(row[1]), 2), 'count': row[2]} for row in symbol_rows]
+
+        # YTD income
+        year_start = datetime(datetime.now().year, 1, 1).date()
+        ytd_query = db.session.query(sqlfunc.sum(Dividend.total_amount)).filter(
+            Dividend.user_id == current_user.id,
+            Dividend.pay_date >= year_start
+        )
+        if account_id:
+            ytd_query = ytd_query.filter(Dividend.account_id == int(account_id))
+        ytd_income = ytd_query.scalar() or 0
+
+        # Monthly average (last 12 months)
+        year_ago = (datetime.now() - timedelta(days=365)).date()
+        recent_query = db.session.query(sqlfunc.sum(Dividend.total_amount)).filter(
+            Dividend.user_id == current_user.id,
+            Dividend.pay_date >= year_ago
+        )
+        if account_id:
+            recent_query = recent_query.filter(Dividend.account_id == int(account_id))
+        recent_total = recent_query.scalar() or 0
+        monthly_avg = round(float(recent_total) / 12, 2)
+
+        return jsonify({
+            'total_income': round(float(total_income), 2),
+            'ytd_income': round(float(ytd_income), 2),
+            'monthly_avg': monthly_avg,
+            'by_symbol': sorted(by_symbol, key=lambda x: x['total'], reverse=True),
+            'payment_count': base_query.count()
+        })
+    except Exception as e:
+        logger.error(f"Error getting dividend summary: {e}")
         return jsonify({'error': str(e)}), 500
 
 # Phase 2: Portfolio endpoints

@@ -80,6 +80,29 @@ def init_database(app):
             db.session.commit()
             print("✓ Added cash_balance to portfolio_accounts table")
         
+        # Create dividends table if it doesn't exist
+        if 'dividends' not in inspector.get_table_names():
+            db.session.execute(text('''
+                CREATE TABLE IF NOT EXISTS dividends (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    account_id INTEGER REFERENCES portfolio_accounts(id),
+                    symbol VARCHAR(10) NOT NULL,
+                    amount_per_share NUMERIC(10,4) NOT NULL,
+                    shares NUMERIC(15,6) NOT NULL,
+                    total_amount NUMERIC(15,2) NOT NULL,
+                    ex_date DATE,
+                    pay_date DATE,
+                    recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    reinvested BOOLEAN DEFAULT 0,
+                    notes TEXT
+                )
+            '''))
+            db.session.execute(text('CREATE INDEX IF NOT EXISTS ix_dividends_user_id ON dividends(user_id)'))
+            db.session.execute(text('CREATE INDEX IF NOT EXISTS ix_dividends_symbol ON dividends(symbol)'))
+            db.session.commit()
+            print("✓ Created dividends table")
+        
         # Drop old unique constraint and recreate (SQLite can't ALTER constraints, so we skip if column exists)
         print("✓ Database tables created successfully")
     

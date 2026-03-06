@@ -500,6 +500,33 @@
             <div id="cashOptSuggestions" style="display:grid;gap:8px;"></div>
         </div>
         
+        <!-- Dividend Tracker Widget -->
+        <div id="dividendWidget" style="background:var(--card-bg);border-radius:12px;padding:15px 20px;margin-bottom:20px;box-shadow:var(--shadow);border:1px solid var(--border);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h3 style="margin:0;color:var(--text-primary);">💰 Dividend Tracker</h3>
+                <button onclick="openRecordDividendModal()" class="btn btn-primary" style="padding:6px 14px;font-size:0.85em;">+ Record Dividend</button>
+            </div>
+            <div id="dividendSummaryBar" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px;">
+                <div style="text-align:center;padding:10px;background:var(--bg-tertiary);border-radius:8px;">
+                    <div style="font-size:0.75em;color:var(--text-secondary);">Total Income</div>
+                    <div id="divTotalIncome" style="font-size:1.1em;font-weight:700;color:var(--success);">$0.00</div>
+                </div>
+                <div style="text-align:center;padding:10px;background:var(--bg-tertiary);border-radius:8px;">
+                    <div style="font-size:0.75em;color:var(--text-secondary);">YTD Income</div>
+                    <div id="divYtdIncome" style="font-size:1.1em;font-weight:700;color:var(--success);">$0.00</div>
+                </div>
+                <div style="text-align:center;padding:10px;background:var(--bg-tertiary);border-radius:8px;">
+                    <div style="font-size:0.75em;color:var(--text-secondary);">Monthly Avg</div>
+                    <div id="divMonthlyAvg" style="font-size:1.1em;font-weight:700;color:var(--text-primary);">$0.00</div>
+                </div>
+                <div style="text-align:center;padding:10px;background:var(--bg-tertiary);border-radius:8px;">
+                    <div style="font-size:0.75em;color:var(--text-secondary);">Payments</div>
+                    <div id="divPaymentCount" style="font-size:1.1em;font-weight:700;color:var(--text-primary);">0</div>
+                </div>
+            </div>
+            <div id="dividendHistory" style="max-height:250px;overflow-y:auto;"></div>
+        </div>
+        
         <!-- Portfolio Summary -->
         <div class="portfolio-header" id="portfolioHeader">
             <h2>Portfolio Overview</h2>
@@ -522,6 +549,11 @@
                     <div class="stat-label">Holdings</div>
                     <div class="stat-value" id="holdingsCount">0</div>
                     <div class="stat-change" id="allocation"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">💰 Dividends</div>
+                    <div class="stat-value pnl-positive" id="dividendIncome">$0.00</div>
+                    <div class="stat-change" id="dividendYield">Yield: 0%</div>
                 </div>
             </div>
         </div>

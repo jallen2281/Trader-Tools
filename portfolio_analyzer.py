@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import logging
 import traceback
-from models import db, Portfolio, OptionsPosition, Transaction, PortfolioSnapshot
+from models import db, Portfolio, OptionsPosition, Transaction, PortfolioSnapshot, Dividend
 from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,15 @@ class PortfolioAnalyzer:
             top_gainers = self._get_top_positions(stock_holdings, 'gainers', 3)
             top_losers = self._get_top_positions(stock_holdings, 'losers', 3)
             
+            # Dividend income
+            dividend_total = db.session.query(func.sum(Dividend.total_amount)).filter(
+                Dividend.user_id == user_id
+            ).scalar() or 0
+            dividend_total = float(dividend_total)
+            dividend_yield = (dividend_total / total_cost * 100) if total_cost > 0 else 0
+            total_return = total_pnl + dividend_total
+            total_return_pct = (total_return / total_cost * 100) if total_cost > 0 else 0
+            
             return {
                 'total_value': round(total_value, 2),
                 'total_cost_basis': round(total_cost, 2),
@@ -100,6 +109,10 @@ class PortfolioAnalyzer:
                 'risk_metrics': risk_metrics,
                 'top_gainers': top_gainers,
                 'top_losers': top_losers,
+                'dividend_income': round(dividend_total, 2),
+                'dividend_yield': round(dividend_yield, 2),
+                'total_return': round(total_return, 2),
+                'total_return_pct': round(total_return_pct, 2),
                 'timestamp': datetime.now().isoformat()
             }
             
@@ -160,6 +173,12 @@ class PortfolioAnalyzer:
             # Risk contribution
             risk_contrib = self._calculate_risk_contribution(holding, holding_type)
             
+            # Dividend income for this symbol
+            symbol_dividends = db.session.query(func.sum(Dividend.total_amount)).filter(
+                Dividend.user_id == holding.user_id,
+                Dividend.symbol == symbol
+            ).scalar() or 0
+            
             result = {
                 'id': holding_id,
                 'symbol': symbol,
@@ -171,6 +190,7 @@ class PortfolioAnalyzer:
                 'total_cost': round(total_cost, 2),
                 'pnl': round(pnl, 2),
                 'pnl_pct': round(pnl_pct, 2),
+                'dividend_income': round(float(symbol_dividends), 2),
                 'risk_contribution': risk_contrib,
                 'recommendation': recommendation,
                 'phase3': phase3_analysis,

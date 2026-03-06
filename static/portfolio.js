@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadPortfolioData();
     loadVixData();
     loadActiveAlerts();
+    loadDividendData();
     initPortfolioChart();
     
     // Auto-refresh every 60 seconds
@@ -154,6 +155,12 @@ function displayPortfolioSummary(data) {
     } else {
         document.getElementById('allocation').textContent = '0% stocks / 0% options';
     }
+    
+    // Dividend income
+    const dividendIncome = data.dividend_income || 0;
+    const dividendYield = data.dividend_yield || 0;
+    document.getElementById('dividendIncome').textContent = `$${dividendIncome.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    document.getElementById('dividendYield').textContent = `Yield: ${dividendYield.toFixed(2)}%`;
 }
 
 /**
@@ -312,6 +319,9 @@ async function openHoldingModal(holdingId, type = 'stock') {
                     <div class="${data.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">
                         <strong>P&L:</strong> $${data.pnl.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${data.pnl_pct.toFixed(2)}%)
                     </div>
+                    ${data.dividend_income ? `<div class="pnl-positive">
+                        <strong>Dividends:</strong> $${data.dividend_income.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                    </div>` : ''}
                 </div>
             </div>
             
@@ -1081,6 +1091,167 @@ async function addPosition(event) {
 window.addPosition = addPosition;
 
 /**
+ * Load dividend summary and history
+ */
+async function loadDividendData() {
+    try {
+        const accountId = document.getElementById('accountSelector')?.value;
+        const accountParam = accountId && accountId !== 'all' ? `?account_id=${accountId}` : '';
+        const [summaryRes, historyRes] = await Promise.all([
+            fetch(`/api/portfolio/dividends/summary${accountParam}`),
+            fetch(`/api/portfolio/dividends${accountParam}`)
+        ]);
+        if (summaryRes.ok) {
+            const summary = await summaryRes.json();
+            document.getElementById('divTotalIncome').textContent = `$${(summary.total_income || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}`;
+            document.getElementById('divYtdIncome').textContent = `$${(summary.ytd_income || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}`;
+            document.getElementById('divMonthlyAvg').textContent = `$${(summary.monthly_avg || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}`;
+            document.getElementById('divPaymentCount').textContent = summary.payment_count || 0;
+        }
+        if (historyRes.ok) {
+            const dividends = await historyRes.json();
+            const container = document.getElementById('dividendHistory');
+            if (!dividends.length) {
+                container.innerHTML = '<p style="color:var(--text-secondary);text-align:center;padding:15px;font-size:0.9em;">No dividends recorded yet. Click "+ Record Dividend" to add one.</p>';
+                return;
+            }
+            container.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:0.85em;">
+                <thead><tr style="border-bottom:1px solid var(--border);color:var(--text-secondary);">
+                    <th style="text-align:left;padding:6px 8px;">Symbol</th>
+                    <th style="text-align:right;padding:6px 8px;">Amount</th>
+                    <th style="text-align:right;padding:6px 8px;">Per Share</th>
+                    <th style="text-align:center;padding:6px 8px;">Pay Date</th>
+                    <th style="text-align:center;padding:6px 8px;">DRIP</th>
+                    <th style="text-align:center;padding:6px 8px;"></th>
+                </tr></thead>
+                <tbody>${dividends.map(d => `<tr style="border-bottom:1px solid var(--border);">
+                    <td style="padding:6px 8px;font-weight:600;">${d.symbol}</td>
+                    <td style="padding:6px 8px;text-align:right;color:var(--success);">$${d.total_amount.toFixed(2)}</td>
+                    <td style="padding:6px 8px;text-align:right;">$${d.amount_per_share.toFixed(4)}</td>
+                    <td style="padding:6px 8px;text-align:center;">${d.pay_date ? new Date(d.pay_date).toLocaleDateString() : '-'}</td>
+                    <td style="padding:6px 8px;text-align:center;">${d.reinvested ? '✅' : ''}</td>
+                    <td style="padding:6px 8px;text-align:center;"><button onclick="deleteDividend(${d.id})" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:0.9em;">🗑️</button></td>
+                </tr>`).join('')}</tbody>
+            </table>`;
+        }
+    } catch (error) {
+        console.error('Error loading dividend data:', error);
+    }
+}
+
+function openRecordDividendModal() {
+    const accountOptions = portfolioAccounts.map(acc => 
+        `<option value="${acc.id}">${acc.name}</option>`
+    ).join('');
+    
+    const modal = document.createElement('div');
+    modal.id = 'recordDividendModal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000;';
+    modal.innerHTML = `
+        <div style="background:var(--modal-bg);border-radius:12px;max-width:480px;width:90%;padding:24px;color:var(--text-primary);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+                <h2 style="margin:0;">💰 Record Dividend</h2>
+                <button onclick="document.getElementById('recordDividendModal').remove()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text-secondary);">&times;</button>
+            </div>
+            <form onsubmit="submitDividend(event)" style="display:grid;gap:12px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Symbol *</label>
+                        <input type="text" id="divSymbol" required style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;" placeholder="AAPL">
+                    </div>
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Account</label>
+                        <select id="divAccount" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;">
+                            <option value="">No Account</option>
+                            ${accountOptions}
+                        </select>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Total Amount *</label>
+                        <input type="number" step="0.01" id="divTotal" required style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;" placeholder="25.00">
+                    </div>
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Per Share</label>
+                        <input type="number" step="0.0001" id="divPerShare" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;" placeholder="0.96">
+                    </div>
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Shares</label>
+                        <input type="number" step="0.000001" id="divShares" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;" placeholder="26">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Ex-Date</label>
+                        <input type="date" id="divExDate" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Pay Date</label>
+                        <input type="date" id="divPayDate" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;">
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <input type="checkbox" id="divReinvested">
+                    <label for="divReinvested" style="font-size:0.9em;color:var(--text-primary);">Reinvested (DRIP)</label>
+                </div>
+                <div>
+                    <label style="font-size:0.85em;color:var(--text-secondary);">Notes</label>
+                    <input type="text" id="divNotes" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;" placeholder="Optional notes">
+                </div>
+                <button type="submit" class="btn btn-primary" style="padding:10px;font-size:1em;">Record Dividend</button>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+}
+
+async function submitDividend(event) {
+    event.preventDefault();
+    try {
+        const body = {
+            symbol: document.getElementById('divSymbol').value.trim(),
+            total_amount: parseFloat(document.getElementById('divTotal').value) || 0,
+            amount_per_share: parseFloat(document.getElementById('divPerShare').value) || 0,
+            shares: parseFloat(document.getElementById('divShares').value) || 0,
+            account_id: document.getElementById('divAccount').value || null,
+            ex_date: document.getElementById('divExDate').value || null,
+            pay_date: document.getElementById('divPayDate').value || null,
+            reinvested: document.getElementById('divReinvested').checked,
+            notes: document.getElementById('divNotes').value.trim()
+        };
+        const res = await fetch('/api/portfolio/dividends', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+        document.getElementById('recordDividendModal').remove();
+        showToast('Dividend recorded!', 'success');
+        loadDividendData();
+        loadPortfolioData();
+    } catch (error) {
+        console.error('Error recording dividend:', error);
+        showToast('Failed to record dividend: ' + error.message, 'error');
+    }
+}
+
+async function deleteDividend(id) {
+    if (!confirm('Delete this dividend record?')) return;
+    try {
+        const res = await fetch(`/api/portfolio/dividends/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed');
+        showToast('Dividend deleted', 'success');
+        loadDividendData();
+        loadPortfolioData();
+    } catch (error) {
+        console.error('Error deleting dividend:', error);
+        showToast('Failed to delete dividend', 'error');
+    }
+}
+
+/**
  * Show toast notification
  */
 function showToast(message, type = 'info') {
@@ -1376,6 +1547,7 @@ function switchAccount() {
     updateAccountStyleBadge();
     updateCashBadge();
     loadPortfolioData();
+    loadDividendData();
 }
 
 function updateAccountStyleBadge() {

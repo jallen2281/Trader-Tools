@@ -33,6 +33,7 @@ class User(UserMixin, db.Model):
     analysis_history = db.relationship('AnalysisHistory', backref='user', lazy=True, cascade='all, delete-orphan')
     sessions = db.relationship('UserSession', backref='user', lazy=True, cascade='all, delete-orphan')
     portfolio_snapshots = db.relationship('PortfolioSnapshot', backref='user', lazy=True, cascade='all, delete-orphan')  # Phase 4
+    dividends = db.relationship('Dividend', backref='user', lazy=True, cascade='all, delete-orphan')
     
     def __repr__(self):
         return f'<User {self.email}>'
@@ -517,4 +518,36 @@ class AlertSuggestion(db.Model):
             'status': self.status,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'actioned_at': self.actioned_at.isoformat() if self.actioned_at else None
+        }
+
+class Dividend(db.Model):
+    """Dividend payments tracking"""
+    __tablename__ = 'dividends'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('portfolio_accounts.id'), nullable=True, index=True)
+    symbol = db.Column(db.String(10), nullable=False, index=True)
+    amount_per_share = db.Column(db.Numeric(10, 4, asdecimal=False), nullable=False)
+    shares = db.Column(db.Numeric(15, 6, asdecimal=False), nullable=False)
+    total_amount = db.Column(db.Numeric(15, 2, asdecimal=False), nullable=False)
+    ex_date = db.Column(db.Date, index=True)
+    pay_date = db.Column(db.Date)
+    recorded_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    reinvested = db.Column(db.Boolean, default=False)
+    notes = db.Column(db.Text)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'symbol': self.symbol,
+            'amount_per_share': float(self.amount_per_share),
+            'shares': float(self.shares),
+            'total_amount': float(self.total_amount),
+            'ex_date': self.ex_date.isoformat() if self.ex_date else None,
+            'pay_date': self.pay_date.isoformat() if self.pay_date else None,
+            'recorded_at': self.recorded_at.isoformat() if self.recorded_at else None,
+            'reinvested': self.reinvested,
+            'account_id': self.account_id,
+            'notes': self.notes
         }
