@@ -240,7 +240,7 @@ function createHoldingRow(holding, type = 'stock') {
     
     row.innerHTML = `
         <td><strong>${holding.symbol}</strong></td>
-        <td>${holding.quantity.toLocaleString()}</td>
+        <td>${holding.quantity.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 6})}</td>
         <td>$${holding.average_cost.toFixed(4)}</td>
         <td>$${holding.current_price.toFixed(2)}</td>
         <td>$${holding.market_value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
@@ -302,7 +302,7 @@ async function openHoldingModal(holdingId, type = 'stock') {
                 <h3>Position Details</h3>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px;">
                     <div>
-                        <strong>Quantity:</strong> ${data.quantity.toLocaleString()}
+                        <strong>Quantity:</strong> ${data.quantity.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 6})}
                     </div>
                     <div>
                         <strong>Cost Basis:</strong> $${data.cost_basis.toFixed(4)}

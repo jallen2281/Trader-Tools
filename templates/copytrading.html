@@ -532,7 +532,8 @@
             <div class="sidebar-section">
                 <h3>📈 Quick Links</h3>
                 <a href="/dashboard" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">Analysis Dashboard</a>
-                <a href="/portfolio" class="btn-secondary" style="width:100%;display:block;text-align:center;">💼 Portfolio</a>
+                <a href="/portfolio" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">💼 Portfolio</a>
+                <a href="/community" class="btn-secondary" style="width:100%;display:block;text-align:center;">💬 Community</a>
             </div>
         </aside>
         <main class="main-content">
@@ -557,6 +558,7 @@
         <div class="tabs">
             <button id="tradersTab" class="tab-button active">👥 Pro Traders</button>
             <button id="politiciansTab" class="tab-button">🏛️ Politician Trades</button>
+            <button id="membersTab" class="tab-button">🤝 Members</button>
         </div>
 
         <!-- Trader Filters -->
@@ -657,6 +659,33 @@
             <!-- Politician trade cards will be loaded here -->
             <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-secondary);">
                 Loading politician trades...
+            </div>
+        </div>
+
+        <!-- Member Copy Trading Section -->
+        <div id="memberSection" style="display: none;">
+            <div id="memberOptIn" style="background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                    <div>
+                        <h3 style="margin: 0; color: var(--text-primary);">🤝 Copy Trading Opt-In</h3>
+                        <p style="margin: 4px 0 0; font-size: 0.9em; color: var(--text-secondary);">Allow others to see and follow your trades</p>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="copyTradingToggle" onchange="toggleCopyTrading()" style="width: 20px; height: 20px;">
+                            <span id="copyTradingStatus" style="font-weight: 600;">Disabled</span>
+                        </label>
+                    </div>
+                </div>
+                <div id="bioSection" style="margin-top: 12px; display: none;">
+                    <input type="text" id="memberBio" placeholder="Brief bio or trading strategy..." maxlength="500" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary); box-sizing: border-box;">
+                    <button onclick="saveBio()" class="btn btn-secondary" style="margin-top: 8px; font-size: 0.85em;">Save Bio</button>
+                </div>
+            </div>
+            <div id="memberGrid" class="trader-grid">
+                <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-secondary);">
+                    Loading members...
+                </div>
             </div>
         </div>
     </div>

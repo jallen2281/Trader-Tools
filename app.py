@@ -23,7 +23,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -321,6 +321,396 @@ def copytrading():
     """Render the copy trading research page."""
     logger.debug("Rendering copytrading.html")
     return render_template('copytrading.html')
+
+
+@app.route('/copytrading')
+@login_required
+def copytrading():
+    """Render the copy trading research page."""
+    logger.debug("Rendering copytrading.html")
+    return render_template('copytrading.html')
+
+
+@app.route('/admin')
+@login_required
+def admin_page():
+    """Render the admin dashboard (admin only)."""
+    if not current_user.is_admin():
+        return redirect(url_for('portfolio'))
+    return render_template('admin.html')
+
+
+@app.route('/community')
+@login_required
+def community_page():
+    """Render the community discussion page."""
+    return render_template('community.html')
+
+
+# ===================== ADMIN API =====================
+
+@app.route('/api/admin/users', methods=['GET'])
+@require_api_auth
+def admin_list_users():
+    """List all users (admin only)."""
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    users = User.query.order_by(User.created_at.desc()).all()
+    return jsonify({'users': [u.to_dict() for u in users]})
+
+
+@app.route('/api/admin/users/<int:user_id>/role', methods=['PUT'])
+@require_api_auth
+def admin_change_role(user_id):
+    """Change a user's role (admin only)."""
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    data = request.get_json()
+    role = data.get('role')
+    if role not in ('user', 'moderator', 'admin'):
+        return jsonify({'error': 'Invalid role'}), 400
+    user = User.query.get_or_404(user_id)
+    if user.id == current_user.id:
+        return jsonify({'error': 'Cannot change your own role'}), 400
+    user.role = role
+    db.session.commit()
+    return jsonify({'success': True, 'user': user.to_dict()})
+
+
+@app.route('/api/admin/users/<int:user_id>/active', methods=['PUT'])
+@require_api_auth
+def admin_toggle_active(user_id):
+    """Enable/disable a user account (admin only)."""
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    user = User.query.get_or_404(user_id)
+    if user.id == current_user.id:
+        return jsonify({'error': 'Cannot disable your own account'}), 400
+    data = request.get_json()
+    user.is_active = data.get('is_active', True)
+    db.session.commit()
+    return jsonify({'success': True, 'user': user.to_dict()})
+
+
+@app.route('/api/admin/stats', methods=['GET'])
+@require_api_auth
+def admin_stats():
+    """Get admin dashboard stats."""
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    total_users = User.query.count()
+    active_users = User.query.filter_by(is_active=True).count()
+    total_threads = DiscussionThread.query.count()
+    total_holdings = Portfolio.query.count()
+    return jsonify({
+        'total_users': total_users,
+        'active_users': active_users,
+        'total_threads': total_threads,
+        'total_holdings': total_holdings,
+    })
+
+
+# ===================== COMMUNITY API =====================
+
+@app.route('/api/community/threads', methods=['GET'])
+@require_api_auth
+def list_threads():
+    """List discussion threads with optional category filter."""
+    category = request.args.get('category', 'all')
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 20))
+    
+    query = DiscussionThread.query
+    if category != 'all':
+        query = query.filter_by(category=category)
+    query = query.order_by(DiscussionThread.pinned.desc(), DiscussionThread.created_at.desc())
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    
+    threads = []
+    for t in pagination.items:
+        td = t.to_dict()
+        td['reply_count'] = ThreadReply.query.filter_by(thread_id=t.id).count()
+        threads.append(td)
+    
+    return jsonify({
+        'threads': threads,
+        'total': pagination.total,
+        'pages': pagination.pages,
+        'current_page': page,
+    })
+
+
+@app.route('/api/community/threads', methods=['POST'])
+@require_api_auth
+def create_thread():
+    """Create a new discussion thread."""
+    data = request.get_json()
+    title = (data.get('title') or '').strip()
+    body = (data.get('body') or '').strip()
+    if not title or not body:
+        return jsonify({'error': 'Title and body are required'}), 400
+    
+    thread = DiscussionThread(
+        user_id=current_user.id,
+        title=title[:200],
+        body=body[:10000],
+        symbol=(data.get('symbol') or '').upper()[:10] or None,
+        category=data.get('category', 'general'),
+    )
+    db.session.add(thread)
+    db.session.commit()
+    return jsonify({'success': True, 'thread': thread.to_dict()}), 201
+
+
+@app.route('/api/community/threads/<int:thread_id>', methods=['GET'])
+@require_api_auth
+def get_thread(thread_id):
+    """Get a single thread with its replies."""
+    thread = DiscussionThread.query.get_or_404(thread_id)
+    thread.views = (thread.views or 0) + 1
+    db.session.commit()
+    
+    td = thread.to_dict()
+    replies = ThreadReply.query.filter_by(thread_id=thread_id)\
+        .order_by(ThreadReply.created_at.asc()).all()
+    td['replies'] = [r.to_dict() for r in replies]
+    
+    # Include current user's votes
+    votes = ThreadVote.query.filter_by(user_id=current_user.id, thread_id=thread_id).all()
+    user_votes = {}
+    for v in votes:
+        key = f'reply_{v.reply_id}' if v.reply_id else 'thread'
+        user_votes[key] = v.vote
+    td['user_votes'] = user_votes
+    
+    return jsonify(td)
+
+
+@app.route('/api/community/threads/<int:thread_id>/replies', methods=['POST'])
+@require_api_auth
+def add_reply(thread_id):
+    """Add a reply to a thread."""
+    thread = DiscussionThread.query.get_or_404(thread_id)
+    if thread.locked:
+        return jsonify({'error': 'Thread is locked'}), 403
+    
+    data = request.get_json()
+    body = (data.get('body') or '').strip()
+    if not body:
+        return jsonify({'error': 'Reply body is required'}), 400
+    
+    reply = ThreadReply(
+        thread_id=thread_id,
+        user_id=current_user.id,
+        body=body[:10000],
+    )
+    db.session.add(reply)
+    thread.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'success': True, 'reply': reply.to_dict()}), 201
+
+
+@app.route('/api/community/threads/<int:thread_id>/vote', methods=['POST'])
+@require_api_auth
+def vote_thread(thread_id):
+    """Upvote/downvote a thread."""
+    thread = DiscussionThread.query.get_or_404(thread_id)
+    data = request.get_json()
+    vote_val = data.get('vote', 1)
+    if vote_val not in (1, -1):
+        return jsonify({'error': 'Vote must be 1 or -1'}), 400
+    
+    existing = ThreadVote.query.filter_by(
+        user_id=current_user.id, thread_id=thread_id, reply_id=None
+    ).first()
+    
+    if existing:
+        if existing.vote == vote_val:
+            # Remove vote
+            thread.upvotes = (thread.upvotes or 0) - vote_val
+            db.session.delete(existing)
+        else:
+            # Change vote
+            thread.upvotes = (thread.upvotes or 0) + (vote_val - existing.vote)
+            existing.vote = vote_val
+    else:
+        thread.upvotes = (thread.upvotes or 0) + vote_val
+        db.session.add(ThreadVote(
+            user_id=current_user.id, thread_id=thread_id, reply_id=None, vote=vote_val
+        ))
+    
+    db.session.commit()
+    return jsonify({'success': True, 'upvotes': thread.upvotes})
+
+
+@app.route('/api/community/replies/<int:reply_id>/vote', methods=['POST'])
+@require_api_auth
+def vote_reply(reply_id):
+    """Upvote/downvote a reply."""
+    reply = ThreadReply.query.get_or_404(reply_id)
+    data = request.get_json()
+    vote_val = data.get('vote', 1)
+    if vote_val not in (1, -1):
+        return jsonify({'error': 'Vote must be 1 or -1'}), 400
+    
+    existing = ThreadVote.query.filter_by(
+        user_id=current_user.id, thread_id=reply.thread_id, reply_id=reply_id
+    ).first()
+    
+    if existing:
+        if existing.vote == vote_val:
+            reply.upvotes = (reply.upvotes or 0) - vote_val
+            db.session.delete(existing)
+        else:
+            reply.upvotes = (reply.upvotes or 0) + (vote_val - existing.vote)
+            existing.vote = vote_val
+    else:
+        reply.upvotes = (reply.upvotes or 0) + vote_val
+        db.session.add(ThreadVote(
+            user_id=current_user.id, thread_id=reply.thread_id, reply_id=reply_id, vote=vote_val
+        ))
+    
+    db.session.commit()
+    return jsonify({'success': True, 'upvotes': reply.upvotes})
+
+
+@app.route('/api/community/threads/<int:thread_id>', methods=['DELETE'])
+@require_api_auth
+def delete_thread(thread_id):
+    """Delete a thread (author or moderator)."""
+    thread = DiscussionThread.query.get_or_404(thread_id)
+    if thread.user_id != current_user.id and not current_user.is_moderator():
+        return jsonify({'error': 'Unauthorized'}), 403
+    db.session.delete(thread)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/community/threads/<int:thread_id>/lock', methods=['PUT'])
+@require_api_auth
+def lock_thread(thread_id):
+    """Lock/unlock a thread (moderator only)."""
+    if not current_user.is_moderator():
+        return jsonify({'error': 'Unauthorized'}), 403
+    thread = DiscussionThread.query.get_or_404(thread_id)
+    data = request.get_json()
+    thread.locked = data.get('locked', True)
+    db.session.commit()
+    return jsonify({'success': True, 'locked': thread.locked})
+
+
+@app.route('/api/community/threads/<int:thread_id>/pin', methods=['PUT'])
+@require_api_auth
+def pin_thread(thread_id):
+    """Pin/unpin a thread (moderator only)."""
+    if not current_user.is_moderator():
+        return jsonify({'error': 'Unauthorized'}), 403
+    thread = DiscussionThread.query.get_or_404(thread_id)
+    data = request.get_json()
+    thread.pinned = data.get('pinned', True)
+    db.session.commit()
+    return jsonify({'success': True, 'pinned': thread.pinned})
+
+
+@app.route('/api/community/online', methods=['GET'])
+@require_api_auth
+def online_users():
+    """List recently active users (active in last 5 minutes)."""
+    cutoff = datetime.utcnow() - timedelta(minutes=5)
+    users = User.query.filter(User.last_active >= cutoff).all()
+    return jsonify({'online': [{'id': u.id, 'name': u.name, 'picture_url': u.picture_url} for u in users]})
+
+
+# ===================== COPY TRADING MEMBER API =====================
+
+@app.route('/api/copytrading/members', methods=['GET'])
+@require_api_auth
+def list_copy_trading_members():
+    """List users who have opted in to member copy trading."""
+    members = User.query.filter_by(copy_trading_enabled=True, is_active=True).all()
+    result = []
+    for m in members:
+        holdings_count = Portfolio.query.filter_by(user_id=m.id).count()
+        follower_count = CopyTradingFollow.query.filter_by(leader_id=m.id).count()
+        is_following = CopyTradingFollow.query.filter_by(
+            follower_id=current_user.id, leader_id=m.id
+        ).first() is not None
+        result.append({
+            'id': m.id,
+            'name': m.name,
+            'picture_url': m.picture_url,
+            'bio': m.bio,
+            'holdings_count': holdings_count,
+            'follower_count': follower_count,
+            'is_following': is_following,
+            'member_since': m.created_at.isoformat() if m.created_at else None,
+        })
+    return jsonify({'members': result})
+
+
+@app.route('/api/copytrading/opt-in', methods=['POST'])
+@require_api_auth
+def toggle_copy_trading():
+    """Toggle copy trading opt-in for current user."""
+    data = request.get_json()
+    current_user.copy_trading_enabled = data.get('enabled', False)
+    if data.get('bio') is not None:
+        current_user.bio = (data['bio'] or '')[:500]
+    db.session.commit()
+    return jsonify({'success': True, 'enabled': current_user.copy_trading_enabled})
+
+
+@app.route('/api/copytrading/follow/<int:leader_id>', methods=['POST'])
+@require_api_auth
+def follow_member(leader_id):
+    """Follow a member for copy trading."""
+    if leader_id == current_user.id:
+        return jsonify({'error': 'Cannot follow yourself'}), 400
+    leader = User.query.get_or_404(leader_id)
+    if not leader.copy_trading_enabled:
+        return jsonify({'error': 'This user has not enabled copy trading'}), 400
+    existing = CopyTradingFollow.query.filter_by(
+        follower_id=current_user.id, leader_id=leader_id
+    ).first()
+    if existing:
+        return jsonify({'error': 'Already following'}), 400
+    db.session.add(CopyTradingFollow(follower_id=current_user.id, leader_id=leader_id))
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/copytrading/unfollow/<int:leader_id>', methods=['POST'])
+@require_api_auth
+def unfollow_member(leader_id):
+    """Unfollow a copy trading member."""
+    follow = CopyTradingFollow.query.filter_by(
+        follower_id=current_user.id, leader_id=leader_id
+    ).first()
+    if follow:
+        db.session.delete(follow)
+        db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/copytrading/status', methods=['GET'])
+@require_api_auth
+def copy_trading_status():
+    """Get current user's copy trading status."""
+    return jsonify({
+        'enabled': current_user.copy_trading_enabled or False,
+        'bio': current_user.bio or '',
+        'follower_count': CopyTradingFollow.query.filter_by(leader_id=current_user.id).count(),
+        'following_count': CopyTradingFollow.query.filter_by(follower_id=current_user.id).count(),
+    })
+
+
+@app.route('/api/user/heartbeat', methods=['POST'])
+@require_api_auth
+def user_heartbeat():
+    """Update user's last active timestamp."""
+    current_user.last_active = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'success': True})
 
 
 @app.route('/api/analyze', methods=['POST'])

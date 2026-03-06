@@ -5,7 +5,7 @@
 let allTraders = [];
 let followedTraders = new Set();
 let politicianTrades = [];
-let activeTab = 'traders'; // 'traders' or 'politicians'
+let activeTab = 'traders'; // 'traders', 'politicians', or 'members'
 
 // Sample trader data - In production, this would come from an API
 const sampleTraders = [
@@ -132,11 +132,11 @@ function init() {
 function setupTabSwitching() {
     const tradersTab = document.getElementById('tradersTab');
     const politiciansTab = document.getElementById('politiciansTab');
+    const membersTab = document.getElementById('membersTab');
     
-    if (tradersTab && politiciansTab) {
-        tradersTab.addEventListener('click', () => switchTab('traders'));
-        politiciansTab.addEventListener('click', () => switchTab('politicians'));
-    }
+    if (tradersTab) tradersTab.addEventListener('click', () => switchTab('traders'));
+    if (politiciansTab) politiciansTab.addEventListener('click', () => switchTab('politicians'));
+    if (membersTab) membersTab.addEventListener('click', () => switchTab('members'));
 }
 
 /**
@@ -146,23 +146,21 @@ function switchTab(tab) {
     activeTab = tab;
     
     // Update tab buttons
-    const tradersTab = document.getElementById('tradersTab');
-    const politiciansTab = document.getElementById('politiciansTab');
+    document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
+    const activeBtn = document.getElementById(tab === 'traders' ? 'tradersTab' : tab === 'politicians' ? 'politiciansTab' : 'membersTab');
+    if (activeBtn) activeBtn.classList.add('active');
     
-    if (tab === 'traders') {
-        tradersTab.classList.add('active');
-        politiciansTab.classList.remove('active');
-        document.getElementById('traderGrid').style.display = 'grid';
-        document.getElementById('politicianGrid').style.display = 'none';
-        document.getElementById('filtersBar').style.display = 'flex';
-        document.getElementById('politicianFilters').style.display = 'none';
-    } else {
-        tradersTab.classList.remove('active');
-        politiciansTab.classList.add('active');
-        document.getElementById('traderGrid').style.display = 'none';
-        document.getElementById('politicianGrid').style.display = 'grid';
-        document.getElementById('filtersBar').style.display = 'none';
-        document.getElementById('politicianFilters').style.display = 'flex';
+    // Show/hide sections
+    document.getElementById('traderGrid').style.display = tab === 'traders' ? 'grid' : 'none';
+    document.getElementById('politicianGrid').style.display = tab === 'politicians' ? 'grid' : 'none';
+    document.getElementById('filtersBar').style.display = tab === 'traders' ? 'flex' : 'none';
+    document.getElementById('politicianFilters').style.display = tab === 'politicians' ? 'flex' : 'none';
+    const memberSection = document.getElementById('memberSection');
+    if (memberSection) memberSection.style.display = tab === 'members' ? 'block' : 'none';
+    
+    if (tab === 'members') {
+        loadMemberStatus();
+        loadMembers();
     }
 }
 
@@ -944,3 +942,132 @@ document.head.appendChild(style);
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', init);
+
+// ===================== MEMBER COPY TRADING =====================
+
+async function loadMemberStatus() {
+    try {
+        const res = await fetch('/api/copytrading/status');
+        if (!res.ok) return;
+        const data = await res.json();
+        const toggle = document.getElementById('copyTradingToggle');
+        const status = document.getElementById('copyTradingStatus');
+        const bioSection = document.getElementById('bioSection');
+        const bioInput = document.getElementById('memberBio');
+        if (toggle) toggle.checked = data.enabled;
+        if (status) status.textContent = data.enabled ? 'Enabled' : 'Disabled';
+        if (bioSection) bioSection.style.display = data.enabled ? 'block' : 'none';
+        if (bioInput && data.bio) bioInput.value = data.bio;
+    } catch (e) { console.error('Failed to load copy trading status:', e); }
+}
+
+async function toggleCopyTrading() {
+    const toggle = document.getElementById('copyTradingToggle');
+    const enabled = toggle.checked;
+    try {
+        const res = await fetch('/api/copytrading/opt-in', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+        });
+        if (res.ok) {
+            document.getElementById('copyTradingStatus').textContent = enabled ? 'Enabled' : 'Disabled';
+            document.getElementById('bioSection').style.display = enabled ? 'block' : 'none';
+            showToast(enabled ? 'Copy trading enabled!' : 'Copy trading disabled');
+            loadMembers();
+        }
+    } catch (e) { console.error('Failed to toggle copy trading:', e); }
+}
+
+async function saveBio() {
+    const bio = document.getElementById('memberBio').value.trim();
+    try {
+        await fetch('/api/copytrading/opt-in', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: true, bio }),
+        });
+        showToast('Bio saved!');
+    } catch (e) { console.error('Failed to save bio:', e); }
+}
+
+async function loadMembers() {
+    try {
+        const res = await fetch('/api/copytrading/members');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderMembers(data.members);
+    } catch (e) {
+        console.error('Failed to load members:', e);
+    }
+}
+
+function renderMembers(members) {
+    const grid = document.getElementById('memberGrid');
+    if (!members.length) {
+        grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--text-secondary);">
+            <div style="font-size:3em;margin-bottom:15px;">🤝</div>
+            <div>No members have opted in yet. Be the first!</div>
+        </div>`;
+        return;
+    }
+
+    grid.innerHTML = members.map(m => {
+        const avatar = m.picture_url
+            ? `<img src="${m.picture_url}" style="width:48px;height:48px;border-radius:50%;margin-right:12px;" alt="" referrerpolicy="no-referrer">`
+            : '<span style="font-size:2em;margin-right:12px;">👤</span>';
+        const followBtn = m.is_following
+            ? `<button class="follow-btn following" onclick="unfollowMember(${m.id}, event)" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:600;">Unfollow</button>`
+            : `<button class="follow-btn" onclick="followMember(${m.id}, event)" style="background:var(--accent);color:white;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:600;">Follow</button>`;
+
+        return `<div class="trader-card">
+            <div style="display:flex;align-items:center;margin-bottom:12px;">
+                ${avatar}
+                <div>
+                    <div style="font-weight:600;font-size:1.1em;color:var(--text-primary);">${escapeHtml(m.name || 'Unknown')}</div>
+                    <div style="font-size:0.85em;color:var(--text-secondary);">Member since ${m.member_since ? new Date(m.member_since).toLocaleDateString() : 'N/A'}</div>
+                </div>
+            </div>
+            ${m.bio ? `<p style="color:var(--text-secondary);font-size:0.9em;margin-bottom:12px;">${escapeHtml(m.bio)}</p>` : ''}
+            <div style="display:flex;justify-content:space-between;align-items:center;padding-top:12px;border-top:1px solid var(--border);">
+                <div style="display:flex;gap:16px;font-size:0.9em;">
+                    <span>📊 ${m.holdings_count} holdings</span>
+                    <span>👥 ${m.follower_count} followers</span>
+                </div>
+                ${followBtn}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+async function followMember(leaderId, event) {
+    event.stopPropagation();
+    try {
+        const res = await fetch(`/api/copytrading/follow/${leaderId}`, { method: 'POST' });
+        if (res.ok) {
+            showToast('Following member!');
+            loadMembers();
+        } else {
+            const data = await res.json();
+            showToast(data.error || 'Failed to follow', 'error');
+        }
+    } catch (e) { console.error('Failed to follow:', e); }
+}
+
+async function unfollowMember(leaderId, event) {
+    event.stopPropagation();
+    try {
+        const res = await fetch(`/api/copytrading/unfollow/${leaderId}`, { method: 'POST' });
+        if (res.ok) {
+            showToast('Unfollowed member');
+            loadMembers();
+        }
+    } catch (e) { console.error('Failed to unfollow:', e); }
+}

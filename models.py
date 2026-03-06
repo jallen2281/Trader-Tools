@@ -19,8 +19,13 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     name = db.Column(db.String(255))
     picture_url = db.Column(db.Text)
+    role = db.Column(db.String(20), default='user', index=True)  # user, moderator, admin
+    is_active = db.Column(db.Boolean, default=True)
+    bio = db.Column(db.Text)
+    copy_trading_enabled = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
+    last_active = db.Column(db.DateTime)
     preferences = db.Column(JSON, default={})
     
     # Relationships
@@ -34,6 +39,27 @@ class User(UserMixin, db.Model):
     sessions = db.relationship('UserSession', backref='user', lazy=True, cascade='all, delete-orphan')
     portfolio_snapshots = db.relationship('PortfolioSnapshot', backref='user', lazy=True, cascade='all, delete-orphan')  # Phase 4
     dividends = db.relationship('Dividend', backref='user', lazy=True, cascade='all, delete-orphan')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'email': self.email,
+            'name': self.name,
+            'picture_url': self.picture_url,
+            'role': self.role or 'user',
+            'is_active': self.is_active if self.is_active is not None else True,
+            'bio': self.bio,
+            'copy_trading_enabled': self.copy_trading_enabled or False,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'last_login': self.last_login.isoformat() if self.last_login else None,
+            'last_active': self.last_active.isoformat() if self.last_active else None,
+        }
+    
+    def is_admin(self):
+        return self.role == 'admin'
+    
+    def is_moderator(self):
+        return self.role in ('admin', 'moderator')
     
     def __repr__(self):
         return f'<User {self.email}>'
@@ -551,3 +577,106 @@ class Dividend(db.Model):
             'account_id': self.account_id,
             'notes': self.notes
         }
+
+
+class DiscussionThread(db.Model):
+    """Community discussion threads"""
+    __tablename__ = 'discussion_threads'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    title = db.Column(db.String(200), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    symbol = db.Column(db.String(10), index=True)
+    category = db.Column(db.String(30), default='general', index=True)  # general, analysis, news, options, crypto
+    pinned = db.Column(db.Boolean, default=False)
+    locked = db.Column(db.Boolean, default=False)
+    upvotes = db.Column(db.Integer, default=0)
+    views = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    author = db.relationship('User', backref='threads', lazy=True)
+    replies = db.relationship('ThreadReply', backref='thread', lazy=True, cascade='all, delete-orphan',
+                             order_by='ThreadReply.created_at.asc()')
+    
+    def to_dict(self, include_replies=False):
+        d = {
+            'id': self.id,
+            'user_id': self.user_id,
+            'author_name': self.author.name if self.author else 'Unknown',
+            'author_picture': self.author.picture_url if self.author else None,
+            'title': self.title,
+            'body': self.body,
+            'symbol': self.symbol,
+            'category': self.category,
+            'pinned': self.pinned,
+            'locked': self.locked,
+            'upvotes': self.upvotes,
+            'views': self.views,
+            'reply_count': len(self.replies) if self.replies else 0,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+        if include_replies:
+            d['replies'] = [r.to_dict() for r in self.replies]
+        return d
+
+
+class ThreadReply(db.Model):
+    """Replies to discussion threads"""
+    __tablename__ = 'thread_replies'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    thread_id = db.Column(db.Integer, db.ForeignKey('discussion_threads.id'), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    body = db.Column(db.Text, nullable=False)
+    upvotes = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    author = db.relationship('User', backref='replies', lazy=True)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'thread_id': self.thread_id,
+            'user_id': self.user_id,
+            'author_name': self.author.name if self.author else 'Unknown',
+            'author_picture': self.author.picture_url if self.author else None,
+            'body': self.body,
+            'upvotes': self.upvotes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class ThreadVote(db.Model):
+    """Track user votes on threads and replies"""
+    __tablename__ = 'thread_votes'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    thread_id = db.Column(db.Integer, db.ForeignKey('discussion_threads.id'), nullable=True)
+    reply_id = db.Column(db.Integer, db.ForeignKey('thread_replies.id'), nullable=True)
+    vote = db.Column(db.Integer, nullable=False)  # 1 = upvote, -1 = downvote
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'thread_id', 'reply_id', name='unique_user_vote'),
+    )
+
+
+class CopyTradingFollow(db.Model):
+    """Member-based copy trading follows"""
+    __tablename__ = 'copy_trading_follows'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    follower_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    leader_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    follower = db.relationship('User', foreign_keys=[follower_id], backref='following')
+    leader = db.relationship('User', foreign_keys=[leader_id], backref='followers')
+    
+    __table_args__ = (
+        db.UniqueConstraint('follower_id', 'leader_id', name='unique_follow'),
+    )

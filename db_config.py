@@ -103,6 +103,26 @@ def init_database(app):
             db.session.commit()
             print("✓ Created dividends table")
         
+        # Migrate: add new user columns if missing
+        user_cols = [c['name'] for c in inspector.get_columns('users')]
+        if 'role' not in user_cols:
+            db.session.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'user'"))
+            db.session.commit()
+            print("✓ Added role to users table")
+        if 'is_active' not in user_cols:
+            db.session.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+            db.session.commit()
+        if 'bio' not in user_cols:
+            db.session.execute(text("ALTER TABLE users ADD COLUMN bio TEXT"))
+            db.session.commit()
+        if 'copy_trading_enabled' not in user_cols:
+            db.session.execute(text("ALTER TABLE users ADD COLUMN copy_trading_enabled BOOLEAN DEFAULT 0"))
+            db.session.commit()
+        if 'last_active' not in user_cols:
+            db.session.execute(text("ALTER TABLE users ADD COLUMN last_active DATETIME"))
+            db.session.commit()
+            print("✓ Added user profile columns")
+        
         # Drop old unique constraint and recreate (SQLite can't ALTER constraints, so we skip if column exists)
         print("✓ Database tables created successfully")
     

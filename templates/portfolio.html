@@ -460,6 +460,7 @@
             <div class="sidebar-section">
                 <h3>📈 Quick Links</h3>
                 <a href="/dashboard" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">Analysis Dashboard</a>
+                <a href="/community" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">💬 Community</a>
                 <a href="/copytrading" class="btn-secondary" style="width:100%;display:block;text-align:center;">🎯 Copy Trading</a>
             </div>
         </aside>
@@ -469,6 +470,7 @@
             <h1>📈 Portfolio Analytics</h1>
             <div class="header-actions">
                 <a href="/dashboard" class="btn btn-secondary">Analysis Dashboard</a>
+                <a href="/community" class="btn btn-secondary">💬 Community</a>
                 <a href="/copytrading" class="btn btn-secondary">🎯 Copy Trading</a>
                 <button onclick="openAddPositionModal()" class="btn btn-primary">+ Add Position</button>
                 <button onclick="refreshAll()" class="btn btn-primary">🔄 Refresh</button>
@@ -788,6 +790,59 @@
     <script src="{{ url_for('static', filename='watchlist.js') }}"></script>
     <script src="{{ url_for('static', filename='notifications.js') }}"></script>
     <script src="{{ url_for('static', filename='portfolio.js') }}"></script>
+    <script>
+        // Watchlist sidebar rendering for portfolio page
+        (function() {
+            const wm = new WatchlistManager();
+
+            async function renderWatchlist() {
+                const container = document.getElementById('watchlistItems');
+                if (!container) return;
+                const items = wm.getWatchlist();
+                if (!items.length) {
+                    container.innerHTML = '<div style="font-size:0.85em;color:var(--text-secondary);padding:8px;">No symbols in watchlist. Add one above.</div>';
+                    return;
+                }
+                container.innerHTML = items.map(s => `<div class="watchlist-item" style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid var(--border);cursor:pointer;">
+                    <span style="font-weight:600;">${s}</span>
+                    <span class="watchlist-price" id="wp-${s}" style="font-size:0.85em;color:var(--text-secondary);">...</span>
+                    <button onclick="event.stopPropagation();removeFromWatchlist('${s}')" style="background:none;border:none;cursor:pointer;color:var(--text-secondary);font-size:0.9em;">✕</button>
+                </div>`).join('');
+                // Fetch prices
+                for (const sym of items) {
+                    try {
+                        const res = await fetch(`/api/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: sym, period: '5d', interval: '1d' }) });
+                        if (res.ok) {
+                            const data = await res.json();
+                            const el = document.getElementById('wp-' + sym);
+                            if (el && data.current_price) el.textContent = '$' + data.current_price.toFixed(2);
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            window.removeFromWatchlist = function(symbol) {
+                wm.removeFromWatchlist(symbol);
+                renderWatchlist();
+            };
+
+            const addBtn = document.getElementById('addToWatchlist');
+            const input = document.getElementById('watchlistSymbolInput');
+            if (addBtn && input) {
+                addBtn.addEventListener('click', () => {
+                    const sym = input.value.trim().toUpperCase();
+                    if (sym) { wm.addToWatchlist(sym); input.value = ''; renderWatchlist(); }
+                });
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') { addBtn.click(); }
+                });
+            }
+            const refreshBtn = document.getElementById('refreshWatchlist');
+            if (refreshBtn) refreshBtn.addEventListener('click', renderWatchlist);
+
+            renderWatchlist();
+        })();
+    </script>
     <script>
         // Sidebar alerts loader (lightweight version from app.js)
         async function fetchSidebarAlerts() {
