@@ -944,6 +944,12 @@ function toggleOptionsFields() {
     const assetType = document.getElementById('positionAssetType').value;
     const stockFields = document.getElementById('stockFields');
     const optionsFields = document.getElementById('optionsFields');
+    const cryptoHint = document.getElementById('cryptoHint');
+    
+    // Show/hide crypto hint
+    if (cryptoHint) {
+        cryptoHint.style.display = assetType === 'crypto' ? 'block' : 'none';
+    }
     
     if (assetType === 'option') {
         stockFields.style.display = 'none';
@@ -1074,7 +1080,12 @@ async function addPosition(event) {
                 throw new Error(msg);
             }
             
-            showToast(`✓ Added ${quantity} shares of ${symbol} at $${price}`, 'success');
+            const result = await response.json();
+            const displaySymbol = result.corrected_symbol || symbol;
+            showToast(`✓ Added ${quantity} shares of ${displaySymbol} at $${price}`, 'success');
+            if (result.corrected_symbol) {
+                showToast(`Symbol normalized: ${symbol} → ${result.corrected_symbol}`, 'info');
+            }
         }
         
         // Close modal and refresh

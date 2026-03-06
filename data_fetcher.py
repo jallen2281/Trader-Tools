@@ -26,6 +26,26 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Common crypto currency pair suffixes on yfinance
+CRYPTO_PAIR_SUFFIXES = ('-USD', '-EUR', '-GBP', '-JPY', '-BTC', '-ETH', '-USDT', '-BUSD')
+
+
+def normalize_crypto_symbol(symbol, asset_type=None):
+    """
+    Normalize crypto symbols for yfinance compatibility.
+    
+    Crypto assets on yfinance use currency pair tickers (e.g., BTC-USD, AVAX-USD).
+    This function appends '-USD' when asset_type is 'crypto' and the symbol
+    doesn't already have a currency pair suffix.
+    
+    Important: BTC (an ETF) vs BTC-USD (Bitcoin) — the asset_type distinguishes them.
+    """
+    symbol = symbol.upper().strip()
+    if asset_type == 'crypto' and not any(symbol.endswith(s) for s in CRYPTO_PAIR_SUFFIXES):
+        return f'{symbol}-USD'
+    return symbol
+
+
 # Global rate limiter to prevent overwhelming Yahoo Finance API
 _request_lock = threading.Lock()
 _last_request_time = None

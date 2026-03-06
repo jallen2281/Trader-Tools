@@ -10,7 +10,7 @@ if sys.stderr.encoding != 'utf-8':
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_login import login_required, current_user
-from data_fetcher import FinancialDataFetcher
+from data_fetcher import FinancialDataFetcher, normalize_crypto_symbol
 from chart_generator import ChartGenerator
 from pattern_recognizer import PatternRecognizer
 from llm_analyzer import LLMAnalyzer
@@ -1706,6 +1706,12 @@ def manage_portfolio():
             if not all([symbol, quantity > 0, price > 0]):
                 return jsonify({'error': 'Missing or invalid fields'}), 400
             
+            # Normalize crypto symbols (e.g., AVAX → AVAX-USD for yfinance)
+            original_symbol = symbol
+            symbol = normalize_crypto_symbol(symbol, asset_type)
+            if symbol != original_symbol:
+                logger.info(f"Normalized crypto symbol: {original_symbol} → {symbol}")
+            
             # Parse purchase date if provided
             parsed_date = None
             if purchase_date:
@@ -1770,7 +1776,11 @@ def manage_portfolio():
             db.session.add(transaction)
             db.session.commit()
             
-            return jsonify({'message': f'Added {quantity} shares of {symbol}', 'success': True}), 201
+            resp = {'message': f'Added {quantity} shares of {symbol}', 'success': True}
+            if symbol != original_symbol:
+                resp['corrected_symbol'] = symbol
+                resp['message'] = f'Added {quantity} shares of {symbol} (normalized from {original_symbol})'
+            return jsonify(resp), 201
         
         elif request.method == 'DELETE':
             # Remove position

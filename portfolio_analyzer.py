@@ -10,6 +10,7 @@ import yfinance as yf
 import logging
 import traceback
 from models import db, Portfolio, OptionsPosition, Transaction, PortfolioSnapshot, Dividend
+from data_fetcher import normalize_crypto_symbol
 from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
@@ -366,13 +367,20 @@ class PortfolioAnalyzer:
     def _update_portfolio_prices(self, stock_holdings, options_holdings):
         """Update current prices for all holdings"""
         try:
-            # Update stock prices
-            symbols = [h.symbol for h in stock_holdings]
-            if symbols:
-                prices = self._fetch_batch_prices(symbols)
+            # Update stock prices - normalize crypto symbols for yfinance
+            symbol_map = {}
+            yf_symbols = []
+            for h in stock_holdings:
+                yf_sym = normalize_crypto_symbol(h.symbol, h.asset_type)
+                symbol_map[yf_sym] = h.symbol
+                yf_symbols.append(yf_sym)
+            
+            if yf_symbols:
+                prices = self._fetch_batch_prices(yf_symbols)
                 for holding in stock_holdings:
-                    if holding.symbol in prices:
-                        holding.current_price = prices[holding.symbol]
+                    yf_sym = normalize_crypto_symbol(holding.symbol, holding.asset_type)
+                    if yf_sym in prices:
+                        holding.current_price = prices[yf_sym]
                         holding.last_updated = datetime.now()
             
             # Update options prices

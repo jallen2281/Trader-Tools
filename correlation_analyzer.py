@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple
 import logging
 import traceback
 from models import db, Portfolio, OptionsPosition
+from data_fetcher import normalize_crypto_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,10 @@ class CorrelationAnalyzer:
             if not positions:
                 return {'error': 'No portfolio found'}
             
-            symbols = [pos.symbol for pos in positions]
+            # Normalize symbols (e.g., crypto AVAX → AVAX-USD for yfinance)
+            symbols = [normalize_crypto_symbol(pos.symbol, pos.asset_type) for pos in positions]
+            # Deduplicate while preserving order
+            symbols = list(dict.fromkeys(symbols))
             
             # Also include options positions
             options_positions = OptionsPosition.query.filter_by(user_id=user_id, status='open').all()
@@ -268,7 +272,8 @@ class CorrelationAnalyzer:
         
         for pos in positions:
             try:
-                ticker = yf.Ticker(pos.symbol)
+                yf_sym = normalize_crypto_symbol(pos.symbol, pos.asset_type)
+                ticker = yf.Ticker(yf_sym)
                 info = ticker.info
                 sector = info.get('sector', 'Unknown')
                 

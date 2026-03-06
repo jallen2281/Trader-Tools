@@ -132,6 +132,19 @@ def init_database(app):
             db.session.execute(text("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)"))
             db.session.commit()
             print("✓ Promoted first user to admin")
+        
+        # Migrate: normalize crypto symbols (e.g., AVAX → AVAX-USD for yfinance)
+        crypto_fixed = db.session.execute(text(
+            "UPDATE OR IGNORE portfolio SET symbol = symbol || '-USD' "
+            "WHERE asset_type = 'crypto' AND symbol NOT LIKE '%-USD' "
+            "AND symbol NOT LIKE '%-EUR' AND symbol NOT LIKE '%-GBP' "
+            "AND symbol NOT LIKE '%-JPY' AND symbol NOT LIKE '%-BTC' "
+            "AND symbol NOT LIKE '%-ETH' AND symbol NOT LIKE '%-USDT' "
+            "AND symbol NOT LIKE '%-BUSD'"
+        )).rowcount
+        if crypto_fixed > 0:
+            db.session.commit()
+            print(f"✓ Normalized {crypto_fixed} crypto symbol(s) (appended -USD)")
     
     return db
 
