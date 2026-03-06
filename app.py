@@ -323,14 +323,6 @@ def copytrading():
     return render_template('copytrading.html')
 
 
-@app.route('/copytrading')
-@login_required
-def copytrading():
-    """Render the copy trading research page."""
-    logger.debug("Rendering copytrading.html")
-    return render_template('copytrading.html')
-
-
 @app.route('/admin')
 @login_required
 def admin_page():
