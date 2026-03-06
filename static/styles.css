@@ -714,10 +714,11 @@ body {
 
 .sentiment-recommendation {
     padding: 15px;
-    background: white;
+    background: var(--bg-tertiary);
     border-radius: 8px;
     font-weight: 600;
     font-size: 1.1em;
+    color: var(--text-primary);
 }
 
 /* Phase 3: Risk Card */
@@ -850,10 +851,11 @@ body {
 
 .timing-recommendation {
     padding: 12px;
-    background: white;
+    background: var(--bg-tertiary);
     border-radius: 8px;
     font-weight: 600;
     margin-bottom: 15px;
+    color: var(--text-primary);
 }
 
 .timing-signals {
@@ -862,10 +864,11 @@ body {
 
 .signal-item {
     padding: 10px;
-    background: white;
+    background: var(--bg-tertiary);
     border-radius: 6px;
     margin-bottom: 8px;
     font-size: 0.9em;
+    color: var(--text-primary);
 }
 
 .signal-item:last-child {
