@@ -23,7 +23,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -863,6 +863,127 @@ def manage_alerts():
         logger.error(f"Error managing alerts: {e}")
         return jsonify({'error': str(e)}), 500
 
+# Portfolio Account Management
+@app.route('/api/portfolio/accounts', methods=['GET'])
+def list_portfolio_accounts():
+    """List all portfolio accounts for the user."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    try:
+        accounts = PortfolioAccount.query.filter_by(user_id=current_user.id).order_by(PortfolioAccount.created_at).all()
+        
+        # Calculate totals per account
+        result = []
+        for acc in accounts:
+            holdings = Portfolio.query.filter_by(user_id=current_user.id, account_id=acc.id).all()
+            total_value = sum(float(h.quantity) * float(h.current_price or h.average_cost) for h in holdings)
+            total_cost = sum(float(h.quantity) * float(h.average_cost) for h in holdings)
+            result.append({
+                **acc.to_dict(),
+                'total_value': round(total_value, 2),
+                'total_cost': round(total_cost, 2),
+                'gain_loss': round(total_value - total_cost, 2),
+                'holdings_count': len(holdings)
+            })
+        
+        # Also get unassigned holdings count
+        unassigned = Portfolio.query.filter_by(user_id=current_user.id, account_id=None).count()
+        
+        return jsonify({'accounts': result, 'unassigned_count': unassigned})
+    except Exception as e:
+        logger.error(f"Error listing accounts: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/accounts', methods=['POST'])
+def create_portfolio_account():
+    """Create a new portfolio account."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    try:
+        data = request.get_json()
+        name = data.get('name', '').strip()
+        investment_style = data.get('investment_style', 'moderate')
+        description = data.get('description', '').strip()
+        
+        if not name:
+            return jsonify({'error': 'Account name is required'}), 400
+        
+        valid_styles = ['aggressive', 'moderate', 'conservative', 'balanced']
+        if investment_style not in valid_styles:
+            return jsonify({'error': f'Invalid style. Must be one of: {", ".join(valid_styles)}'}), 400
+        
+        existing = PortfolioAccount.query.filter_by(user_id=current_user.id, name=name).first()
+        if existing:
+            return jsonify({'error': 'Account with this name already exists'}), 400
+        
+        account = PortfolioAccount(
+            user_id=current_user.id,
+            name=name,
+            investment_style=investment_style,
+            description=description
+        )
+        db.session.add(account)
+        db.session.commit()
+        
+        return jsonify({'account': account.to_dict(), 'message': 'Account created'}), 201
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error creating account: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/accounts/<int:account_id>', methods=['PUT'])
+def update_portfolio_account(account_id):
+    """Update portfolio account settings."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    try:
+        account = PortfolioAccount.query.filter_by(id=account_id, user_id=current_user.id).first()
+        if not account:
+            return jsonify({'error': 'Account not found'}), 404
+        
+        data = request.get_json()
+        if 'name' in data and data['name'].strip():
+            account.name = data['name'].strip()
+        if 'investment_style' in data:
+            valid_styles = ['aggressive', 'moderate', 'conservative', 'balanced']
+            if data['investment_style'] in valid_styles:
+                account.investment_style = data['investment_style']
+        if 'description' in data:
+            account.description = data['description'].strip()
+        
+        db.session.commit()
+        return jsonify({'account': account.to_dict(), 'message': 'Account updated'})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error updating account: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/accounts/<int:account_id>', methods=['DELETE'])
+def delete_portfolio_account(account_id):
+    """Delete a portfolio account (moves holdings to unassigned)."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    try:
+        account = PortfolioAccount.query.filter_by(id=account_id, user_id=current_user.id).first()
+        if not account:
+            return jsonify({'error': 'Account not found'}), 404
+        
+        # Unassign holdings instead of deleting them
+        Portfolio.query.filter_by(account_id=account_id).update({'account_id': None})
+        Transaction.query.filter_by(account_id=account_id).update({'account_id': None})
+        
+        db.session.delete(account)
+        db.session.commit()
+        return jsonify({'message': 'Account deleted, holdings moved to unassigned'})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error deleting account: {e}")
+        return jsonify({'error': str(e)}), 500
+
 # Phase 2: Portfolio endpoints
 @app.route('/api/portfolio/list', methods=['GET'])
 def list_portfolio_holdings():
@@ -871,8 +992,16 @@ def list_portfolio_holdings():
         return jsonify({'error': 'Authentication required'}), 401
     
     try:
-        # Get all holdings
-        holdings = Portfolio.query.filter_by(user_id=current_user.id).all()
+        # Filter by account if specified
+        account_id = request.args.get('account_id')
+        query = Portfolio.query.filter_by(user_id=current_user.id)
+        if account_id:
+            if account_id == 'unassigned':
+                query = query.filter_by(account_id=None)
+            else:
+                query = query.filter_by(account_id=int(account_id))
+        
+        holdings = query.all()
         
         # Update current prices
         for holding in holdings:
@@ -908,6 +1037,7 @@ def manage_portfolio():
             quantity = float(data.get('quantity', 0))
             price = float(data.get('price', 0))
             purchase_date = data.get('purchase_date')  # Get purchase date if provided
+            account_id = data.get('account_id')  # Optional portfolio account
             
             if not all([symbol, quantity > 0, price > 0]):
                 return jsonify({'error': 'Missing or invalid fields'}), 400
@@ -923,11 +1053,19 @@ def manage_portfolio():
             else:
                 parsed_date = datetime.utcnow()
             
-            # Check if position exists
+            # Validate account_id if provided
+            if account_id:
+                account_id = int(account_id)
+                account = PortfolioAccount.query.filter_by(id=account_id, user_id=current_user.id).first()
+                if not account:
+                    return jsonify({'error': 'Invalid account'}), 400
+            
+            # Check if position exists (scoped to account)
             existing = Portfolio.query.filter_by(
                 user_id=current_user.id,
                 symbol=symbol,
-                asset_type=asset_type
+                asset_type=asset_type,
+                account_id=account_id
             ).first()
             
             if existing:
@@ -945,6 +1083,7 @@ def manage_portfolio():
                 # Create new position
                 position = Portfolio(
                     user_id=current_user.id,
+                    account_id=account_id,
                     symbol=symbol,
                     asset_type=asset_type,
                     quantity=quantity,
@@ -956,6 +1095,7 @@ def manage_portfolio():
             # Record transaction with the purchase date
             transaction = Transaction(
                 user_id=current_user.id,
+                account_id=account_id,
                 symbol=symbol,
                 asset_type=asset_type,
                 transaction_type='buy',

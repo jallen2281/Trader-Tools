@@ -56,6 +56,24 @@ def init_database(app):
     # Create tables
     with app.app_context():
         db.create_all()
+        
+        # Migrate: add account_id columns if missing
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        
+        portfolio_cols = [c['name'] for c in inspector.get_columns('portfolio')]
+        if 'account_id' not in portfolio_cols:
+            db.session.execute(text('ALTER TABLE portfolio ADD COLUMN account_id INTEGER REFERENCES portfolio_accounts(id)'))
+            db.session.commit()
+            print("✓ Added account_id to portfolio table")
+        
+        txn_cols = [c['name'] for c in inspector.get_columns('transactions')]
+        if 'account_id' not in txn_cols:
+            db.session.execute(text('ALTER TABLE transactions ADD COLUMN account_id INTEGER REFERENCES portfolio_accounts(id)'))
+            db.session.commit()
+            print("✓ Added account_id to transactions table")
+        
+        # Drop old unique constraint and recreate (SQLite can't ALTER constraints, so we skip if column exists)
         print("✓ Database tables created successfully")
     
     return db

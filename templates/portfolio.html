@@ -13,12 +13,6 @@
             min-height: 100vh;
             padding: 0;
         }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
 
         .period-btn {
             padding: 6px 12px;
@@ -439,7 +433,32 @@
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="app-container">
+        <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">☰</button>
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>📊 Watchlist</h2>
+                <button id="refreshWatchlist" class="icon-btn" title="Refresh Prices">🔄</button>
+            </div>
+            <div class="watchlist-add">
+                <input type="text" id="watchlistSymbolInput" placeholder="Add symbol..." />
+                <button id="addToWatchlist">+</button>
+            </div>
+            <div id="watchlistItems" class="watchlist-items"></div>
+            <div class="sidebar-section">
+                <h3>🔔 Active Alerts (<span id="alertCount">0</span>)</h3>
+                <div id="sidebarAlertsList" class="sidebar-alerts-list"></div>
+                <button id="manageAlerts" class="btn-secondary">Manage Alerts</button>
+            </div>
+            <div class="sidebar-section">
+                <h3>📈 Quick Links</h3>
+                <a href="/dashboard" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">Analysis Dashboard</a>
+                <a href="/copytrading" class="btn-secondary" style="width:100%;display:block;text-align:center;">🎯 Copy Trading</a>
+            </div>
+        </aside>
+        <main class="main-content">
+    <div style="max-width:1400px;margin:0 auto;">
         <div class="header">
             <h1>📈 Portfolio Analytics</h1>
             <div class="header-actions">
@@ -448,6 +467,19 @@
                 <button onclick="openAddPositionModal()" class="btn btn-primary">+ Add Position</button>
                 <button onclick="refreshAll()" class="btn btn-primary">🔄 Refresh</button>
                 <button id="settingsBtn" class="btn btn-secondary">⚙️</button>
+            </div>
+        </div>
+        
+        <!-- Account Selector Bar -->
+        <div id="accountBar" style="background:var(--card-bg);border-radius:12px;padding:16px 20px;margin-bottom:20px;box-shadow:var(--shadow);border:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <span style="font-weight:600;color:var(--text-primary);white-space:nowrap;">📁 Account:</span>
+            <select id="accountSelector" onchange="switchAccount()" style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg-primary);color:var(--text-primary);font-size:0.95em;min-width:180px;">
+                <option value="all">All Accounts</option>
+            </select>
+            <span id="accountStyleBadge" style="padding:4px 12px;border-radius:20px;font-size:0.8em;font-weight:600;display:none;"></span>
+            <div style="margin-left:auto;display:flex;gap:8px;">
+                <button onclick="openAccountManager()" class="btn btn-secondary" style="font-size:0.85em;padding:8px 14px;">⚙️ Manage Accounts</button>
+                <button onclick="openCreateAccountModal()" class="btn btn-primary" style="font-size:0.85em;padding:8px 14px;">+ New Account</button>
             </div>
         </div>
         
@@ -587,6 +619,12 @@
                 </div>
                 <form id="addPositionForm" onsubmit="addPosition(event)">
                     <div class="form-group">
+                        <label>Account</label>
+                        <select id="positionAccount">
+                            <option value="">No Account (Unassigned)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label>Symbol</label>
                         <input type="text" id="positionSymbol" required placeholder="AAPL" style="text-transform: uppercase;">
                     </div>
@@ -692,11 +730,62 @@
                 </form>
             </div>
         </div>
-    </div>
+    </div><!-- /max-width wrapper -->
+    </main>
+    </div><!-- /app-container -->
     
     <script src="{{ url_for('static', filename='watchlist.js') }}"></script>
     <script src="{{ url_for('static', filename='notifications.js') }}"></script>
     <script src="{{ url_for('static', filename='portfolio.js') }}"></script>
+    <script>
+        // Sidebar alerts loader (lightweight version from app.js)
+        async function fetchSidebarAlerts() {
+            try {
+                const [activeRes, triggeredRes] = await Promise.all([
+                    fetch('/api/alerts'),
+                    fetch('/api/alerts/triggered')
+                ]);
+                const activeData = activeRes.ok ? await activeRes.json() : {};
+                const triggeredData = triggeredRes.ok ? await triggeredRes.json() : {};
+                const activeAlerts = activeData.alerts || activeData || [];
+                const triggeredAlerts = triggeredData.alerts || triggeredData || [];
+                const count = Array.isArray(activeAlerts) ? activeAlerts.length : 0;
+                const el = document.getElementById('alertCount');
+                if (el) el.textContent = count;
+
+                const container = document.getElementById('sidebarAlertsList');
+                if (!container) return;
+                const alerts = Array.isArray(activeAlerts) ? activeAlerts : [];
+                const triggered = Array.isArray(triggeredAlerts) ? triggeredAlerts : [];
+                const all = [...triggered.slice(0, 3), ...alerts.slice(0, 5)];
+                if (all.length === 0) { container.innerHTML = '<div style="font-size:0.85em;color:var(--text-secondary);">No alerts set</div>'; return; }
+                container.innerHTML = all.map(a => {
+                    const isTriggered = a.status === 'triggered';
+                    const icon = isTriggered ? '🚨' : '📈';
+                    const cls = isTriggered ? 'color:#e74c3c' : 'color:#2ecc71';
+                    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.85em;"><span>${icon}</span><span style="flex:1"><strong>${a.symbol}</strong> ${a.alert_type||''}</span><span style="${cls};font-weight:600">${isTriggered?'TRIGGERED':'ACTIVE'}</span></div>`;
+                }).join('');
+            } catch(e) { console.error('Failed to fetch alerts:', e); }
+        }
+        fetchSidebarAlerts();
+        setInterval(fetchSidebarAlerts, 60000);
+    </script>
+    <script>
+        // Mobile sidebar toggle
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const sidebar = document.getElementById('sidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+        if (sidebarToggle && sidebar) {
+            sidebarToggle.addEventListener('click', () => {
+                sidebar.classList.toggle('open');
+                sidebarOverlay.classList.toggle('active');
+            });
+            sidebarOverlay.addEventListener('click', () => {
+                sidebar.classList.remove('open');
+                sidebarOverlay.classList.remove('active');
+            });
+        }
+    </script>
     <script>
         // Dark mode initialization
         document.addEventListener('DOMContentLoaded', () => {

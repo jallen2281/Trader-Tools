@@ -9,6 +9,7 @@ let currentVix = null;
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     console.log('Portfolio dashboard initializing...');
+    loadAccounts();
     loadPortfolioData();
     loadVixData();
     loadActiveAlerts();
@@ -161,7 +162,10 @@ function displayPortfolioSummary(data) {
 async function loadHoldings() {
     try {
         // Get stock holdings
-        const stockResponse = await fetch('/api/portfolio/list');
+        // Get stock holdings, filtered by selected account
+        const accountId = document.getElementById('accountSelector')?.value || 'all';
+        const accountParam = accountId !== 'all' ? `?account_id=${accountId}` : '';
+        const stockResponse = await fetch('/api/portfolio/list' + accountParam);
         if (!stockResponse.ok) throw new Error('Failed to load holdings');
         
         const stocksData = await stockResponse.json();
@@ -999,7 +1003,8 @@ async function addPosition(event) {
                     asset_type: assetType,
                     quantity,
                     price,
-                    purchase_date: purchaseDate || null
+                    purchase_date: purchaseDate || null,
+                    account_id: document.getElementById('positionAccount')?.value || null
                 })
             });
             
@@ -1254,4 +1259,277 @@ async function processSellPosition(event, holdingId, type = 'stock') {
         showToast('Failed to process transaction', 'error');
     }
 }
+
+// ===========================
+// PORTFOLIO ACCOUNT MANAGEMENT
+// ===========================
+
+let portfolioAccounts = [];
+
+const STYLE_COLORS = {
+    aggressive: { bg: 'rgba(239,68,68,0.15)', color: '#ef4444', label: '🔥 Aggressive' },
+    moderate: { bg: 'rgba(59,130,246,0.15)', color: '#3b82f6', label: '⚖️ Moderate' },
+    conservative: { bg: 'rgba(16,185,129,0.15)', color: '#10b981', label: '🛡️ Conservative' },
+    balanced: { bg: 'rgba(245,158,11,0.15)', color: '#f59e0b', label: '🎯 Balanced' }
+};
+
+async function loadAccounts() {
+    try {
+        const res = await fetch('/api/portfolio/accounts');
+        if (!res.ok) return;
+        const data = await res.json();
+        portfolioAccounts = data.accounts || [];
+        
+        // Populate account selector
+        const selector = document.getElementById('accountSelector');
+        if (!selector) return;
+        
+        const currentVal = selector.value;
+        selector.innerHTML = '<option value="all">All Accounts</option>';
+        
+        portfolioAccounts.forEach(acc => {
+            const style = STYLE_COLORS[acc.investment_style] || STYLE_COLORS.moderate;
+            const opt = document.createElement('option');
+            opt.value = acc.id;
+            opt.textContent = `${acc.name} (${style.label})`;
+            selector.appendChild(opt);
+        });
+        
+        if (data.unassigned_count > 0) {
+            const opt = document.createElement('option');
+            opt.value = 'unassigned';
+            opt.textContent = `Unassigned (${data.unassigned_count})`;
+            selector.appendChild(opt);
+        }
+        
+        // Restore previous selection
+        if (currentVal) selector.value = currentVal;
+        
+        // Update account badge
+        updateAccountStyleBadge();
+        
+        // Populate add-position account dropdown
+        const posAcct = document.getElementById('positionAccount');
+        if (posAcct) {
+            posAcct.innerHTML = '<option value="">No Account (Unassigned)</option>';
+            portfolioAccounts.forEach(acc => {
+                const opt = document.createElement('option');
+                opt.value = acc.id;
+                opt.textContent = acc.name;
+                posAcct.appendChild(opt);
+            });
+        }
+    } catch (e) {
+        console.error('Error loading accounts:', e);
+    }
+}
+
+function switchAccount() {
+    updateAccountStyleBadge();
+    loadPortfolioData();
+}
+
+function updateAccountStyleBadge() {
+    const badge = document.getElementById('accountStyleBadge');
+    const selector = document.getElementById('accountSelector');
+    if (!badge || !selector) return;
+    
+    const val = selector.value;
+    const account = portfolioAccounts.find(a => a.id == val);
+    
+    if (account) {
+        const style = STYLE_COLORS[account.investment_style] || STYLE_COLORS.moderate;
+        badge.textContent = style.label;
+        badge.style.background = style.bg;
+        badge.style.color = style.color;
+        badge.style.display = 'inline-block';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+function openCreateAccountModal() {
+    const existing = document.getElementById('createAccountModal');
+    if (existing) existing.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'createAccountModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10000;';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    
+    modal.innerHTML = `
+        <div style="background:var(--modal-bg);border-radius:12px;padding:30px;max-width:500px;width:90%;color:var(--text-primary);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+                <h2 style="margin:0;">📁 Create Account</h2>
+                <button onclick="document.getElementById('createAccountModal').remove()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text-secondary);">&times;</button>
+            </div>
+            <div class="form-group">
+                <label>Account Name</label>
+                <input type="text" id="newAccountName" placeholder="e.g., Roth IRA, Brokerage, 401k" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);">
+            </div>
+            <div class="form-group">
+                <label>Investment Style</label>
+                <select id="newAccountStyle" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);">
+                    <option value="aggressive">🔥 Aggressive — High risk, high reward</option>
+                    <option value="moderate" selected>⚖️ Moderate — Balanced approach</option>
+                    <option value="conservative">🛡️ Conservative — Capital preservation</option>
+                    <option value="balanced">🎯 Balanced — Diversified mix</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Description (optional)</label>
+                <input type="text" id="newAccountDesc" placeholder="Brief description..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);">
+            </div>
+            <button onclick="createAccount()" style="width:100%;padding:12px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;">Create Account</button>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    document.getElementById('newAccountName').focus();
+}
+
+async function createAccount() {
+    const name = document.getElementById('newAccountName').value.trim();
+    const style = document.getElementById('newAccountStyle').value;
+    const desc = document.getElementById('newAccountDesc').value.trim();
+    
+    if (!name) { showToast('Account name is required', 'error'); return; }
+    
+    try {
+        const res = await fetch('/api/portfolio/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, investment_style: style, description: desc })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to create account');
+        
+        document.getElementById('createAccountModal')?.remove();
+        showToast(`Account "${name}" created!`, 'success');
+        await loadAccounts();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+function openAccountManager() {
+    const existing = document.getElementById('accountManagerModal');
+    if (existing) existing.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'accountManagerModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10000;';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    
+    const accountCards = portfolioAccounts.length === 0
+        ? '<p style="color:var(--text-secondary);text-align:center;padding:20px;">No accounts yet. Create one to organize your holdings.</p>'
+        : portfolioAccounts.map(acc => {
+            const style = STYLE_COLORS[acc.investment_style] || STYLE_COLORS.moderate;
+            return `
+                <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;margin-bottom:12px;border:1px solid var(--border);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <div style="font-weight:600;font-size:1.1em;color:var(--text-primary);">${acc.name}</div>
+                        <span style="padding:4px 10px;border-radius:12px;font-size:0.8em;font-weight:600;background:${style.bg};color:${style.color};">${style.label}</span>
+                    </div>
+                    ${acc.description ? `<div style="color:var(--text-secondary);font-size:0.9em;margin-bottom:8px;">${acc.description}</div>` : ''}
+                    <div style="display:flex;gap:16px;font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">
+                        <span>📊 ${acc.holdings_count} holdings</span>
+                        <span>💰 $${(acc.total_value || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
+                        <span style="color:${(acc.gain_loss||0) >= 0 ? 'var(--success)' : 'var(--danger)'};">P&L: $${(acc.gain_loss || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button onclick="editAccountStyle(${acc.id}, '${acc.investment_style}')" style="flex:1;padding:8px;background:var(--bg-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text-primary);font-size:0.85em;">Edit Style</button>
+                        <button onclick="deleteAccount(${acc.id}, '${acc.name}')" style="padding:8px 14px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:6px;cursor:pointer;color:#ef4444;font-size:0.85em;">🗑️</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    
+    modal.innerHTML = `
+        <div style="background:var(--modal-bg);border-radius:12px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;color:var(--text-primary);">
+            <div style="padding:24px 24px 0;display:flex;justify-content:space-between;align-items:center;">
+                <h2 style="margin:0;">📁 Manage Accounts</h2>
+                <button onclick="document.getElementById('accountManagerModal').remove()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text-secondary);">&times;</button>
+            </div>
+            <div style="padding:20px 24px 24px;">
+                ${accountCards}
+                <button onclick="document.getElementById('accountManagerModal').remove();openCreateAccountModal()" style="width:100%;padding:12px;background:transparent;border:2px dashed var(--border);border-radius:8px;color:var(--text-secondary);font-weight:600;cursor:pointer;margin-top:8px;">+ Create New Account</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+}
+
+async function editAccountStyle(accountId, currentStyle) {
+    const existing = document.getElementById('editStyleModal');
+    if (existing) existing.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'editStyleModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10001;';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    
+    const styles = ['aggressive', 'moderate', 'conservative', 'balanced'];
+    
+    modal.innerHTML = `
+        <div style="background:var(--modal-bg);border-radius:12px;padding:30px;max-width:400px;width:90%;color:var(--text-primary);">
+            <h3 style="margin:0 0 16px;">Change Investment Style</h3>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                ${styles.map(s => {
+                    const sc = STYLE_COLORS[s];
+                    return `<button onclick="saveAccountStyle(${accountId},'${s}')" style="padding:14px;background:${s === currentStyle ? sc.bg : 'var(--bg-tertiary)'};border:2px solid ${s === currentStyle ? sc.color : 'var(--border)'};border-radius:8px;cursor:pointer;color:var(--text-primary);font-weight:600;text-align:left;">${sc.label}${s === currentStyle ? ' ✓' : ''}</button>`;
+                }).join('')}
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+}
+
+async function saveAccountStyle(accountId, style) {
+    try {
+        const res = await fetch(`/api/portfolio/accounts/${accountId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ investment_style: style })
+        });
+        if (!res.ok) throw new Error('Failed to update');
+        
+        document.getElementById('editStyleModal')?.remove();
+        document.getElementById('accountManagerModal')?.remove();
+        showToast('Investment style updated', 'success');
+        await loadAccounts();
+    } catch (e) {
+        showToast('Failed to update style', 'error');
+    }
+}
+
+async function deleteAccount(accountId, name) {
+    if (!confirm(`Delete account "${name}"? Holdings will be moved to unassigned.`)) return;
+    
+    try {
+        const res = await fetch(`/api/portfolio/accounts/${accountId}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to delete');
+        
+        document.getElementById('accountManagerModal')?.remove();
+        showToast(`Account "${name}" deleted`, 'success');
+        
+        const selector = document.getElementById('accountSelector');
+        if (selector && selector.value == accountId) selector.value = 'all';
+        
+        await loadAccounts();
+        await loadPortfolioData();
+    } catch (e) {
+        showToast('Failed to delete account', 'error');
+    }
+}
+
+// Expose account functions globally
+window.openCreateAccountModal = openCreateAccountModal;
+window.openAccountManager = openAccountManager;
+window.switchAccount = switchAccount;
+window.editAccountStyle = editAccountStyle;
+window.saveAccountStyle = saveAccountStyle;
+window.deleteAccount = deleteAccount;
 

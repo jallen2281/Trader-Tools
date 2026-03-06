@@ -27,6 +27,7 @@ class User(UserMixin, db.Model):
     watchlist = db.relationship('Watchlist', backref='user', lazy=True, cascade='all, delete-orphan')
     alerts = db.relationship('Alert', backref='user', lazy=True, cascade='all, delete-orphan')
     portfolio = db.relationship('Portfolio', backref='user', lazy=True, cascade='all, delete-orphan')
+    portfolio_accounts = db.relationship('PortfolioAccount', backref='user', lazy=True, cascade='all, delete-orphan')
     transactions = db.relationship('Transaction', backref='user', lazy=True, cascade='all, delete-orphan')
     options_positions = db.relationship('OptionsPosition', backref='user', lazy=True, cascade='all, delete-orphan')
     analysis_history = db.relationship('AnalysisHistory', backref='user', lazy=True, cascade='all, delete-orphan')
@@ -113,12 +114,40 @@ class Alert(db.Model):
             'currentPrice': float(self.current_price) if self.current_price else None
         }
 
+class PortfolioAccount(db.Model):
+    """Portfolio account for grouping holdings (e.g., different brokerage accounts)"""
+    __tablename__ = 'portfolio_accounts'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    name = db.Column(db.String(100), nullable=False)
+    investment_style = db.Column(db.String(30), default='moderate')  # 'aggressive', 'moderate', 'conservative', 'balanced'
+    description = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    holdings = db.relationship('Portfolio', backref='account', lazy=True)
+    
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'name', name='unique_user_account_name'),
+    )
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'investment_style': self.investment_style,
+            'description': self.description,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'holdings_count': len(self.holdings) if self.holdings else 0
+        }
+
 class Portfolio(db.Model):
     """User's portfolio holdings"""
     __tablename__ = 'portfolio'
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('portfolio_accounts.id'), nullable=True, index=True)
     symbol = db.Column(db.String(10), nullable=False, index=True)
     asset_type = db.Column(db.String(20), nullable=False)  # 'stock', 'option', 'etf'
     quantity = db.Column(db.Numeric(15, 6, asdecimal=False), nullable=False)
@@ -128,7 +157,7 @@ class Portfolio(db.Model):
     last_updated = db.Column(db.DateTime, default=datetime.utcnow)
     
     __table_args__ = (
-        db.UniqueConstraint('user_id', 'symbol', 'asset_type', name='unique_user_position'),
+        db.UniqueConstraint('user_id', 'symbol', 'asset_type', 'account_id', name='unique_user_position'),
     )
     
     def to_dict(self):
@@ -153,7 +182,9 @@ class Portfolio(db.Model):
             'gain_loss': round(gain_loss, 2),
             'gain_loss_pct': round(gain_loss_pct, 2),
             'purchase_date': self.purchase_date.isoformat() if self.purchase_date else None,
-            'last_updated': self.last_updated.isoformat() if self.last_updated else None
+            'last_updated': self.last_updated.isoformat() if self.last_updated else None,
+            'account_id': self.account_id,
+            'account_name': self.account.name if self.account else None
         }
 
 class Transaction(db.Model):
@@ -162,6 +193,7 @@ class Transaction(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('portfolio_accounts.id'), nullable=True, index=True)
     symbol = db.Column(db.String(10), nullable=False, index=True)
     asset_type = db.Column(db.String(20), nullable=False)  # 'stock', 'option', 'etf'
     transaction_type = db.Column(db.String(10), nullable=False)  # 'buy' or 'sell'

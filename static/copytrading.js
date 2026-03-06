@@ -314,20 +314,235 @@ function toggleFollow(traderId) {
 }
 
 /**
- * Show trader details
+ * Show trader details in a full analytics modal
  */
 function showTraderDetails(traderId) {
     const trader = allTraders.find(t => t.id === traderId);
     if (!trader) return;
     
-    alert(`Detailed analysis for ${trader.name}:\n\n` +
-          `Total Return: +${trader.performance}%\n` +
-          `Win Rate: ${trader.winRate}%\n` +
-          `Sharpe Ratio: ${trader.sharpeRatio}\n` +
-          `Max Drawdown: ${trader.maxDrawdown}%\n` +
-          `Total Trades: ${trader.totalTrades}\n` +
-          `Strategies: ${trader.strategies.join(', ')}\n\n` +
-          `Full analytics dashboard coming soon!`);
+    const isFollowing = followedTraders.has(trader.id);
+    const perfClass = trader.performance >= 0 ? 'positive' : 'negative';
+    const riskClass = trader.riskLevel === 'low' ? 'risk-low' : trader.riskLevel === 'medium' ? 'risk-medium' : 'risk-high';
+    const badgeClass = `badge-${trader.badge}`;
+    
+    // Calculate additional metrics
+    const avgYearlyReturn = trader.yearlyReturns.length > 0
+        ? (trader.yearlyReturns.reduce((a, b) => a + b, 0) / trader.yearlyReturns.length).toFixed(1)
+        : 0;
+    const bestYear = Math.max(...trader.yearlyReturns).toFixed(1);
+    const worstYear = Math.min(...trader.yearlyReturns).toFixed(1);
+    const consistency = (100 - (Math.max(...trader.yearlyReturns) - Math.min(...trader.yearlyReturns))).toFixed(0);
+    
+    // Generate monthly simulated data from yearly returns for the chart
+    const monthlyData = [];
+    const monthLabels = [];
+    const years = ['2022', '2023', '2024'];
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    trader.yearlyReturns.forEach((yr, yi) => {
+        const monthlyAvg = yr / 12;
+        for (let m = 0; m < 12; m++) {
+            const variance = (Math.random() - 0.5) * monthlyAvg * 1.5;
+            monthlyData.push(+(monthlyAvg + variance).toFixed(2));
+            monthLabels.push(`${months[m]} ${years[yi] || 2022 + yi}`);
+        }
+    });
+    
+    // Cumulative returns for equity curve
+    let cumulative = 100;
+    const equityCurve = monthlyData.map(m => {
+        cumulative *= (1 + m / 100);
+        return +cumulative.toFixed(2);
+    });
+    
+    // Remove existing modal if any
+    const existing = document.getElementById('traderDetailsModal');
+    if (existing) existing.remove();
+
+    const modalHTML = `
+        <div id="traderDetailsModal" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10000;animation:fadeIn 0.2s ease;" onclick="if(event.target===this)this.remove()">
+            <div style="background:var(--card-bg);border-radius:16px;width:95%;max-width:900px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.4);" onclick="event.stopPropagation()">
+                <!-- Header -->
+                <div style="padding:24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+                    <div style="display:flex;align-items:center;gap:12px;">
+                        <h2 style="margin:0;color:var(--text-primary);font-size:1.5em;">${trader.name}</h2>
+                        <span class="trader-badge ${badgeClass}" style="font-size:0.7em;">${trader.badge}</span>
+                    </div>
+                    <button onclick="document.getElementById('traderDetailsModal').remove()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text-secondary);padding:4px 8px;border-radius:6px;">✕</button>
+                </div>
+                
+                <!-- Key Metrics -->
+                <div style="padding:20px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;">
+                    <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px;">Total Return</div>
+                        <div style="font-size:1.6em;font-weight:700;color:var(--success);">+${trader.performance}%</div>
+                    </div>
+                    <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px;">Win Rate</div>
+                        <div style="font-size:1.6em;font-weight:700;color:var(--text-primary);">${trader.winRate}%</div>
+                    </div>
+                    <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px;">Sharpe Ratio</div>
+                        <div style="font-size:1.6em;font-weight:700;color:var(--text-primary);">${trader.sharpeRatio}</div>
+                    </div>
+                    <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px;">Max Drawdown</div>
+                        <div style="font-size:1.6em;font-weight:700;color:var(--danger);">${trader.maxDrawdown}%</div>
+                    </div>
+                    <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px;">Avg Return/Trade</div>
+                        <div style="font-size:1.6em;font-weight:700;color:var(--success);">+${trader.avgReturn}%</div>
+                    </div>
+                    <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px;">Total Trades</div>
+                        <div style="font-size:1.6em;font-weight:700;color:var(--text-primary);">${trader.totalTrades}</div>
+                    </div>
+                </div>
+                
+                <!-- Equity Curve Chart -->
+                <div style="padding:0 24px 20px;">
+                    <h3 style="margin:0 0 12px;color:var(--text-primary);font-size:1.1em;">📈 Equity Curve (Simulated $100 Start)</h3>
+                    <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;">
+                        <canvas id="traderEquityChart" height="200"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Yearly Returns -->
+                <div style="padding:0 24px 20px;">
+                    <h3 style="margin:0 0 12px;color:var(--text-primary);font-size:1.1em;">📊 Yearly Performance</h3>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">
+                        ${trader.yearlyReturns.map((yr, i) => `
+                            <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;text-align:center;">
+                                <div style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px;">${2022 + i}</div>
+                                <div style="font-size:1.4em;font-weight:700;color:${yr >= 0 ? 'var(--success)' : 'var(--danger)'};">+${yr}%</div>
+                            </div>
+                        `).join('')}
+                        <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;text-align:center;">
+                            <div style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px;">Avg/Year</div>
+                            <div style="font-size:1.4em;font-weight:700;color:var(--success);">+${avgYearlyReturn}%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Strategy & Risk Breakdown -->
+                <div style="padding:0 24px 20px;display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+                    <div>
+                        <h3 style="margin:0 0 12px;color:var(--text-primary);font-size:1.1em;">🎯 Strategy Breakdown</h3>
+                        <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;">
+                            <div style="margin-bottom:12px;color:var(--text-secondary);font-size:0.9em;">${trader.description}</div>
+                            <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                                ${trader.strategies.map(s => `<span style="padding:6px 14px;background:rgba(102,126,234,0.15);color:var(--primary);border-radius:20px;font-size:0.85em;font-weight:600;">${s}</span>`).join('')}
+                            </div>
+                            <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                                <div style="padding:10px;background:var(--bg-secondary);border-radius:8px;text-align:center;">
+                                    <div style="font-size:0.75em;color:var(--text-secondary);">Best Year</div>
+                                    <div style="font-weight:700;color:var(--success);">+${bestYear}%</div>
+                                </div>
+                                <div style="padding:10px;background:var(--bg-secondary);border-radius:8px;text-align:center;">
+                                    <div style="font-size:0.75em;color:var(--text-secondary);">Worst Year</div>
+                                    <div style="font-weight:700;color:var(--warning);">+${worstYear}%</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <h3 style="margin:0 0 12px;color:var(--text-primary);font-size:1.1em;">⚠️ Risk Profile</h3>
+                        <div style="background:var(--bg-tertiary);border-radius:10px;padding:16px;">
+                            <div style="margin-bottom:12px;">
+                                <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                                    <span style="color:var(--text-secondary);font-size:0.9em;">Risk Level</span>
+                                    <span style="font-weight:600;color:var(--text-primary);text-transform:uppercase;">${trader.riskLevel}</span>
+                                </div>
+                                <div class="risk-bar"><div class="risk-fill ${riskClass}" style="width:${trader.riskScore}%"></div></div>
+                            </div>
+                            <div style="display:grid;gap:8px;margin-top:16px;">
+                                <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
+                                    <span style="color:var(--text-secondary);font-size:0.9em;">Risk Score</span>
+                                    <span style="font-weight:600;color:var(--text-primary);">${trader.riskScore}/100</span>
+                                </div>
+                                <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
+                                    <span style="color:var(--text-secondary);font-size:0.9em;">Max Drawdown</span>
+                                    <span style="font-weight:600;color:var(--danger);">${trader.maxDrawdown}%</span>
+                                </div>
+                                <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
+                                    <span style="color:var(--text-secondary);font-size:0.9em;">Consistency</span>
+                                    <span style="font-weight:600;color:var(--text-primary);">${consistency}%</span>
+                                </div>
+                                <div style="display:flex;justify-content:space-between;padding:8px 0;">
+                                    <span style="color:var(--text-secondary);font-size:0.9em;">Followers</span>
+                                    <span style="font-weight:600;color:var(--text-primary);">${trader.followers.toLocaleString()}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Actions -->
+                <div style="padding:16px 24px 24px;display:flex;gap:12px;border-top:1px solid var(--border);">
+                    <button onclick="toggleFollow(${trader.id});document.getElementById('traderDetailsModal').remove()" class="btn-follow ${isFollowing ? 'following' : ''}" style="flex:1;padding:14px;font-size:1em;">
+                        ${isFollowing ? '✓ Following' : '+ Follow Trader'}
+                    </button>
+                    <button onclick="document.getElementById('traderDetailsModal').remove()" style="padding:14px 28px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--text-primary);cursor:pointer;font-size:1em;">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+    
+    // Render the equity curve chart
+    setTimeout(() => {
+        const ctx = document.getElementById('traderEquityChart');
+        if (ctx) {
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: monthLabels,
+                    datasets: [{
+                        label: 'Portfolio Value ($)',
+                        data: equityCurve,
+                        borderColor: '#667eea',
+                        backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        pointHitRadius: 10,
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return '$' + context.parsed.y.toFixed(2);
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            ticks: { maxTicksLimit: 8, color: 'var(--text-secondary)' },
+                            grid: { display: false }
+                        },
+                        y: {
+                            display: true,
+                            ticks: {
+                                color: 'var(--text-secondary)',
+                                callback: v => '$' + v.toFixed(0)
+                            },
+                            grid: { color: 'rgba(128,128,128,0.1)' }
+                        }
+                    }
+                }
+            });
+        }
+    }, 100);
 }
 
 /**
