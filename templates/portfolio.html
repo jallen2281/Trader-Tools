@@ -110,13 +110,15 @@
         .holdings-table {
             background: var(--card-bg);
             border-radius: 12px;
-            overflow: hidden;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
             box-shadow: var(--shadow);
             margin-bottom: 30px;
         }
         
         .holdings-table table {
             width: 100%;
+            min-width: 800px;
             border-collapse: collapse;
         }
         
