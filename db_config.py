@@ -15,12 +15,13 @@ class DatabaseConfig:
     """Database configuration"""
     
     # Database connection string
-    # PostgreSQL for production (Supabase): postgresql://user:pass@host:5432/postgres
+    # PostgreSQL for production (Supabase): postgresql://user:pass@host:5432/dbname
     # SQLite for local development: sqlite:///financial_analysis.db
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        'DATABASE_URL',
-        'sqlite:///financial_analysis.db'  # Local fallback only
-    )
+    _raw_url = os.getenv('DATABASE_URL', 'sqlite:///financial_analysis.db')
+    # Fix Supabase/Heroku-style "postgres://" → SQLAlchemy 2.0 requires "postgresql://"
+    if _raw_url.startswith('postgres://'):
+        _raw_url = _raw_url.replace('postgres://', 'postgresql://', 1)
+    SQLALCHEMY_DATABASE_URI = _raw_url
     
     # SQLAlchemy settings
     SQLALCHEMY_TRACK_MODIFICATIONS = False
