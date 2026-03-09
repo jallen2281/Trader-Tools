@@ -799,7 +799,8 @@ function renderPortfolioChart(canvas, history) {
                         color: isDark ? '#a0a0a0' : '#6b7280',
                         callback: v => '$' + v.toLocaleString()
                     },
-                    grid: { color: isDark ? '#333' : '#e5e7eb' }
+                    grid: { color: isDark ? '#333' : '#e5e7eb' },
+                    beginAtZero: false
                 }
             }
         }

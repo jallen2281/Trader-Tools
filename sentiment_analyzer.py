@@ -83,7 +83,7 @@ class SentimentAnalyzer:
                 total_weight += 0.15
             
             # Calculate overall sentiment score (0-100)
-            overall_score = (weighted_score / total_weight * 100) if total_weight > 0 else 50
+            overall_score = (weighted_score / total_weight) if total_weight > 0 else 50
             
             # Determine sentiment label
             if overall_score >= 70:

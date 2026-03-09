@@ -2715,13 +2715,19 @@ def _build_portfolio_history(user_id, days):
     """Build portfolio value history from transactions when no snapshots exist"""
     from datetime import datetime, timedelta
     import yfinance as yf
+    from data_fetcher import normalize_crypto_symbol
     
     # Build position state over time
     holdings = Portfolio.query.filter_by(user_id=user_id).all()
     if not holdings:
         return []
     
-    symbols = list(set(h.symbol for h in holdings))
+    # Normalize symbols (e.g., crypto AVAX -> AVAX-USD)
+    symbol_map = {}
+    for h in holdings:
+        yf_sym = normalize_crypto_symbol(h.symbol, h.asset_type)
+        symbol_map[h.symbol] = yf_sym
+    symbols = list(set(symbol_map.values()))
     
     end = datetime.now()
     period_start = end - timedelta(days=days)
@@ -2764,10 +2770,15 @@ def _build_portfolio_history(user_id, days):
     # Build cost basis per symbol from transactions
     positions = {}
     for h in holdings:
-        positions[h.symbol] = {
-            'quantity': float(h.quantity),
-            'cost_basis': float(h.quantity) * float(h.average_cost)
-        }
+        yf_sym = symbol_map[h.symbol]
+        if yf_sym in positions:
+            positions[yf_sym]['quantity'] += float(h.quantity)
+            positions[yf_sym]['cost_basis'] += float(h.quantity) * float(h.average_cost)
+        else:
+            positions[yf_sym] = {
+                'quantity': float(h.quantity),
+                'cost_basis': float(h.quantity) * float(h.average_cost)
+            }
     
     # Calculate portfolio value for each date
     history = []

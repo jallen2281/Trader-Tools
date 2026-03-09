@@ -274,11 +274,34 @@ class TradeJournal:
             
             metrics = performance['metrics']
             
-            if metrics['total_trades'] == 0:
+            if metrics['total_transactions'] == 0:
                 return {
                     'insights': [],
                     'recommendations': ['Start trading to receive AI-powered insights!']
                 }
+            
+            # If no closed trades yet but have open positions, provide position-based insights
+            if metrics['total_trades'] == 0 and metrics.get('total_transactions', 0) > 0:
+                open_positions = performance.get('open_positions', [])
+                if open_positions:
+                    insights = []
+                    for pos in open_positions[:5]:
+                        unrealized = pos.get('unrealized', 0)
+                        symbol = pos.get('symbol', '?')
+                        status = 'up' if unrealized > 0 else 'down'
+                        insights.append({
+                            'type': 'position',
+                            'title': f'{symbol} Position',
+                            'message': f'{symbol} is {status} ${abs(unrealized):.2f} unrealized'
+                        })
+                    return {
+                        'insights': insights,
+                        'recommendations': [
+                            'You have open positions but no completed trades yet.',
+                            'Consider setting price targets and stop-losses for your positions.',
+                            'Track your positions regularly to identify optimal exit points.'
+                        ]
+                    }
             
             # Build context for LLM
             context = f"""Analyze this trader's performance over the last {days} days:
