@@ -69,6 +69,18 @@ except ImportError as e:
 
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+def _get_current_user_id():
+    """Safely get current user ID without requiring login_manager"""
+    uid = session.get('user_id')
+    if uid:
+        return uid
+    try:
+        if hasattr(app, 'login_manager') and current_user.is_authenticated:
+            return current_user.id
+    except Exception:
+        pass
+    return None
+
 app = Flask(__name__)
 app.config.from_object(Config)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -2494,7 +2506,9 @@ def get_portfolio():
         return jsonify({'error': 'Phase 4 not enabled'}), 503
     
     try:
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         analysis = portfolio_analyzer.analyze_portfolio(user_id)
         
         if not analysis:
@@ -2536,7 +2550,9 @@ def delete_holding(holding_id):
         return jsonify({'error': 'Phase 2 not enabled'}), 503
     
     try:
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         
         holding = Portfolio.query.filter_by(id=holding_id, user_id=user_id).first()
         if not holding:
@@ -2561,7 +2577,9 @@ def update_holding(holding_id):
         return jsonify({'error': 'Phase 2 not enabled'}), 503
     
     try:
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         data = request.get_json()
         
         holding = Portfolio.query.filter_by(id=holding_id, user_id=user_id).first()
@@ -2606,7 +2624,9 @@ def record_portfolio_transaction():
         return jsonify({'error': 'Phase 2 not enabled'}), 503
     
     try:
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         data = request.get_json()
         
         holding_id = data.get('holding_id')
@@ -2661,7 +2681,9 @@ def get_rebalancing_suggestions():
         return jsonify({'error': 'Phase 4 not enabled'}), 503
     
     try:
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         suggestions = portfolio_analyzer.get_rebalancing_suggestions(user_id)
         
         return jsonify({'suggestions': suggestions})
@@ -2675,7 +2697,9 @@ def get_rebalancing_suggestions():
 def get_portfolio_history():
     """Get portfolio value history for charting"""
     try:
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         period = request.args.get('period', '1m')
         
         period_map = {
@@ -2815,7 +2839,9 @@ def get_alerts():
         return jsonify({'error': 'Phase 4 not enabled'}), 503
     
     try:
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         
         from models import Alert
         alerts = Alert.query.filter_by(
@@ -2837,7 +2863,9 @@ def get_triggered_alerts():
         return jsonify({'error': 'Phase 4 not enabled'}), 503
     
     try:
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         triggered = smart_alerts.get_triggered_alerts(user_id)
         
         return jsonify({'alerts': triggered})
@@ -2855,7 +2883,9 @@ def create_alert():
     
     try:
         data = request.get_json()
-        user_id = current_user.id
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
         
         symbol = data.get('symbol')
         alert_type = data.get('alert_type')
@@ -3258,8 +3288,7 @@ def get_correlation_matrix():
         return jsonify({'error': 'Correlation analysis not available'}), 503
     
     try:
-        # Get user_id from either session or current_user
-        user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
+        user_id = _get_current_user_id()
         if not user_id:
             logger.warning("Correlation matrix requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
@@ -3288,8 +3317,7 @@ def get_diversification():
         return jsonify({'error': 'Diversification analysis not available'}), 503
     
     try:
-        # Get user_id from either session or current_user
-        user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
+        user_id = _get_current_user_id()
         if not user_id:
             logger.warning("Diversification metrics requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
@@ -3345,8 +3373,7 @@ def get_journal_history():
         return jsonify({'error': 'Trade journal not available'}), 503
     
     try:
-        # Get user_id from either session or current_user
-        user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
+        user_id = _get_current_user_id()
         if not user_id:
             logger.warning("Journal history requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
@@ -3381,8 +3408,7 @@ def get_journal_performance():
         return jsonify({'error': 'Trade journal not available'}), 503
     
     try:
-        # Get user_id from either session or current_user
-        user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
+        user_id = _get_current_user_id()
         if not user_id:
             logger.warning("Journal performance requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
@@ -3416,8 +3442,7 @@ def get_journal_insights():
         return jsonify({'error': 'Trade journal not available'}), 503
     
     try:
-        # Get user_id from either session or current_user
-        user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
+        user_id = _get_current_user_id()
         if not user_id:
             logger.warning("Journal insights requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
@@ -3451,8 +3476,7 @@ def save_trade_note():
         return jsonify({'error': 'Trade journal not available'}), 503
     
     try:
-        # Get user_id from either session or current_user
-        user_id = session.get('user_id') or (current_user.id if current_user.is_authenticated else None)
+        user_id = _get_current_user_id()
         if not user_id:
             return jsonify({'error': 'Authentication required'}), 401
         
