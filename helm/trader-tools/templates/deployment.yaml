@@ -40,12 +40,6 @@ spec:
             - name: http
               containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "trader-tools.fullname" . }}
-                  key: DATABASE_URL
           envFrom:
             - configMapRef:
                 name: {{ include "trader-tools.fullname" . }}

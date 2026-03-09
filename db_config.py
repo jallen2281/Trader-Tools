@@ -5,31 +5,41 @@ Phase 2: Database Setup and Connection Management
 
 import os
 import logging
+from urllib.parse import urlparse, quote_plus
 from dotenv import load_dotenv
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+def _build_sqlalchemy_url():
+    """Build a SQLAlchemy-compatible URL, safely encoding password characters."""
+    raw = os.getenv('DATABASE_URL', 'sqlite:///financial_analysis.db')
+    # Fix Supabase/Heroku-style "postgres://" → SQLAlchemy 2.0 requires "postgresql://"
+    if raw.startswith('postgres://'):
+        raw = 'postgresql://' + raw[len('postgres://'):]
+    if raw.startswith('sqlite'):
+        return raw
+    # Parse and re-encode password to handle special characters
+    parsed = urlparse(raw)
+    password = quote_plus(parsed.password) if parsed.password else ''
+    user = parsed.username or 'postgres'
+    host = parsed.hostname or 'localhost'
+    port = parsed.port or 5432
+    db = parsed.path.lstrip('/') or 'postgres'
+    return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+
 class DatabaseConfig:
     """Database configuration"""
     
-    # Database connection string
-    # PostgreSQL for production (Supabase): postgresql://user:pass@host:5432/dbname
-    # SQLite for local development: sqlite:///financial_analysis.db
-    _raw_url = os.getenv('DATABASE_URL', 'sqlite:///financial_analysis.db')
-    # Fix Supabase/Heroku-style "postgres://" → SQLAlchemy 2.0 requires "postgresql://"
-    if _raw_url.startswith('postgres://'):
-        _raw_url = _raw_url.replace('postgres://', 'postgresql://', 1)
-    SQLALCHEMY_DATABASE_URI = _raw_url
+    SQLALCHEMY_DATABASE_URI = _build_sqlalchemy_url()
     
     # SQLAlchemy settings
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ECHO = os.getenv('SQL_DEBUG', 'False').lower() == 'true'
     
     # Pool settings only apply to non-SQLite engines
-    _uri = os.getenv('DATABASE_URL', '')
-    if _uri and not _uri.startswith('sqlite'):
+    if not SQLALCHEMY_DATABASE_URI.startswith('sqlite'):
         SQLALCHEMY_POOL_SIZE = 10
         SQLALCHEMY_MAX_OVERFLOW = 20
         SQLALCHEMY_POOL_RECYCLE = 3600
