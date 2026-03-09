@@ -4,10 +4,11 @@ FROM python:3.11-slim as builder
 # Set working directory
 WORKDIR /app
 
-# Install build dependencies
+# Install build dependencies (including PostgreSQL client libs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -20,9 +21,10 @@ RUN pip install --no-cache-dir --user -r requirements.txt && \
 # Production stage
 FROM python:3.11-slim
 
-# Install runtime dependencies
+# Install runtime dependencies (including PostgreSQL client libs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -45,7 +47,7 @@ COPY --chown=appuser:appuser *.sql ./
 COPY --chown=appuser:appuser static ./static
 COPY --chown=appuser:appuser templates ./templates
 
-# Create instance directory for database
+# Create instance directory (for session files, temp data)
 RUN mkdir -p instance && chown -R appuser:appuser instance
 
 # Set environment variables

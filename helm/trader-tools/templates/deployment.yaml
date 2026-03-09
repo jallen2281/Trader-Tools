@@ -42,7 +42,10 @@ spec:
               protocol: TCP
           env:
             - name: DATABASE_URL
-              value: {{ .Values.secrets.databaseUrl | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "trader-tools.fullname" . }}
+                  key: DATABASE_URL
           envFrom:
             - configMapRef:
                 name: {{ include "trader-tools.fullname" . }}
@@ -51,8 +54,6 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-            - name: instance
-              mountPath: /app/instance
           livenessProbe:
             httpGet:
               path: /health
@@ -79,8 +80,6 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
-        - name: instance
-          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

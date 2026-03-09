@@ -129,7 +129,7 @@ config:
 # Secrets (should be set via --set-string or separate values file)
 secrets:
   secretKey: ""  # REQUIRED
-  databaseUrl: "sqlite:////data/financial_analysis.db"
+  databaseUrl: ""  # REQUIRED: postgresql://user:pass@host:5432/postgres
   googleClientId: ""  # REQUIRED
   googleClientSecret: ""  # REQUIRED
   alphaVantageApiKey: ""
