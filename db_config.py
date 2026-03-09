@@ -5,7 +5,7 @@ Phase 2: Database Setup and Connection Management
 
 import os
 import logging
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,19 +15,24 @@ logger = logging.getLogger(__name__)
 def _build_sqlalchemy_url():
     """Build a SQLAlchemy-compatible URL, safely encoding password characters."""
     raw = os.getenv('DATABASE_URL', 'sqlite:///financial_analysis.db')
-    # Fix Supabase/Heroku-style "postgres://" → SQLAlchemy 2.0 requires "postgresql://"
     if raw.startswith('postgres://'):
         raw = 'postgresql://' + raw[len('postgres://'):]
     if raw.startswith('sqlite'):
         return raw
-    # Parse and re-encode password to handle special characters
-    parsed = urlparse(raw)
-    password = quote_plus(parsed.password) if parsed.password else ''
-    user = parsed.username or 'postgres'
-    host = parsed.hostname or 'localhost'
-    port = parsed.port or 5432
-    db = parsed.path.lstrip('/') or 'postgres'
-    return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    # Manual parsing — urlparse can't handle unescaped # & in passwords
+    # Format: postgresql://user:password@host:port/database
+    rest = raw.split('://', 1)[1]
+    creds, hostpart = rest.rsplit('@', 1)
+    user, password = creds.split(':', 1)
+    if '/' in hostpart:
+        host_port, db = hostpart.split('/', 1)
+    else:
+        host_port, db = hostpart, 'postgres'
+    if ':' in host_port:
+        host, port = host_port.rsplit(':', 1)
+    else:
+        host, port = host_port, '5432'
+    return f"postgresql://{user}:{quote_plus(password)}@{host}:{port}/{db}"
 
 class DatabaseConfig:
     """Database configuration"""
