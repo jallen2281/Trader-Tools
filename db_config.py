@@ -98,11 +98,39 @@ def init_database(app):
     
     # Create tables
     with app.app_context():
+        is_pg = _is_postgres(db)
+        
+        # PostgreSQL: drop orphaned sequences that conflict with SERIAL columns
+        # (Supabase template databases may include pre-existing sequences)
+        if is_pg:
+            from sqlalchemy import text
+            existing_tables = set()
+            try:
+                result = db.session.execute(text(
+                    "SELECT tablename FROM pg_tables WHERE schemaname='public'"
+                ))
+                existing_tables = {r[0] for r in result}
+            except Exception:
+                pass
+            try:
+                result = db.session.execute(text(
+                    "SELECT sequencename FROM pg_sequences WHERE schemaname='public'"
+                ))
+                for (seq_name,) in result:
+                    # Only drop sequences whose parent table doesn't exist yet
+                    table_name = seq_name.replace('_id_seq', '')
+                    if table_name not in existing_tables:
+                        db.session.execute(text(f'DROP SEQUENCE IF EXISTS "{seq_name}" CASCADE'))
+                        logger.info(f"Dropped orphaned sequence: {seq_name}")
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                logger.warning(f"Could not clean orphaned sequences: {e}")
+        
         db.create_all()
         
-        from sqlalchemy import inspect, text
+        from sqlalchemy import inspect
         inspector = inspect(db.engine)
-        is_pg = _is_postgres(db)
         
         # Migrate: add account_id columns if missing
         if _add_column_if_missing(db, inspector, 'portfolio', 'account_id', 'INTEGER REFERENCES portfolio_accounts(id)'):
