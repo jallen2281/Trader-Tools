@@ -112,44 +112,57 @@ def migrate_table(sqlite_conn, pg_conn, table):
                 print(f"  ⚠ Error inserting row in {table}: {e}")
                 continue
     
-    pg_conn.commit()
 
-    # Reset sequence to max id
-    if 'id' in common_cols:
-        seq_name = f"{table}_id_seq"
-        try:
-            pg_cursor.execute(f"SELECT setval('{seq_name}', COALESCE((SELECT MAX(id) FROM \"{table}\"), 0) + 1, false)")
-            pg_conn.commit()
-        except Exception:
-            pg_conn.rollback()
+    pg_cursor.execute(
+        "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s AND table_schema = 'public'",
+        (table,)
+    )
+    pg_col_types = {row[0]: row[1] for row in pg_cursor.fetchall()}
+    pg_columns = set(pg_col_types.keys())
 
-    print(f"  ✓ {table}: {inserted}/{len(rows)} rows migrated")
-    return inserted
+    # Only use columns that exist in both
+    common_cols = [c for c in columns if c in pg_columns]
+    col_indices = [columns.index(c) for c in common_cols]
 
+    if not common_cols:
+        print(f"  ⚠ No matching columns for {table}, skipping")
+        return 0
 
-def _build_pg_url(raw):
-    """Build psycopg2-compatible URL with encoded password."""
-    if raw.startswith('postgres://'):
-        raw = 'postgresql://' + raw[len('postgres://'):]
-    rest = raw.split('://', 1)[1]
-    creds, hostpart = rest.rsplit('@', 1)
-    user, password = creds.split(':', 1)
-    if '/' in hostpart:
-        host_port, db = hostpart.split('/', 1)
-    else:
-        host_port, db = hostpart, 'postgres'
-    if ':' in host_port:
-        host, port = host_port.rsplit(':', 1)
-    else:
-        host, port = host_port, '5432'
-    return f"postgresql://{user}:{quote_plus(password)}@{host}:{port}/{db}"
+    # Print detected column types for debugging
+    print(f"    [DEBUG] {table} column types: {pg_col_types}")
 
+    # Fallback: explicit known boolean columns by table name
+    explicit_bool_map = {
+        'users': {'is_active', 'copy_trading_enabled'},
+        'alerts': {'triggered', 'enabled'},
+        'dividends': {'reinvested'},
+        'discussion_threads': {'pinned', 'locked'},
+    }
+    bool_cols = [col for col in common_cols if pg_col_types.get(col) == 'boolean']
+    # Add explicit known bools if present
+    for col in explicit_bool_map.get(table, set()):
+        if col in common_cols and col not in bool_cols:
+            bool_cols.append(col)
 
-def main():
-    sqlite_path = sys.argv[1] if len(sys.argv) > 1 else SQLITE_PATH
-    pg_raw = sys.argv[2] if len(sys.argv) > 2 else os.getenv('DATABASE_URL', '')
-
-    if not pg_raw:
+    # Filter and convert rows to only include common columns, with bool conversion
+    filtered_rows = []
+    for row in rows:
+        new_row = list(row[i] for i in col_indices)
+        for idx, col in enumerate(common_cols):
+            if col in bool_cols:
+                val = new_row[idx]
+                if val is None:
+                    new_row[idx] = None
+                elif isinstance(val, bool):
+                    new_row[idx] = val
+                elif isinstance(val, int):
+                    new_row[idx] = bool(val)
+                elif isinstance(val, str):
+                    if val in ('0', '1'):
+                        new_row[idx] = val == '1'
+                    elif val.lower() in ('true', 'false'):
+                        new_row[idx] = val.lower() == 'true'
+        filtered_rows.append(tuple(new_row))
         print("Error: No PostgreSQL URL. Provide as arg or set DATABASE_URL env var.")
         sys.exit(1)
 
