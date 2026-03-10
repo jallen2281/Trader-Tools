@@ -990,6 +990,68 @@ def health_check():
     })
 
 
+@app.route('/api/import-data', methods=['POST'])
+def import_data():
+    """One-time data import from SQLite export JSON. Remove after use."""
+    import_key = os.environ.get('IMPORT_KEY', '')
+    provided_key = request.headers.get('X-Import-Key', '')
+    if not import_key or provided_key != import_key:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if not PHASE2_ENABLED:
+        return jsonify({'error': 'Database not initialized'}), 503
+
+    from models import db
+    from sqlalchemy import text
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No JSON data provided'}), 400
+
+    results = {}
+    # Import order matters for foreign keys
+    table_order = [
+        'users', 'user_sessions', 'watchlist', 'portfolio_accounts', 'portfolio',
+        'transactions', 'options_positions', 'alerts', 'market_conditions',
+        'portfolio_snapshots', 'alert_suggestions', 'dividends',
+        'discussion_threads', 'thread_replies', 'thread_votes', 'copy_trading_follows',
+    ]
+
+    for table in table_order:
+        if table not in data:
+            continue
+        rows = data[table]
+        if not rows:
+            continue
+
+        imported = 0
+        for row in rows:
+            cols = list(row.keys())
+            col_list = ', '.join(f'"{c}"' for c in cols)
+            placeholders = ', '.join(f':{c}' for c in cols)
+            sql = text(f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING')
+            try:
+                db.session.execute(sql, row)
+                imported += 1
+            except Exception as e:
+                db.session.rollback()
+                logger.warning(f"Import error in {table}: {e}")
+                continue
+
+        # Reset sequence
+        try:
+            db.session.execute(text(
+                f"SELECT setval('{table}_id_seq', COALESCE((SELECT MAX(id) FROM \"{table}\"), 0) + 1, false)"
+            ))
+        except Exception:
+            pass
+
+        db.session.commit()
+        results[table] = f"{imported}/{len(rows)}"
+
+    return jsonify({'results': results})
+
+
 @app.route('/api/version', methods=['GET'])
 def version():
     """Return the deployed commit SHA for deployment verification."""
