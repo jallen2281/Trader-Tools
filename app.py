@@ -3561,6 +3561,78 @@ def save_trade_note():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/export', methods=['GET'])
+@require_api_auth
+def export_user_data():
+    """Export current user's financial data as JSON or CSV."""
+    if not PHASE2_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+
+    fmt = request.args.get('format', 'json').lower()
+    if fmt not in ('json', 'csv'):
+        return jsonify({'error': 'Invalid format. Use json or csv'}), 400
+
+    user_id = _get_current_user_id()
+    if not user_id:
+        return jsonify({'error': 'Authentication required'}), 401
+
+    from flask import make_response
+    import csv
+    import io as _io
+
+    watchlist = [w.to_dict() for w in Watchlist.query.filter_by(user_id=user_id).all()]
+    portfolio = [p.to_dict() for p in Portfolio.query.filter_by(user_id=user_id).all()]
+    transactions = [t.to_dict() for t in Transaction.query.filter_by(user_id=user_id).all()]
+    options = [o.to_dict() for o in OptionsPosition.query.filter_by(user_id=user_id).all()]
+    alerts = [a.to_dict() for a in Alert.query.filter_by(user_id=user_id).all()]
+    dividends = [d.to_dict() for d in Dividend.query.filter_by(user_id=user_id).all()]
+
+    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+
+    if fmt == 'json':
+        payload = {
+            'exported_at': datetime.utcnow().isoformat(),
+            'watchlist': watchlist,
+            'portfolio': portfolio,
+            'transactions': transactions,
+            'options_positions': options,
+            'alerts': alerts,
+            'dividends': dividends,
+        }
+        resp = make_response(json.dumps(payload, indent=2))
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Content-Disposition'] = f'attachment; filename=tradertools_export_{timestamp}.json'
+        return resp
+
+    # CSV: one sheet per section, separated by blank lines
+    buf = _io.StringIO()
+    writer = csv.writer(buf)
+
+    sections = [
+        ('Watchlist', watchlist),
+        ('Portfolio', portfolio),
+        ('Transactions', transactions),
+        ('Options Positions', options),
+        ('Alerts', alerts),
+        ('Dividends', dividends),
+    ]
+
+    for name, rows in sections:
+        writer.writerow([f'=== {name} ==='])
+        if rows:
+            writer.writerow(list(rows[0].keys()))
+            for row in rows:
+                writer.writerow(list(row.values()))
+        else:
+            writer.writerow(['No data'])
+        writer.writerow([])
+
+    resp = make_response(buf.getvalue())
+    resp.headers['Content-Type'] = 'text/csv'
+    resp.headers['Content-Disposition'] = f'attachment; filename=tradertools_export_{timestamp}.csv'
+    return resp
+
+
 if __name__ == '__main__':
     print("="*70)
     print("🚀 Financial Chart Analyzer with Local LLM")

@@ -1,0 +1,78 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tradertools-db-backup
+  namespace: trader-tools
+spec:
+  # Daily at 02:00 UTC
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pg-backup
+              image: postgres:15-alpine
+              command: ["/bin/sh", "/scripts/backup.sh"]
+              env:
+                - name: PGHOST
+                  value: supabase.kegbot.net
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: tradertools-db-secret
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: tradertools-db-secret
+                      key: password
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: tradertools-db-secret
+                      key: database
+                - name: BACKUP_DIR
+                  value: /data/backups
+                - name: RETENTION_DAYS
+                  value: "30"
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: backup-script
+                  mountPath: /scripts
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: trader-tools-data
+            - name: backup-script
+              configMap:
+                name: tradertools-backup-script
+                defaultMode: 0755
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tradertools-backup-script
+  namespace: trader-tools
+data:
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+    BACKUP_DIR="${BACKUP_DIR:-/data/backups}"
+    DB_NAME="${PGDATABASE:-tradertools}"
+    TIMESTAMP="$(date -u +%Y%m%d_%H%M%S)"
+    OUTFILE="${BACKUP_DIR}/${DB_NAME}_${TIMESTAMP}.dump"
+    RETENTION_DAYS="${RETENTION_DAYS:-30}"
+    mkdir -p "$BACKUP_DIR"
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Starting pg_dump for '${DB_NAME}'"
+    pg_dump --format=custom --compress=9 --no-password "$DB_NAME" > "$OUTFILE"
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Backup written to ${OUTFILE}"
+    find "$BACKUP_DIR" -name "${DB_NAME}_*.dump" -mtime "+${RETENTION_DAYS}" -delete
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Pruned backups older than ${RETENTION_DAYS} days"

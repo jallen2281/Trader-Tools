@@ -89,7 +89,11 @@
                     <a href="/copytrading" class="btn-secondary">🎯 Copy Trading</a>
                     <button id="volatileStocksBtn" class="btn-secondary">🔥 Market Movers</button>
                     <button id="multiChartView" class="btn-secondary">📊 Multi-Chart View</button>
+                    <button id="exportDataBtn" class="btn-secondary" title="Export your data">📤 Export</button>
                     <button id="settingsBtn" class="btn-secondary">⚙️</button>
+                    {% if current_user.is_authenticated %}
+                    <a href="/logout" class="btn-secondary" style="color:#ff6b6b;" title="Sign out">⎋ Logout</a>
+                    {% endif %}
                 </div>
             </header>
 
@@ -408,6 +412,62 @@
                 sidebarOverlay.classList.remove('active');
             });
         }
+    </script>
+
+    <!-- Export Data Modal -->
+    <div id="exportDataModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 420px;">
+            <div class="modal-header">
+                <h3>📤 Export Financial Data</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <p style="margin-bottom: 16px; color: var(--text-secondary);">Download your watchlist, portfolio, transactions, options positions, alerts, and dividends.</p>
+                <div style="display: flex; gap: 12px; justify-content: center;">
+                    <button id="exportJsonBtn" class="btn-primary" style="flex: 1;">
+                        📄 Export JSON
+                    </button>
+                    <button id="exportCsvBtn" class="btn-secondary" style="flex: 1;">
+                        📊 Export CSV
+                    </button>
+                </div>
+                <p id="exportStatus" style="margin-top: 12px; text-align: center; font-size: 0.875rem; color: var(--text-secondary);"></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            const exportBtn = document.getElementById('exportDataBtn');
+            const exportModal = document.getElementById('exportDataModal');
+            if (!exportBtn || !exportModal) return;
+
+            exportBtn.addEventListener('click', () => {
+                exportModal.style.display = 'flex';
+            });
+
+            exportModal.querySelector('.modal-close').addEventListener('click', () => {
+                exportModal.style.display = 'none';
+            });
+            exportModal.addEventListener('click', (e) => {
+                if (e.target === exportModal) exportModal.style.display = 'none';
+            });
+
+            function triggerExport(format) {
+                const status = document.getElementById('exportStatus');
+                status.textContent = 'Preparing export...';
+                const a = document.createElement('a');
+                a.href = `/api/export?format=${format}`;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                status.textContent = 'Download started.';
+            }
+
+            document.getElementById('exportJsonBtn').addEventListener('click', () => triggerExport('json'));
+            document.getElementById('exportCsvBtn').addEventListener('click', () => triggerExport('csv'));
+        })();
     </script>
 </body>
 </html>

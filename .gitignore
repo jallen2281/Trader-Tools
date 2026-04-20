@@ -49,4 +49,5 @@ logs/
 # Temporary files
 *.tmp
 *.bak
-.cache/
+.cache/k8s/secret-db-backup.yaml
+k8s/secret-db-backup.yaml

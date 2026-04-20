@@ -21,10 +21,11 @@ RUN pip install --no-cache-dir --user -r requirements.txt && \
 # Production stage
 FROM python:3.11-slim
 
-# Install runtime dependencies (including PostgreSQL client libs)
+# Install runtime dependencies (including PostgreSQL client libs and pg_dump)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libpq5 \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -44,6 +45,7 @@ ENV GIT_COMMIT=${GIT_COMMIT}
 # Copy application files
 COPY --chown=appuser:appuser *.py ./
 COPY --chown=appuser:appuser *.sql ./
+COPY --chown=appuser:appuser backup.sh ./
 COPY --chown=appuser:appuser static ./static
 COPY --chown=appuser:appuser templates ./templates
 
