@@ -27,7 +27,10 @@ def init_auth(app):
     
     @login_manager.user_loader
     def load_user(user_id):
-        return User.query.get(int(user_id))
+        try:
+            return User.query.get(int(user_id))
+        except Exception:
+            return None
     
     # Configure OAuth
     oauth.init_app(app)
@@ -49,31 +52,37 @@ def create_session_token(user_id):
     """Create a new session token for user"""
     token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(days=30)
-    
-    session_obj = UserSession(
-        user_id=user_id,
-        session_token=token,
-        expires_at=expires_at
-    )
-    
-    db.session.add(session_obj)
-    db.session.commit()
-    
+
+    try:
+        session_obj = UserSession(
+            user_id=user_id,
+            session_token=token,
+            expires_at=expires_at
+        )
+        db.session.add(session_obj)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
     return token
 
 
 def verify_session_token(token):
     """Verify session token and return user"""
-    session_obj = UserSession.query.filter_by(session_token=token).first()
-    
-    if not session_obj or session_obj.is_expired():
+    try:
+        session_obj = UserSession.query.filter_by(session_token=token).first()
+
+        if not session_obj or session_obj.is_expired():
+            return None
+
+        # Update last activity
+        session_obj.last_activity = datetime.utcnow()
+        db.session.commit()
+
+        return User.query.get(session_obj.user_id)
+    except Exception:
+        db.session.rollback()
         return None
-    
-    # Update last activity
-    session_obj.last_activity = datetime.utcnow()
-    db.session.commit()
-    
-    return User.query.get(session_obj.user_id)
 
 
 def get_auth_routes(google):
@@ -95,27 +104,37 @@ def get_auth_routes(google):
     
     def authorize():
         """Handle Google OAuth callback"""
-        token = google.authorize_access_token()
-        user_info = token.get('userinfo')
-        
+        try:
+            token = google.authorize_access_token()
+        except Exception:
+            # Stale state, double callback, or cancelled OAuth — clear and redirect
+            session.clear()
+            return redirect(url_for('login'))
+
+        user_info = token.get('userinfo') if token else None
+
         if user_info:
-            # Create or update user
-            user = get_or_create_user(
-                google_id=user_info['sub'],
-                email=user_info['email'],
-                name=user_info.get('name', ''),
-                picture_url=user_info.get('picture', '')
-            )
-            
-            # Log user in
-            login_user(user)
-            
-            # Create session token
-            session_token = create_session_token(user.id)
-            session['token'] = session_token
-            
-            return redirect(url_for('dashboard'))
-        
+            try:
+                # Create or update user
+                user = get_or_create_user(
+                    google_id=user_info['sub'],
+                    email=user_info['email'],
+                    name=user_info.get('name', ''),
+                    picture_url=user_info.get('picture', '')
+                )
+
+                # Log user in
+                login_user(user)
+
+                # Create session token
+                session_token = create_session_token(user.id)
+                session['token'] = session_token
+
+                return redirect(url_for('dashboard'))
+            except Exception:
+                session.clear()
+                return redirect(url_for('login'))
+
         return redirect(url_for('index'))
     
     def logout_route():

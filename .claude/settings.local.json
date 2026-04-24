@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl get *)",
+      "Bash(microk8s kubectl *)",
+      "Bash(kubectl describe pod *)",
+      "Bash(kubectl rollout *)",
+      "Bash(kubectl delete pod *)",
+      "Bash(kubectl describe *)",
+      "Bash(kubectl logs *)",
+      "Bash(kubectl cordon *)"
+    ]
+  }
+}

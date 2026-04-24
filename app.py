@@ -3633,6 +3633,34 @@ def export_user_data():
     return resp
 
 
+@app.errorhandler(500)
+def handle_500(e):
+    """Clear stale sessions and redirect on internal server errors"""
+    try:
+        session.clear()
+        if db:
+            db.session.rollback()
+    except Exception:
+        pass
+    return redirect(url_for('login') if PHASE2_ENABLED else url_for('index'))
+
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    """Catch-all for unhandled exceptions to avoid raw 500 pages"""
+    logger.error(f"Unhandled exception: {e}", exc_info=True)
+    try:
+        session.clear()
+        if db:
+            db.session.rollback()
+    except Exception:
+        pass
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
+    return redirect(url_for('login') if PHASE2_ENABLED else url_for('index'))
+
+
 if __name__ == '__main__':
     print("="*70)
     print("🚀 Financial Chart Analyzer with Local LLM")
