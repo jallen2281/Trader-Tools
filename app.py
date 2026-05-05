@@ -717,6 +717,30 @@ def user_heartbeat():
     return jsonify({'success': True})
 
 
+@app.route('/api/user/preferences', methods=['GET'])
+@require_api_auth
+def get_preferences():
+    """Get current user's preferences."""
+    prefs = current_user.preferences or {}
+    return jsonify({'preferences': prefs})
+
+
+@app.route('/api/user/preferences', methods=['PUT'])
+@require_api_auth
+def save_preferences():
+    """Save current user's preferences."""
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Invalid data'}), 400
+    # Only allow known safe keys
+    allowed = {'darkMode', 'autoRefreshWatchlist', 'notificationsEnabled',
+                'defaultPeriod', 'defaultChartType'}
+    prefs = {k: v for k, v in data.items() if k in allowed}
+    current_user.preferences = {**(current_user.preferences or {}), **prefs}
+    db.session.commit()
+    return jsonify({'success': True, 'preferences': current_user.preferences})
+
+
 @app.route('/api/analyze', methods=['POST'])
 def analyze_stock():
     """Analyze a stock symbol and return comprehensive results."""

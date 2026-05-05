@@ -25,6 +25,40 @@ function initializeDarkMode() {
     if (isDarkMode) {
         document.body.classList.add('dark-mode');
     }
+    // Load full preferences from server (overrides localStorage if logged in)
+    loadPreferencesFromServer();
+}
+
+async function loadPreferencesFromServer() {
+    try {
+        const res = await fetch('/api/user/preferences');
+        if (!res.ok) return;
+        const data = await res.json();
+        const prefs = data.preferences || {};
+        // Apply each preference
+        if (typeof prefs.darkMode === 'boolean') {
+            localStorage.setItem('darkMode', prefs.darkMode);
+            toggleDarkMode(prefs.darkMode);
+        }
+        if (typeof prefs.autoRefreshWatchlist === 'boolean') {
+            localStorage.setItem('autoRefreshWatchlist', prefs.autoRefreshWatchlist);
+        }
+        if (typeof prefs.notificationsEnabled === 'boolean') {
+            localStorage.setItem('notificationsEnabled', prefs.notificationsEnabled);
+        }
+        if (prefs.defaultPeriod) {
+            localStorage.setItem('defaultPeriod', prefs.defaultPeriod);
+            const periodEl = document.getElementById('period');
+            if (periodEl) periodEl.value = prefs.defaultPeriod;
+        }
+        if (prefs.defaultChartType) {
+            localStorage.setItem('defaultChartType', prefs.defaultChartType);
+            const chartEl = document.getElementById('chartType');
+            if (chartEl) chartEl.value = prefs.defaultChartType;
+        }
+    } catch (e) {
+        // Not logged in or API unavailable — localStorage values remain
+    }
 }
 
 function toggleDarkMode(enabled) {
@@ -917,80 +951,153 @@ function initializeHeaderButtons() {
 }
 
 function showSettingsMenu() {
-    // Create settings modal
     const existingModal = document.getElementById('settingsModal');
     if (existingModal) {
         existingModal.remove();
     }
 
-    const autoRefresh = localStorage.getItem('autoRefreshWatchlist') !== 'false';
-    const notifications = localStorage.getItem('notificationsEnabled') !== 'false';
-    const darkMode = localStorage.getItem('darkMode') === 'true';
+    // Start with localStorage values as defaults
+    const prefs = {
+        autoRefreshWatchlist: localStorage.getItem('autoRefreshWatchlist') !== 'false',
+        notificationsEnabled: localStorage.getItem('notificationsEnabled') !== 'false',
+        darkMode: localStorage.getItem('darkMode') === 'true',
+        defaultPeriod: localStorage.getItem('defaultPeriod') || '6mo',
+        defaultChartType: localStorage.getItem('defaultChartType') || 'candlestick',
+    };
+
+    const isDark = prefs.darkMode;
+    const bg = isDark ? '#1e1e2e' : '#ffffff';
+    const fg = isDark ? '#cdd6f4' : '#1a1a2e';
+    const rowBg = isDark ? '#2a2a3e' : '#f5f5f5';
+    const border = isDark ? '#444466' : '#e0e0e0';
 
     const modal = document.createElement('div');
     modal.id = 'settingsModal';
-    modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
-    
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10000;';
+
     modal.innerHTML = `
-        <div style="background: white; border-radius: 12px; padding: 30px; max-width: 500px; width: 90%;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2 style="margin: 0;">⚙️ Settings</h2>
-                <button onclick="document.getElementById('settingsModal').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer;">&times;</button>
+        <div style="background:${bg};color:${fg};border-radius:12px;padding:30px;max-width:520px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+                <h2 style="margin:0;font-size:1.3rem;">⚙️ Settings</h2>
+                <button onclick="document.getElementById('settingsModal').remove()" style="background:none;border:none;font-size:24px;cursor:pointer;color:${fg};">&times;</button>
             </div>
-            
-            <div style="margin-bottom: 20px;">
-                <label style="display: flex; align-items: center; padding: 15px; background: #f5f5f5; border-radius: 8px; cursor: pointer; margin-bottom: 10px;">
-                    <input type="checkbox" id="autoRefreshSetting" ${autoRefresh ? 'checked' : ''} style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+
+            <p style="margin:0 0 16px;font-size:0.85rem;opacity:0.6;">Settings are saved to your account and sync across devices.</p>
+
+            <div style="margin-bottom:20px;">
+
+                <label style="display:flex;align-items:center;padding:14px;background:${rowBg};border-radius:8px;cursor:pointer;margin-bottom:10px;border:1px solid ${border};">
+                    <input type="checkbox" id="settingDarkMode" ${prefs.darkMode ? 'checked' : ''} style="margin-right:12px;width:18px;height:18px;cursor:pointer;">
                     <div>
-                        <div style="font-weight: 600;">Auto-refresh Watchlist</div>
-                        <div style="font-size: 0.9em; color: #666;">Automatically update prices every 60 seconds</div>
+                        <div style="font-weight:600;">Dark Mode</div>
+                        <div style="font-size:0.85em;opacity:0.65;">Switch to a dark color scheme</div>
                     </div>
                 </label>
-                
-                <label style="display: flex; align-items: center; padding: 15px; background: #f5f5f5; border-radius: 8px; cursor: pointer; margin-bottom: 10px;">
-                    <input type="checkbox" id="notificationsSetting" ${notifications ? 'checked' : ''} style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+
+                <label style="display:flex;align-items:center;padding:14px;background:${rowBg};border-radius:8px;cursor:pointer;margin-bottom:10px;border:1px solid ${border};">
+                    <input type="checkbox" id="settingAutoRefresh" ${prefs.autoRefreshWatchlist ? 'checked' : ''} style="margin-right:12px;width:18px;height:18px;cursor:pointer;">
                     <div>
-                        <div style="font-weight: 600;">Enable Notifications</div>
-                        <div style="font-size: 0.9em; color: #666;">Show browser notifications for alerts</div>
+                        <div style="font-weight:600;">Auto-refresh Watchlist</div>
+                        <div style="font-size:0.85em;opacity:0.65;">Update watchlist prices every 60 seconds</div>
                     </div>
                 </label>
-                
-                <label style="display: flex; align-items: center; padding: 15px; background: #f5f5f5; border-radius: 8px; cursor: pointer;">
-                    <input type="checkbox" id="darkModeSetting" ${darkMode ? 'checked' : ''} style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+
+                <label style="display:flex;align-items:center;padding:14px;background:${rowBg};border-radius:8px;cursor:pointer;margin-bottom:10px;border:1px solid ${border};">
+                    <input type="checkbox" id="settingNotifications" ${prefs.notificationsEnabled ? 'checked' : ''} style="margin-right:12px;width:18px;height:18px;cursor:pointer;">
                     <div>
-                        <div style="font-weight: 600;">Dark Mode</div>
-                        <div style="font-size: 0.9em; color: #666;">Switch between light and dark themes</div>
+                        <div style="font-weight:600;">Browser Notifications</div>
+                        <div style="font-size:0.85em;opacity:0.65;">Show notifications when price alerts trigger</div>
                     </div>
                 </label>
+
+                <div style="display:flex;gap:12px;margin-top:10px;">
+                    <div style="flex:1;padding:14px;background:${rowBg};border-radius:8px;border:1px solid ${border};">
+                        <div style="font-weight:600;margin-bottom:8px;">Default Period</div>
+                        <select id="settingDefaultPeriod" style="width:100%;padding:6px;border-radius:6px;border:1px solid ${border};background:${bg};color:${fg};">
+                            <option value="1d" ${prefs.defaultPeriod==='1d'?'selected':''}>1 Day</option>
+                            <option value="5d" ${prefs.defaultPeriod==='5d'?'selected':''}>5 Days</option>
+                            <option value="1mo" ${prefs.defaultPeriod==='1mo'?'selected':''}>1 Month</option>
+                            <option value="3mo" ${prefs.defaultPeriod==='3mo'?'selected':''}>3 Months</option>
+                            <option value="6mo" ${prefs.defaultPeriod==='6mo'?'selected':''}>6 Months</option>
+                            <option value="1y" ${prefs.defaultPeriod==='1y'?'selected':''}>1 Year</option>
+                            <option value="2y" ${prefs.defaultPeriod==='2y'?'selected':''}>2 Years</option>
+                            <option value="5y" ${prefs.defaultPeriod==='5y'?'selected':''}>5 Years</option>
+                        </select>
+                    </div>
+                    <div style="flex:1;padding:14px;background:${rowBg};border-radius:8px;border:1px solid ${border};">
+                        <div style="font-weight:600;margin-bottom:8px;">Default Chart Type</div>
+                        <select id="settingDefaultChartType" style="width:100%;padding:6px;border-radius:6px;border:1px solid ${border};background:${bg};color:${fg};">
+                            <option value="candlestick" ${prefs.defaultChartType==='candlestick'?'selected':''}>Candlestick</option>
+                            <option value="line" ${prefs.defaultChartType==='line'?'selected':''}>Line</option>
+                            <option value="volume" ${prefs.defaultChartType==='volume'?'selected':''}>Volume</option>
+                        </select>
+                    </div>
+                </div>
             </div>
-            
-            <button onclick="saveSettings()" style="width: 100%; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer;">Save Settings</button>
+
+            <div style="display:flex;gap:10px;">
+                <button onclick="saveSettings()" style="flex:1;padding:12px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;">Save Settings</button>
+                <button onclick="document.getElementById('settingsModal').remove()" style="padding:12px 20px;background:${rowBg};color:${fg};border:1px solid ${border};border-radius:8px;font-size:15px;cursor:pointer;">Cancel</button>
+            </div>
         </div>
     `;
-    
+
     document.body.appendChild(modal);
+
+    // Load server preferences and update the modal fields
+    fetch('/api/user/preferences').then(r => r.ok ? r.json() : null).then(data => {
+        if (!data) return;
+        const p = data.preferences || {};
+        if (typeof p.darkMode === 'boolean') document.getElementById('settingDarkMode').checked = p.darkMode;
+        if (typeof p.autoRefreshWatchlist === 'boolean') document.getElementById('settingAutoRefresh').checked = p.autoRefreshWatchlist;
+        if (typeof p.notificationsEnabled === 'boolean') document.getElementById('settingNotifications').checked = p.notificationsEnabled;
+        if (p.defaultPeriod) document.getElementById('settingDefaultPeriod').value = p.defaultPeriod;
+        if (p.defaultChartType) document.getElementById('settingDefaultChartType').value = p.defaultChartType;
+    }).catch(() => {});
 }
 
-function saveSettings() {
-    const autoRefresh = document.getElementById('autoRefreshSetting').checked;
-    const notifications = document.getElementById('notificationsSetting').checked;
-    const darkMode = document.getElementById('darkModeSetting').checked;
-    
-    localStorage.setItem('autoRefreshWatchlist', autoRefresh);
-    localStorage.setItem('notificationsEnabled', notifications);
+async function saveSettings() {
+    const darkMode = document.getElementById('settingDarkMode').checked;
+    const autoRefreshWatchlist = document.getElementById('settingAutoRefresh').checked;
+    const notificationsEnabled = document.getElementById('settingNotifications').checked;
+    const defaultPeriod = document.getElementById('settingDefaultPeriod').value;
+    const defaultChartType = document.getElementById('settingDefaultChartType').value;
+
+    const prefs = { darkMode, autoRefreshWatchlist, notificationsEnabled, defaultPeriod, defaultChartType };
+
+    // Always persist to localStorage
     localStorage.setItem('darkMode', darkMode);
-    
+    localStorage.setItem('autoRefreshWatchlist', autoRefreshWatchlist);
+    localStorage.setItem('notificationsEnabled', notificationsEnabled);
+    localStorage.setItem('defaultPeriod', defaultPeriod);
+    localStorage.setItem('defaultChartType', defaultChartType);
+
     // Apply dark mode immediately
     toggleDarkMode(darkMode);
-    
+
+    // Apply default period/chart type to the form selects
+    const periodEl = document.getElementById('period');
+    if (periodEl) periodEl.value = defaultPeriod;
+    const chartEl = document.getElementById('chartType');
+    if (chartEl) chartEl.value = defaultChartType;
+
     document.getElementById('settingsModal').remove();
-    
-    // Show confirmation
+
+    // Save to server (best-effort — not logged in is fine)
+    let savedToServer = false;
+    try {
+        const res = await fetch('/api/user/preferences', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(prefs),
+        });
+        savedToServer = res.ok;
+    } catch (e) {}
+
     const toast = document.createElement('div');
-    toast.style.cssText = 'position: fixed; top: 20px; right: 20px; background: #4CAF50; color: white; padding: 15px 20px; border-radius: 8px; z-index: 10001; box-shadow: 0 4px 12px rgba(0,0,0,0.3);';
-    toast.textContent = '✓ Settings saved successfully!';
+    toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#4CAF50;color:white;padding:12px 20px;border-radius:8px;z-index:10001;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-weight:500;';
+    toast.textContent = savedToServer ? '✓ Settings saved to your account' : '✓ Settings saved locally';
     document.body.appendChild(toast);
-    
     setTimeout(() => toast.remove(), 3000);
 }
 
