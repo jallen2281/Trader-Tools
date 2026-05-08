@@ -327,7 +327,8 @@ function initializeAlerts() {
     setInterval(fetchSidebarAlerts, 60000);
 }
 
-let _lastTriggeredIds = new Set();
+// Persist seen alert IDs across page reloads so we don't re-notify on refresh
+let _lastTriggeredIds = new Set(JSON.parse(localStorage.getItem('_seenAlertIds') || '[]'));
 
 async function fetchSidebarAlerts() {
     try {
@@ -347,19 +348,26 @@ async function fetchSidebarAlerts() {
         // Render in sidebar
         renderSidebarAlerts(activeAlerts, triggeredAlerts);
 
-        // Browser notifications for newly triggered alerts
-        if ('Notification' in window && Notification.permission === 'granted') {
+        // Browser notifications for newly triggered alerts (only when enabled by user)
+        const notificationsEnabled = localStorage.getItem('notificationsEnabled') !== 'false';
+        if (notificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
             const triggered = Array.isArray(triggeredAlerts) ? triggeredAlerts : [];
+            let newSeen = false;
             for (const alert of triggered) {
                 const id = alert.id || alert.symbol;
                 if (!_lastTriggeredIds.has(id)) {
                     _lastTriggeredIds.add(id);
-                    new Notification(`Alert: ${alert.symbol}`, {
-                        body: alert.message || `${alert.alert_type} alert triggered`,
-                        icon: '📊',
+                    newSeen = true;
+                    new Notification(`🔔 Alert Triggered: ${alert.symbol}`, {
+                        body: alert.message || `${alert.alert_type} alert triggered for ${alert.symbol}`,
                         tag: `alert-${id}`
                     });
                 }
+            }
+            // Persist updated set to localStorage (cap at 200 entries to avoid bloat)
+            if (newSeen) {
+                const ids = [..._lastTriggeredIds].slice(-200);
+                localStorage.setItem('_seenAlertIds', JSON.stringify(ids));
             }
         }
     } catch (e) {
@@ -1074,6 +1082,11 @@ async function saveSettings() {
 
     // Apply dark mode immediately
     toggleDarkMode(darkMode);
+
+    // Request browser notification permission if user just enabled it
+    if (notificationsEnabled && 'Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
 
     // Apply default period/chart type to the form selects
     const periodEl = document.getElementById('period');
