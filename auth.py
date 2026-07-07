@@ -69,19 +69,29 @@ def create_session_token(user_id):
 
 def verify_session_token(token):
     """Verify session token and return user"""
+    import logging
+    _log = logging.getLogger(__name__)
     try:
         session_obj = UserSession.query.filter_by(session_token=token).first()
 
         if not session_obj or session_obj.is_expired():
             return None
 
-        # Update last activity
-        session_obj.last_activity = datetime.utcnow()
-        db.session.commit()
+        user = User.query.get(session_obj.user_id)
 
-        return User.query.get(session_obj.user_id)
-    except Exception:
+        # Best-effort: refresh last activity, but NEVER reject a valid token just
+        # because this bookkeeping write fails (e.g. read-only replica / transient DB error).
+        try:
+            session_obj.last_activity = datetime.utcnow()
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            _log.warning(f"last_activity update failed (token still honored): {type(e).__name__}: {e}")
+
+        return user
+    except Exception as e:
         db.session.rollback()
+        _log.warning(f"verify_session_token failed: {type(e).__name__}: {e}")
         return None
 
 
