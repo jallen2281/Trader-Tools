@@ -31,7 +31,22 @@ def init_auth(app):
             return User.query.get(int(user_id))
         except Exception:
             return None
-    
+
+    @login_manager.request_loader
+    def load_user_from_request(req):
+        """Authenticate API requests via `Authorization: Bearer <token>`.
+
+        The web UI uses session cookies (user_loader above), but API clients
+        (automation/agents) send a Personal Access Token. This populates
+        current_user for those requests so every route's existing
+        `current_user.is_authenticated` / `current_user.id` check works without
+        per-route changes.
+        """
+        auth_header = req.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            return verify_session_token(auth_header[7:])
+        return None
+
     # Configure OAuth
     oauth.init_app(app)
     
