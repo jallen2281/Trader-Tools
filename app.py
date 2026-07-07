@@ -741,6 +741,60 @@ def save_preferences():
     return jsonify({'success': True, 'preferences': current_user.preferences})
 
 
+@app.route('/api/auth/token', methods=['POST'])
+@login_required
+def create_api_token():
+    """Mint a Personal Access Token for programmatic API access (automation/agent).
+
+    Requires an interactive logged-in session (cannot be created from another token).
+    Returns the token ONCE. Send it as `Authorization: Bearer <token>` on API requests.
+    Tokens expire in 30 days and can be revoked via DELETE /api/auth/token.
+    """
+    try:
+        from auth import create_session_token
+        token = create_session_token(current_user.id)
+        if not token:
+            return jsonify({'error': 'Failed to create token'}), 500
+        return jsonify({
+            'token': token,
+            'token_type': 'Bearer',
+            'expires_in_days': 30,
+            'usage': 'Send header: Authorization: Bearer <token>'
+        })
+    except Exception as e:
+        logger.error(f"Error creating API token: {e}")
+        return jsonify({'error': 'Failed to create token'}), 500
+
+
+@app.route('/api/auth/token', methods=['DELETE'])
+@require_api_auth
+def revoke_api_token():
+    """Revoke a Personal Access Token. Body {"token": "..."} to revoke a specific token,
+    or omit to revoke the Bearer token used on this request. Only revokes your own tokens.
+    """
+    try:
+        from models import UserSession
+        user = getattr(request, 'current_user', None) or current_user
+        data = request.get_json(silent=True) or {}
+        target = data.get('token')
+        if not target:
+            auth_header = request.headers.get('Authorization', '')
+            if auth_header.startswith('Bearer '):
+                target = auth_header[7:]
+        if not target:
+            return jsonify({'error': 'No token specified'}), 400
+        sess = UserSession.query.filter_by(session_token=target, user_id=user.id).first()
+        if not sess:
+            return jsonify({'error': 'Token not found'}), 404
+        db.session.delete(sess)
+        db.session.commit()
+        return jsonify({'success': True, 'revoked': True})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error revoking API token: {e}")
+        return jsonify({'error': 'Failed to revoke token'}), 500
+
+
 @app.route('/api/analyze', methods=['POST'])
 def analyze_stock():
     """Analyze a stock symbol and return comprehensive results."""
