@@ -807,39 +807,6 @@ def revoke_api_token():
         return jsonify({'error': 'Failed to revoke token'}), 500
 
 
-@app.route('/api/auth/debug', methods=['POST'])
-def debug_api_token():
-    """TEMPORARY diagnostic: report why a Bearer token fails verification.
-    Body {"token":"..."} or Authorization: Bearer header. Remove after debugging."""
-    import traceback as _tb
-    from models import UserSession, User
-    auth_header = request.headers.get('Authorization', '')
-    body = request.get_json(silent=True) or {}
-    token = body.get('token') or (auth_header[7:] if auth_header.startswith('Bearer ') else None)
-    if not token:
-        return jsonify({'error': 'no token provided'}), 400
-    out = {'token_len': len(token), 'server_utcnow': datetime.utcnow().isoformat()}
-    try:
-        so = UserSession.query.filter_by(session_token=token).first()
-        out['found'] = so is not None
-        if so:
-            out['user_id'] = so.user_id
-            out['expires_at'] = str(so.expires_at)
-            out['expires_tzinfo'] = str(getattr(so.expires_at, 'tzinfo', None))
-            try:
-                out['is_expired'] = so.is_expired()
-            except Exception as e:
-                out['is_expired_error'] = f'{type(e).__name__}: {e}'
-            try:
-                out['user_found'] = User.query.get(so.user_id) is not None
-            except Exception as e:
-                out['user_error'] = f'{type(e).__name__}: {e}'
-    except Exception as e:
-        out['query_exception'] = f'{type(e).__name__}: {e}'
-        out['traceback'] = _tb.format_exc()[-600:]
-    return jsonify(out)
-
-
 @app.route('/api/analyze', methods=['POST'])
 def analyze_stock():
     """Analyze a stock symbol and return comprehensive results."""
