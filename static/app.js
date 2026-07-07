@@ -140,8 +140,13 @@ async function renderWatchlist() {
         </div>
     `;
     
-    container.innerHTML = '<div class="loading-small">Loading...</div>';
-    
+    // Only show the loading state on the FIRST render. On periodic refreshes, keep
+    // the current list visible until the new content is ready — otherwise the
+    // watchlist flashes "Loading..." and disappears on every update.
+    if (!container.querySelector('#watchlistSelector')) {
+        container.innerHTML = '<div class="loading-small">Loading...</div>';
+    }
+
     let symbols = [];
     let prices = {};
     let recommendations = {};
