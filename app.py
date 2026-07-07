@@ -751,19 +751,31 @@ def create_api_token():
     Tokens expire in 30 days and can be revoked via DELETE /api/auth/token.
     """
     try:
-        from auth import create_session_token
-        token = create_session_token(current_user.id)
-        if not token:
-            return jsonify({'error': 'Failed to create token'}), 500
+        from models import UserSession
+        import secrets as _secrets
+        token = _secrets.token_urlsafe(32)
+        sess = UserSession(
+            user_id=current_user.id,
+            session_token=token,
+            expires_at=datetime.utcnow() + timedelta(days=30)
+        )
+        db.session.add(sess)
+        db.session.commit()
+        # Verify it actually persisted and is readable back (catches silent write failures)
+        check = UserSession.query.filter_by(session_token=token).first()
+        if not check:
+            return jsonify({'error': 'Token did not persist (DB write silently failed)'}), 500
         return jsonify({
             'token': token,
             'token_type': 'Bearer',
             'expires_in_days': 30,
+            'persisted': True,
             'usage': 'Send header: Authorization: Bearer <token>'
         })
     except Exception as e:
-        logger.error(f"Error creating API token: {e}")
-        return jsonify({'error': 'Failed to create token'}), 500
+        db.session.rollback()
+        logger.error(f"Error creating API token: {e}", exc_info=True)
+        return jsonify({'error': f'Failed to create token: {type(e).__name__}: {str(e)}'}), 500
 
 
 @app.route('/api/auth/token', methods=['DELETE'])
