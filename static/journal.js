@@ -327,19 +327,28 @@ class TradeJournal {
             return;
         }
 
-        const insightsHTML = data.insights.map(insight => `
+        const insightsHTML = data.insights.map(insight => {
+            // Backend returns objects {title, message, type}; tolerate plain strings too.
+            const isObj = insight && typeof insight === 'object';
+            const title = isObj ? (insight.title || '') : '';
+            const text = isObj ? (insight.message || '') : insight;
+            return `
             <div class="insight-card">
                 <span class="icon">💡</span>
-                <p>${insight}</p>
+                <p>${title ? `<strong>${title}:</strong> ` : ''}${text}</p>
             </div>
-        `).join('');
+        `;
+        }).join('');
 
-        const recommendationsHTML = data.recommendations.map(rec => `
+        const recommendationsHTML = data.recommendations.map(rec => {
+            const text = (rec && typeof rec === 'object') ? (rec.message || rec.title || '') : rec;
+            return `
             <div class="recommendation-card">
                 <span class="icon">🎯</span>
-                <p>${rec}</p>
+                <p>${text}</p>
             </div>
-        `).join('');
+        `;
+        }).join('');
 
         container.innerHTML = `
             <h3>🤖 AI-Powered Insights</h3>

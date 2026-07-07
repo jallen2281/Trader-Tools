@@ -1831,14 +1831,25 @@ def list_portfolio_holdings():
         
         holdings = query.all()
         
-        # Update current prices
+        # Update current prices — best-effort. A single symbol's data-provider
+        # error (rate limit, delisted/new IPO ticker) or a transient DB write must
+        # NEVER fail the whole request, or the portfolio watchlist renders empty.
+        prices_updated = False
         for holding in holdings:
-            stock_data = data_fetcher.fetch_stock_data(holding.symbol, '1d')
-            if stock_data is not None and not stock_data.empty:
-                holding.current_price = float(stock_data.iloc[-1]['Close'])
-        
-        db.session.commit()
-        
+            try:
+                stock_data = data_fetcher.fetch_stock_data(holding.symbol, '1d')
+                if stock_data is not None and not stock_data.empty:
+                    holding.current_price = float(stock_data.iloc[-1]['Close'])
+                    prices_updated = True
+            except Exception as pe:
+                logger.warning(f"Price update failed for {holding.symbol}: {pe}")
+        if prices_updated:
+            try:
+                db.session.commit()
+            except Exception as ce:
+                db.session.rollback()
+                logger.warning(f"Portfolio price commit failed (holdings still returned): {ce}")
+
         return jsonify({
             'holdings': [h.to_dict() for h in holdings],
             'total_value': sum(float(h.quantity) * float(h.current_price) for h in holdings if h.current_price),
