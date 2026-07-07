@@ -19,6 +19,7 @@ spec:
   template:
     metadata:
       annotations:
+        commit-sha: {{ .Values.commitSha | quote }}
         {{- toYaml .Values.podAnnotations | nindent 8 }}
       labels:
         {{- include "trader-tools.selectorLabels" . | nindent 8 }}

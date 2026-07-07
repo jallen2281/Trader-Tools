@@ -9,6 +9,12 @@ image:
   pullPolicy: Always
   tag: "latest"
 
+# Deploy trigger: CI bumps this to the deployed commit SHA on every push so the
+# rendered manifest changes and ArgoCD rolls the pods (which then re-pull :latest).
+# Without this, a code-only commit leaves the :latest manifest unchanged and pods
+# never restart. Do not edit by hand — the build workflow overwrites it.
+commitSha: "init"
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""

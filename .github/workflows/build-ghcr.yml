@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -62,3 +62,21 @@ jobs:
 
     - name: Image digest
       run: echo ${{ steps.build.outputs.digest }}
+
+    # Auto-deploy: bump the commitSha in the Helm values so the rendered manifest
+    # changes and ArgoCD rolls the pods (which re-pull :latest). [skip ci] on the
+    # bump commit prevents an infinite build loop.
+    - name: Bump deployed commit in Helm values (triggers ArgoCD rollout)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      run: |
+        SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-10)
+        sed -i "s/^commitSha:.*/commitSha: \"${SHORT_SHA}\"/" helm/trader-tools/values.yaml
+        if git diff --quiet -- helm/trader-tools/values.yaml; then
+          echo "commitSha already up to date; nothing to push"
+          exit 0
+        fi
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add helm/trader-tools/values.yaml
+        git commit -m "chore: deploy ${SHORT_SHA} [skip ci]"
+        git push origin HEAD:${GITHUB_REF_NAME}
