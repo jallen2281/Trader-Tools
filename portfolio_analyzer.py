@@ -655,8 +655,11 @@ class PortfolioAnalyzer:
                     base_action = 'REVIEW'
                     base_reason += ' Sentiment turning negative.'
                 elif entry_score and entry_score > 75 and pnl_pct < 0:
-                    base_action = 'ADD'
-                    base_reason = f'Strong entry signal ({entry_score:.0f}/100). May be good to average down.'
+                    # Policy (trading SOP): never recommend averaging down a losing position.
+                    # A strong technical entry is surfaced as INFO only; the action stays on the
+                    # P/L-band call. Averaging down a loser is the behavior that wrecks accounts.
+                    base_reason += (f' Note: strong technical entry ({entry_score:.0f}/100), '
+                                    'but averaging down a loss is disabled by policy.')
             
             logger.debug(f"Generated recommendation: {base_action}")
             
