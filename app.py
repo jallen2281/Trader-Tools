@@ -1831,15 +1831,23 @@ def list_portfolio_holdings():
         
         holdings = query.all()
         
-        # Update current prices — best-effort. A single symbol's data-provider
-        # error (rate limit, delisted/new IPO ticker) or a transient DB write must
-        # NEVER fail the whole request, or the portfolio watchlist renders empty.
+        # Update current prices — best-effort + cached. A single symbol's
+        # data-provider error (rate limit, delisted/new IPO ticker) or a transient
+        # DB write must NEVER fail the whole request, or the watchlist renders empty.
+        # Prices are cached for PRICE_TTL to avoid a live Yahoo fetch per holding on
+        # every call (which is what was rate-limiting into 500s).
+        now = datetime.utcnow()
+        PRICE_TTL = timedelta(minutes=10)
         prices_updated = False
         for holding in holdings:
+            # Skip refresh if we already have a recent price
+            if holding.current_price and holding.last_updated and (now - holding.last_updated) < PRICE_TTL:
+                continue
             try:
                 stock_data = data_fetcher.fetch_stock_data(holding.symbol, '1d')
                 if stock_data is not None and not stock_data.empty:
                     holding.current_price = float(stock_data.iloc[-1]['Close'])
+                    holding.last_updated = now
                     prices_updated = True
             except Exception as pe:
                 logger.warning(f"Price update failed for {holding.symbol}: {pe}")
