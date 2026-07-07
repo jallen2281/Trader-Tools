@@ -4,49 +4,117 @@ Tracks Congressional and Senate stock trades for copy trading analysis
 """
 
 import yfinance as yf
+import requests
 from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Free, no-key congressional trades feed (House Clerk + Senate eFD, normalized daily).
+KADOA_TRADES_URL = "https://raw.githubusercontent.com/kadoa-org/congress-trading-monitor/main/public/data/trades.json"
 
 
 class PoliticianTradeTracker:
     """Track and analyze politician stock trades."""
     
     def __init__(self):
-        self.trades_cache = []
+        self.trades_cache = None
         self.last_update = None
-        
+        self.cache_ttl = timedelta(hours=6)  # Kadoa feed refreshes ~daily
+
     def get_recent_trades(self, days=30):
-        """
-        Get recent politician trades.
-        In production, this would fetch from APIs like:
-        - Capitol Trades API
-        - Quiver Quantitative API
-        - Senate/House disclosure reports
-        
-        For now, returns sample data based on real politician trading patterns.
+        """Recent congressional trades, filtered to the last `days` by filing date.
+
+        Uses real data from the free Kadoa feed (House Clerk + Senate eFD), cached
+        for cache_ttl. Falls back to sample data only if the feed is unreachable.
         """
         try:
-            # Sample data based on real patterns
-            # In production, replace with actual API calls
-            trades = self._get_sample_trades()
-            
-            # Enrich with current prices
-            enriched_trades = []
-            for trade in trades:
+            all_trades = self._get_all_trades()
+            cutoff = datetime.now() - timedelta(days=days)
+            recent = []
+            for t in all_trades:
+                ds = t.get('filed_date') or t.get('date') or ''
                 try:
-                    current_data = self._get_current_price(trade['symbol'])
-                    trade.update(current_data)
-                    enriched_trades.append(trade)
-                except Exception as e:
-                    logger.warning(f"Could not enrich {trade['symbol']}: {e}")
-                    enriched_trades.append(trade)
-            
-            return enriched_trades
-            
+                    td = datetime.strptime(ds[:10], '%Y-%m-%d')
+                except Exception:
+                    td = None
+                if td is None or td >= cutoff:
+                    recent.append(t)
+            return recent
         except Exception as e:
             logger.error(f"Error fetching politician trades: {e}")
+            return self._get_sample_trades()
+
+    def _get_all_trades(self):
+        """Full normalized trade list, cached for cache_ttl (real data or fallback)."""
+        if (self.trades_cache is not None and self.last_update
+                and (datetime.now() - self.last_update) < self.cache_ttl):
+            return self.trades_cache
+        trades = self._fetch_kadoa_trades()
+        if not trades:
+            logger.warning("Kadoa feed empty/unreachable — using sample-data fallback")
+            trades = self._get_sample_trades()
+        self.trades_cache = trades
+        self.last_update = datetime.now()
+        return trades
+
+    def _fetch_kadoa_trades(self):
+        """Fetch + normalize real congressional trades from the free Kadoa JSON feed.
+
+        Returns [] on any failure so the caller falls back to sample data.
+        Keeps only common-stock/ETF purchases and sales (drops options, bonds, etc.).
+        """
+        try:
+            resp = requests.get(KADOA_TRADES_URL, timeout=15,
+                                headers={'User-Agent': 'trader-tools'})
+            if resp.status_code != 200:
+                logger.warning(f"Kadoa feed HTTP {resp.status_code}")
+                return []
+            raw = resp.json()
+            rows = raw if isinstance(raw, list) else (raw.get('trades') or [])
+            party_map = {'R': 'Republican', 'D': 'Democrat', 'I': 'Independent'}
+            out = []
+            for i, r in enumerate(rows):
+                ticker = (r.get('ticker') or '').upper().strip()
+                if not ticker:
+                    continue
+                asset_type = (r.get('asset_type') or '').strip()
+                if asset_type and asset_type not in ('Stock', 'ST', 'Common Stock', 'ETF', 'Equity'):
+                    continue
+                ttype = (r.get('transaction_type') or '').lower()
+                if ttype.startswith('purchase') or ttype == 'buy':
+                    transaction = 'Purchase'
+                elif 'sale' in ttype or ttype == 'sell':
+                    transaction = 'Sale'
+                else:
+                    continue
+                out.append({
+                    'id': f"{r.get('filer_id', '')}-{ticker}-{i}",
+                    'politician': r.get('filer_name') or 'Unknown',
+                    'party': party_map.get((r.get('party') or '').upper(), r.get('party') or 'Unknown'),
+                    'chamber': (r.get('chamber') or '').capitalize(),
+                    'state': r.get('state') or '',
+                    'symbol': ticker,
+                    'company': r.get('asset_name') or ticker,
+                    'transaction': transaction,
+                    'amount_range': r.get('amount_range_label') or '',
+                    'amount_min': r.get('amount_range_low') or 0,
+                    'amount_max': r.get('amount_range_high') or 0,
+                    'date': (r.get('transaction_date') or '')[:10],
+                    'filed_date': (r.get('filing_date') or '')[:10],
+                    'disclosure_date': (r.get('filing_date') or '')[:10],
+                    'asset_type': asset_type or 'Stock',
+                    'owner': r.get('owner') or '',
+                    'excess_since': r.get('excess_since'),
+                    'is_late': r.get('is_late'),
+                    'current_price': None,
+                    'return_pct': 0,
+                    'purchase_price': None,
+                })
+            logger.info(f"Kadoa feed: normalized {len(out)} congressional stock trades")
+            return out
+        except Exception as e:
+            logger.warning(f"Kadoa feed fetch failed ({e}); falling back to sample data")
             return []
     
     def _get_current_price(self, symbol):
