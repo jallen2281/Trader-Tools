@@ -3757,6 +3757,160 @@ def export_user_data():
     return resp
 
 
+@app.route('/api/import', methods=['POST'])
+@require_api_auth
+def import_user_data():
+    """Restore data from an /api/export JSON dump for the current user.
+
+    De-duplicates every section by natural keys, so re-importing the same file
+    never creates duplicate records (existing rows are skipped, never clobbered).
+    Returns per-section imported/skipped counts.
+    """
+    if not PHASE2_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+    user_id = _get_current_user_id()
+    if not user_id:
+        return jsonify({'error': 'Authentication required'}), 401
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON export body'}), 400
+
+    from datetime import datetime as _dt
+
+    def _pdt(v):
+        if not v:
+            return None
+        try:
+            return _dt.fromisoformat(str(v).replace('Z', '+00:00'))
+        except Exception:
+            return None
+
+    def _pdate(v):
+        if not v:
+            return None
+        try:
+            return _dt.fromisoformat(str(v)[:10]).date()
+        except Exception:
+            return None
+
+    acct_by_name = {a.name: a.id for a in PortfolioAccount.query.filter_by(user_id=user_id).all()}
+    def _acct(row):
+        return acct_by_name.get(row.get('account_name')) if row.get('account_name') else None
+
+    result = {}
+    try:
+        # Watchlist — unique (user_id, symbol)
+        imp = skip = 0
+        seen = {w.symbol.upper() for w in Watchlist.query.filter_by(user_id=user_id).all()}
+        for r in (data.get('watchlist') or []):
+            sym = (r.get('symbol') or '').upper()
+            if not sym or sym in seen:
+                skip += 1; continue
+            db.session.add(Watchlist(user_id=user_id, symbol=sym, notes=r.get('notes')))
+            seen.add(sym); imp += 1
+        result['watchlist'] = {'imported': imp, 'skipped': skip}
+
+        # Portfolio — dedupe (symbol, asset_type)
+        imp = skip = 0
+        seen = {(p.symbol.upper(), p.asset_type) for p in Portfolio.query.filter_by(user_id=user_id).all()}
+        for r in (data.get('portfolio') or []):
+            sym = (r.get('symbol') or '').upper(); at = r.get('asset_type') or 'stock'
+            if not sym or (sym, at) in seen:
+                skip += 1; continue
+            db.session.add(Portfolio(
+                user_id=user_id, symbol=sym, asset_type=at,
+                quantity=r.get('quantity') or 0, average_cost=r.get('average_cost') or 0,
+                current_price=r.get('current_price'), purchase_date=_pdt(r.get('purchase_date')) or _dt.utcnow(),
+                account_id=_acct(r),
+                intent=r.get('intent') if r.get('intent') in ('core', 'lottery', 'signal') else None,
+                ipo_lock_until=_pdate(r.get('ipo_lock_until'))))
+            seen.add((sym, at)); imp += 1
+        result['portfolio'] = {'imported': imp, 'skipped': skip}
+
+        # Transactions — dedupe (symbol, type, qty, price, date)
+        imp = skip = 0
+        seen = {(t.symbol.upper(), t.transaction_type, float(t.quantity), float(t.price),
+                 t.transaction_date.isoformat() if t.transaction_date else None)
+                for t in Transaction.query.filter_by(user_id=user_id).all()}
+        for r in (data.get('transactions') or []):
+            sym = (r.get('symbol') or '').upper(); d = _pdt(r.get('transaction_date'))
+            key = (sym, r.get('transaction_type'), float(r.get('quantity') or 0),
+                   float(r.get('price') or 0), d.isoformat() if d else None)
+            if not sym or key in seen:
+                skip += 1; continue
+            db.session.add(Transaction(
+                user_id=user_id, symbol=sym, asset_type=r.get('asset_type') or 'stock',
+                transaction_type=r.get('transaction_type'), quantity=r.get('quantity') or 0,
+                price=r.get('price') or 0, commission=r.get('commission') or 0,
+                transaction_date=d or _dt.utcnow(), notes=r.get('notes'), account_id=_acct(r)))
+            seen.add(key); imp += 1
+        result['transactions'] = {'imported': imp, 'skipped': skip}
+
+        # Options — dedupe (underlying, type, strike, expiration)
+        imp = skip = 0
+        seen = {(o.underlying_symbol.upper(), o.option_type, float(o.strike_price),
+                 o.expiration_date.isoformat() if o.expiration_date else None)
+                for o in OptionsPosition.query.filter_by(user_id=user_id).all()}
+        for r in (data.get('options_positions') or []):
+            us = (r.get('underlying_symbol') or '').upper(); ed = _pdate(r.get('expiration_date'))
+            key = (us, r.get('option_type'), float(r.get('strike_price') or 0), ed.isoformat() if ed else None)
+            if not us or key in seen:
+                skip += 1; continue
+            db.session.add(OptionsPosition(
+                user_id=user_id, underlying_symbol=us, option_type=r.get('option_type'),
+                strike_price=r.get('strike_price') or 0, expiration_date=ed,
+                quantity=r.get('quantity') or 0, premium_paid=r.get('premium_paid') or 0,
+                current_premium=r.get('current_premium'), status=r.get('status') or 'open'))
+            seen.add(key); imp += 1
+        result['options_positions'] = {'imported': imp, 'skipped': skip}
+
+        # Alerts — dedupe (symbol, alert_type, condition, target_price)
+        imp = skip = 0
+        seen = {(a.symbol.upper(), a.alert_type, a.condition, float(a.target_price) if a.target_price else None)
+                for a in Alert.query.filter_by(user_id=user_id).all()}
+        for r in (data.get('alerts') or []):
+            sym = (r.get('symbol') or '').upper(); tp = r.get('target_price') or r.get('targetPrice')
+            key = (sym, r.get('alert_type') or r.get('type'), r.get('condition'), float(tp) if tp else None)
+            if not sym or key in seen:
+                skip += 1; continue
+            db.session.add(Alert(
+                user_id=user_id, symbol=sym, alert_type=r.get('alert_type') or r.get('type') or 'price',
+                condition=r.get('condition'), target_price=tp, priority=r.get('priority') or 'medium',
+                message=r.get('message'), enabled=r.get('enabled', True)))
+            seen.add(key); imp += 1
+        result['alerts'] = {'imported': imp, 'skipped': skip}
+
+        # Dividends — dedupe (symbol, ex_date, total_amount)
+        imp = skip = 0
+        seen = {(d.symbol.upper(), d.ex_date.isoformat() if d.ex_date else None, float(d.total_amount))
+                for d in Dividend.query.filter_by(user_id=user_id).all()}
+        for r in (data.get('dividends') or []):
+            sym = (r.get('symbol') or '').upper(); ex = _pdate(r.get('ex_date'))
+            key = (sym, ex.isoformat() if ex else None, float(r.get('total_amount') or 0))
+            if not sym or key in seen:
+                skip += 1; continue
+            db.session.add(Dividend(
+                user_id=user_id, symbol=sym, amount_per_share=r.get('amount_per_share') or 0,
+                shares=r.get('shares') or 0, total_amount=r.get('total_amount') or 0,
+                ex_date=ex, pay_date=_pdate(r.get('pay_date')),
+                reinvested=r.get('reinvested', False), notes=r.get('notes'), account_id=_acct(r)))
+            seen.add(key); imp += 1
+        result['dividends'] = {'imported': imp, 'skipped': skip}
+
+        db.session.commit()
+        total_imp = sum(v['imported'] for v in result.values())
+        total_skip = sum(v['skipped'] for v in result.values())
+        return jsonify({
+            'message': f'Restore complete: {total_imp} record(s) imported, {total_skip} duplicate(s) skipped',
+            'sections': result
+        })
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Import failed: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+
 @app.errorhandler(500)
 def handle_500(e):
     """Clear stale sessions and redirect on internal server errors"""
