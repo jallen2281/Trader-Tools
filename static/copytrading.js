@@ -118,10 +118,9 @@ const sampleTraders = [
  */
 function init() {
     loadFollowedTraders();
-    allTraders = [...sampleTraders];
-    renderTraders(allTraders);
+    loadInsiderClusters();   // Pro Traders tab now shows REAL insider cluster buys
     loadPoliticianTrades();
-    
+
     // Set up tab switching
     setupTabSwitching();
 }
@@ -153,7 +152,7 @@ function switchTab(tab) {
     // Show/hide sections
     document.getElementById('traderGrid').style.display = tab === 'traders' ? 'grid' : 'none';
     document.getElementById('politicianGrid').style.display = tab === 'politicians' ? 'grid' : 'none';
-    document.getElementById('filtersBar').style.display = tab === 'traders' ? 'flex' : 'none';
+    document.getElementById('filtersBar').style.display = 'none';  // trader filters N/A for insider clusters
     document.getElementById('politicianFilters').style.display = tab === 'politicians' ? 'flex' : 'none';
     const memberSection = document.getElementById('memberSection');
     if (memberSection) memberSection.style.display = tab === 'members' ? 'block' : 'none';
@@ -179,6 +178,49 @@ async function loadPoliticianTrades() {
         console.error('Error loading politician trades:', e);
         showToast('Failed to load politician trades', 'error');
     }
+}
+
+/**
+ * Load real insider cluster buys (Pro Traders tab)
+ */
+async function loadInsiderClusters() {
+    const grid = document.getElementById('traderGrid');
+    if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">Loading insider activity…</div>';
+    try {
+        const res = await fetch('/api/insider-clusters?limit=30');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        renderInsiderClusters(data.clusters || []);
+    } catch (e) {
+        console.error('Error loading insider clusters:', e);
+        if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">Could not load insider activity.</div>';
+    }
+}
+
+function renderInsiderClusters(clusters) {
+    const grid = document.getElementById('traderGrid');
+    if (!grid) return;
+    if (!clusters.length) {
+        grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">No recent insider cluster buys.</div>';
+        return;
+    }
+    grid.innerHTML = clusters.map(c => {
+        const ins = c.num_insiders || 0;
+        const color = ins >= 3 ? '#10b981' : '#3b82f6';
+        return `
+        <div style="background:var(--bg-secondary,#1a1a2e);border:1px solid var(--border,#2a2a3e);border-radius:12px;padding:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="font-size:1.15em;font-weight:700;color:var(--text-primary);">${c.ticker}</div>
+                <span style="background:${color}22;color:${color};padding:3px 10px;border-radius:12px;font-size:0.75em;font-weight:600;">${ins} insider${ins !== 1 ? 's' : ''} buying</span>
+            </div>
+            <div style="color:var(--text-secondary);font-size:0.85em;margin:4px 0 12px;">${(c.company || '').slice(0, 34)}</div>
+            <div style="display:flex;justify-content:space-between;font-size:0.9em;">
+                <div><div style="color:var(--text-secondary);font-size:0.8em;">Total bought</div><div style="color:#10b981;font-weight:600;">${c.value || '—'}</div></div>
+                <div style="text-align:right;"><div style="color:var(--text-secondary);font-size:0.8em;">Price</div><div style="color:var(--text-primary);font-weight:600;">${c.price || '—'}</div></div>
+            </div>
+            <div style="margin-top:10px;font-size:0.78em;color:var(--text-secondary);">Filed ${c.filing_date || '—'} · traded ${c.trade_date || '—'}</div>
+        </div>`;
+    }).join('');
 }
 
 /**
