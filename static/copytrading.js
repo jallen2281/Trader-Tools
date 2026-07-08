@@ -136,6 +136,10 @@ function setupTabSwitching() {
     if (tradersTab) tradersTab.addEventListener('click', () => switchTab('traders'));
     if (politiciansTab) politiciansTab.addEventListener('click', () => switchTab('politicians'));
     if (membersTab) membersTab.addEventListener('click', () => switchTab('members'));
+    const topTradersTab = document.getElementById('topTradersTab');
+    const smartMoneyTab = document.getElementById('smartMoneyTab');
+    if (topTradersTab) topTradersTab.addEventListener('click', () => switchTab('toptraders'));
+    if (smartMoneyTab) smartMoneyTab.addEventListener('click', () => switchTab('smartmoney'));
 }
 
 /**
@@ -146,21 +150,24 @@ function switchTab(tab) {
     
     // Update tab buttons
     document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
-    const activeBtn = document.getElementById(tab === 'traders' ? 'tradersTab' : tab === 'politicians' ? 'politiciansTab' : 'membersTab');
+    const btnMap = { traders: 'tradersTab', politicians: 'politiciansTab', members: 'membersTab', toptraders: 'topTradersTab', smartmoney: 'smartMoneyTab' };
+    const activeBtn = document.getElementById(btnMap[tab]);
     if (activeBtn) activeBtn.classList.add('active');
-    
-    // Show/hide sections
-    document.getElementById('traderGrid').style.display = tab === 'traders' ? 'grid' : 'none';
-    document.getElementById('politicianGrid').style.display = tab === 'politicians' ? 'grid' : 'none';
+
+    // Show/hide grids
+    const showGrid = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? 'grid' : 'none'; };
+    showGrid('traderGrid', tab === 'traders');
+    showGrid('politicianGrid', tab === 'politicians');
+    showGrid('topTradersGrid', tab === 'toptraders');
+    showGrid('smartMoneyGrid', tab === 'smartmoney');
     document.getElementById('filtersBar').style.display = 'none';  // trader filters N/A for insider clusters
     document.getElementById('politicianFilters').style.display = tab === 'politicians' ? 'flex' : 'none';
     const memberSection = document.getElementById('memberSection');
     if (memberSection) memberSection.style.display = tab === 'members' ? 'block' : 'none';
-    
-    if (tab === 'members') {
-        loadMemberStatus();
-        loadMembers();
-    }
+
+    if (tab === 'members') { loadMemberStatus(); loadMembers(); }
+    else if (tab === 'toptraders') loadTopTraders();
+    else if (tab === 'smartmoney') loadSmartMoney();
 }
 
 /**
@@ -219,6 +226,88 @@ function renderInsiderClusters(clusters) {
                 <div style="text-align:right;"><div style="color:var(--text-secondary);font-size:0.8em;">Price</div><div style="color:var(--text-primary);font-weight:600;">${c.price || '—'}</div></div>
             </div>
             <div style="margin-top:10px;font-size:0.78em;color:var(--text-secondary);">Filed ${c.filing_date || '—'} · traded ${c.trade_date || '—'}</div>
+        </div>`;
+    }).join('');
+}
+
+/**
+ * A — Top Traders tab: congressional leaderboard by activity/volume
+ */
+async function loadTopTraders() {
+    const grid = document.getElementById('topTradersGrid');
+    if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">Loading top traders…</div>';
+    try {
+        const res = await fetch('/api/politician-trades/performance');
+        const d = await res.json();
+        const list = Array.isArray(d) ? d : (d.performance || d.politicians || d.data || []);
+        renderTopTraders(list);
+    } catch (e) {
+        console.error('Error loading top traders:', e);
+        if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">Could not load top traders.</div>';
+    }
+}
+
+function renderTopTraders(list) {
+    const grid = document.getElementById('topTradersGrid');
+    if (!grid) return;
+    list = [...list].sort((a, b) => (b.total_volume || 0) - (a.total_volume || 0));
+    if (!list.length) { grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">No trader data.</div>'; return; }
+    grid.innerHTML = list.map(p => {
+        const partyColor = p.party === 'Republican' ? '#ef4444' : p.party === 'Democrat' ? '#3b82f6' : '#8b5cf6';
+        const vol = '$' + Math.round(p.total_volume || 0).toLocaleString();
+        const syms = [...new Set((p.recent_trades || []).map(t => t.symbol).filter(Boolean))].slice(0, 4);
+        return `
+        <div style="background:var(--bg-secondary,#1a1a2e);border:1px solid var(--border,#2a2a3e);border-radius:12px;padding:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="font-weight:700;color:var(--text-primary);">${p.politician || 'Unknown'}</div>
+                <span style="background:${partyColor}22;color:${partyColor};padding:2px 8px;border-radius:10px;font-size:0.72em;">${(p.party || '?')[0]} · ${p.chamber || ''}</span>
+            </div>
+            <div style="color:var(--text-secondary);font-size:0.8em;margin:2px 0 12px;">${p.state || ''}</div>
+            <div style="display:flex;justify-content:space-between;font-size:0.9em;">
+                <div><div style="color:var(--text-secondary);font-size:0.78em;">Est. volume</div><div style="color:#10b981;font-weight:600;">${vol}</div></div>
+                <div style="text-align:right;"><div style="color:var(--text-secondary);font-size:0.78em;">Trades</div><div style="color:var(--text-primary);font-weight:600;">${p.total_trades || 0} · ${p.purchases || 0}B/${p.sales || 0}S</div></div>
+            </div>
+            ${syms.length ? `<div style="margin-top:10px;font-size:0.78em;color:var(--text-secondary);">Recent: ${syms.join(', ')}</div>` : ''}
+        </div>`;
+    }).join('');
+}
+
+/**
+ * C — Smart Money tab: symbols most-bought by Congress
+ */
+async function loadSmartMoney() {
+    const grid = document.getElementById('smartMoneyGrid');
+    if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">Loading smart money…</div>';
+    try {
+        const res = await fetch('/api/politician-trades/trending');
+        const d = await res.json();
+        const list = Array.isArray(d) ? d : (d.trending || d.symbols || d.data || []);
+        renderSmartMoney(list);
+    } catch (e) {
+        console.error('Error loading smart money:', e);
+        if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">Could not load smart money.</div>';
+    }
+}
+
+function renderSmartMoney(list) {
+    const grid = document.getElementById('smartMoneyGrid');
+    if (!grid) return;
+    if (!list.length) { grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-secondary);">No trending symbols.</div>'; return; }
+    grid.innerHTML = list.map(s => {
+        const pc = s.politician_count || 0;
+        const color = pc >= 2 ? '#10b981' : '#3b82f6';
+        const vol = '$' + Math.round(s.total_volume || 0).toLocaleString();
+        return `
+        <div style="background:var(--bg-secondary,#1a1a2e);border:1px solid var(--border,#2a2a3e);border-radius:12px;padding:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="font-size:1.15em;font-weight:700;color:var(--text-primary);">${s.symbol}</div>
+                <span style="background:${color}22;color:${color};padding:3px 10px;border-radius:12px;font-size:0.75em;font-weight:600;">${pc} member${pc !== 1 ? 's' : ''}</span>
+            </div>
+            <div style="color:var(--text-secondary);font-size:0.85em;margin:4px 0 12px;">${(s.company || '').slice(0, 34)}</div>
+            <div style="display:flex;justify-content:space-between;font-size:0.9em;">
+                <div><div style="color:var(--text-secondary);font-size:0.78em;">Buys (30d)</div><div style="color:var(--text-primary);font-weight:600;">${s.trade_count || 0}</div></div>
+                <div style="text-align:right;"><div style="color:var(--text-secondary);font-size:0.78em;">Est. volume</div><div style="color:#10b981;font-weight:600;">${vol}</div></div>
+            </div>
         </div>`;
     }).join('');
 }
