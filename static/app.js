@@ -155,12 +155,23 @@ async function renderWatchlist() {
         // Fetch portfolio holdings
         const holdings = await watchlistManager.fetchPortfolioHoldings();
         symbols = holdings.map(h => h.symbol);
-        
-        // Fetch prices for portfolio symbols
+
+        // Seed price/change straight from the holdings (already fetched + reliable),
+        // so rows show real data even if the live /api/compare call is slow or empty.
+        holdings.forEach(h => {
+            prices[h.symbol] = { current_price: h.current_price, return_pct: h.gain_loss_pct };
+        });
+
+        // Fetch prices for portfolio symbols (best-effort overlay of fresh daily data)
         if (symbols.length > 0) {
-            prices = await watchlistManager.fetchPrices(symbols);
-            console.log('Portfolio prices fetched:', prices);
-            
+            try {
+                const fresh = await watchlistManager.fetchPrices(symbols);
+                Object.keys(fresh || {}).forEach(sym => {
+                    if (fresh[sym] && fresh[sym].current_price != null) prices[sym] = fresh[sym];
+                });
+            } catch (e) { console.warn('Portfolio price refresh failed:', e); }
+            console.log('Portfolio prices:', prices);
+
             // Fetch recommendations for each holding (Phase 4 feature)
             for (const holding of holdings) {
                 try {
