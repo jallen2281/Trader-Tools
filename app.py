@@ -1895,13 +1895,13 @@ def manage_portfolio():
             if symbol != original_symbol:
                 logger.info(f"Normalized crypto symbol: {original_symbol} → {symbol}")
             
-            # Parse purchase date if provided
+            # Parse purchase date if provided (datetime is imported at module scope;
+            # a local import here shadowed it and broke the no-date path).
             parsed_date = None
             if purchase_date:
                 try:
-                    from datetime import datetime
                     parsed_date = datetime.fromisoformat(purchase_date.replace('Z', '+00:00'))
-                except:
+                except Exception:
                     parsed_date = datetime.utcnow()
             else:
                 parsed_date = datetime.utcnow()
