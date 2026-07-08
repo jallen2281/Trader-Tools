@@ -3295,6 +3295,21 @@ def dismiss_alert_suggestion(suggestion_id):
 # Politician Trading Data API Endpoints
 # ============================================================================
 
+@app.route('/api/insider-clusters', methods=['GET'])
+@require_api_auth
+def get_insider_clusters():
+    """Recent insider (SEC Form 4) cluster buys — multiple insiders buying the same
+    stock in a tight window. Powers the copy-trading 'Pro Traders' tab."""
+    try:
+        from insider_trades import get_insider_tracker
+        limit = request.args.get('limit', 30, type=int)
+        clusters = get_insider_tracker().get_cluster_buys(limit=limit)
+        return jsonify({'clusters': clusters, 'count': len(clusters)}), 200
+    except Exception as e:
+        logger.error(f"Error fetching insider clusters: {e}")
+        return jsonify({'clusters': [], 'count': 0, 'error': str(e)}), 200
+
+
 @app.route('/api/politician-trades', methods=['GET'])
 @require_api_auth
 def get_politician_trades():
