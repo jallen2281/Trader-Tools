@@ -418,7 +418,7 @@
     <div id="exportDataModal" class="modal" style="display: none;">
         <div class="modal-content" style="max-width: 420px;">
             <div class="modal-header">
-                <h3>📤 Export Financial Data</h3>
+                <h3>📤 Export / 📥 Restore Data</h3>
                 <button class="modal-close">&times;</button>
             </div>
             <div class="modal-body" style="padding: 20px;">
@@ -432,6 +432,14 @@
                     </button>
                 </div>
                 <p id="exportStatus" style="margin-top: 12px; text-align: center; font-size: 0.875rem; color: var(--text-secondary);"></p>
+
+                <hr style="margin: 18px 0; border: none; border-top: 1px solid var(--border);">
+                <p style="margin-bottom: 12px; color: var(--text-secondary);">Restore from a previously exported JSON file. Duplicate records are skipped automatically — re-importing the same file is safe.</p>
+                <input type="file" id="importFileInput" accept="application/json,.json" style="display:none;">
+                <div style="display: flex; gap: 12px; justify-content: center;">
+                    <button id="importDataBtn" class="btn-secondary" style="flex: 1;">📥 Restore from file (JSON)</button>
+                </div>
+                <p id="importStatus" style="margin-top: 12px; text-align: center; font-size: 0.875rem; color: var(--text-secondary);"></p>
             </div>
         </div>
     </div>
@@ -467,6 +475,37 @@
 
             document.getElementById('exportJsonBtn').addEventListener('click', () => triggerExport('json'));
             document.getElementById('exportCsvBtn').addEventListener('click', () => triggerExport('csv'));
+
+            // Restore / import from an exported JSON file
+            const importBtn = document.getElementById('importDataBtn');
+            const importInput = document.getElementById('importFileInput');
+            const importStatus = document.getElementById('importStatus');
+            if (importBtn && importInput) {
+                importBtn.addEventListener('click', () => importInput.click());
+                importInput.addEventListener('change', async () => {
+                    const file = importInput.files && importInput.files[0];
+                    if (!file) return;
+                    importStatus.textContent = 'Reading file…';
+                    try {
+                        const payload = JSON.parse(await file.text());
+                        importStatus.textContent = 'Restoring…';
+                        const resp = await fetch('/api/import', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'same-origin',
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await resp.json();
+                        if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+                        importStatus.textContent = '✓ ' + (data.message || 'Restore complete.');
+                        if (typeof renderWatchlist === 'function') { try { renderWatchlist(); } catch (e) {} }
+                    } catch (e) {
+                        importStatus.textContent = '✗ Restore failed: ' + e.message;
+                    } finally {
+                        importInput.value = '';
+                    }
+                });
+            }
         })();
     </script>
 </body>
