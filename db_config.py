@@ -135,6 +135,13 @@ def init_database(app):
         # Migrate: add account_id columns if missing
         if _add_column_if_missing(db, inspector, 'portfolio', 'account_id', 'INTEGER REFERENCES portfolio_accounts(id)'):
             logger.info("✓ Added account_id to portfolio table")
+
+        # Migrate: add position-context columns (intent + ipo_lock_until) if missing
+        inspector = inspect(db.engine)
+        _add_column_if_missing(db, inspector, 'portfolio', 'intent', 'VARCHAR(20)')
+        inspector = inspect(db.engine)
+        if _add_column_if_missing(db, inspector, 'portfolio', 'ipo_lock_until', 'DATE'):
+            logger.info("✓ Added intent/ipo_lock_until to portfolio table")
         
         # Re-inspect after potential schema change
         inspector = inspect(db.engine)

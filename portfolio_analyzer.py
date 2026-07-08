@@ -673,6 +673,24 @@ class PortfolioAnalyzer:
                     base_reason += (f' Note: strong technical entry ({entry_score:.0f}/100), '
                                     'but averaging down a loss is disabled by policy.')
             
+            # Position-intent / IPO-lock overlay — highest-priority context the P/L
+            # bands can't know about. An IPO-locked position can't be sold at all, and a
+            # deliberate lottery bet shouldn't be flagged as a mistake.
+            from datetime import date as _date
+            lock_until = getattr(holding, 'ipo_lock_until', None)
+            intent = (getattr(holding, 'intent', None) or '').lower()
+            if lock_until and lock_until > _date.today():
+                base_action = 'HOLD'
+                base_reason = (f'IPO-locked until {lock_until.isoformat()} — selling early risks '
+                               'losing IPO access. ') + base_reason
+            elif intent == 'lottery' and base_action in ('REVIEW', 'CONSIDER_SELLING', 'SELL'):
+                base_action = 'HOLD'
+                base_reason = ('Intentional lottery position — a large drawdown is expected, '
+                               'not a thesis break. ') + base_reason
+            elif intent == 'core' and base_action == 'TRIM':
+                base_action = 'HOLD'
+                base_reason = 'Core long-term holding — not trimming on gains alone. ' + base_reason
+
             # Congressional-trading overlay (Signal A — weak & lagged, so INFORMATIONAL
             # with only a mild nudge, never a hard override).
             congress = self._get_congress_signal(getattr(holding, 'symbol', None))

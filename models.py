@@ -184,7 +184,11 @@ class Portfolio(db.Model):
     current_price = db.Column(db.Numeric(10, 4, asdecimal=False))
     purchase_date = db.Column(db.DateTime, default=datetime.utcnow)
     last_updated = db.Column(db.DateTime, default=datetime.utcnow)
-    
+    # Position context (Phase 4b): so the recommendation engine doesn't mis-flag
+    # a deliberate lottery bet or an IPO-restricted hold.
+    intent = db.Column(db.String(20))       # 'core' | 'lottery' | 'signal' | None
+    ipo_lock_until = db.Column(db.Date)     # if set and in the future, can't be sold yet
+
     __table_args__ = (
         db.UniqueConstraint('user_id', 'symbol', 'asset_type', 'account_id', name='unique_user_position'),
     )
@@ -213,7 +217,9 @@ class Portfolio(db.Model):
             'purchase_date': self.purchase_date.isoformat() if self.purchase_date else None,
             'last_updated': self.last_updated.isoformat() if self.last_updated else None,
             'account_id': self.account_id,
-            'account_name': self.account.name if self.account else None
+            'account_name': self.account.name if self.account else None,
+            'intent': self.intent,
+            'ipo_lock_until': self.ipo_lock_until.isoformat() if self.ipo_lock_until else None
         }
 
 class Transaction(db.Model):

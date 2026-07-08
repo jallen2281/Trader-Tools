@@ -2776,9 +2776,24 @@ def update_holding(holding_id):
                 if not account:
                     return jsonify({'error': 'Account not found'}), 404
             holding.account_id = new_account_id
-        
+
+        if 'intent' in data:
+            val = data['intent']
+            holding.intent = val if val in ('core', 'lottery', 'signal') else None
+
+        if 'ipo_lock_until' in data:
+            val = data['ipo_lock_until']
+            if val:
+                try:
+                    from datetime import datetime as _dt
+                    holding.ipo_lock_until = _dt.fromisoformat(str(val)[:10]).date()
+                except Exception:
+                    return jsonify({'error': 'ipo_lock_until must be YYYY-MM-DD'}), 400
+            else:
+                holding.ipo_lock_until = None
+
         db.session.commit()
-        
+
         logger.info(f"Updated holding {holding.symbol} (ID: {holding_id}) for user {user_id}")
         return jsonify({'message': 'Holding updated successfully'}), 200
     
