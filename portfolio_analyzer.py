@@ -15,6 +15,18 @@ from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
+# Lazily-created shared congressional-trade tracker (it has its own ~6h cache), so the
+# congress signal costs at most one feed fetch per process per refresh window.
+_politician_tracker = None
+
+def _get_politician_tracker():
+    global _politician_tracker
+    if _politician_tracker is None:
+        from politician_trades import PoliticianTradeTracker
+        _politician_tracker = PoliticianTradeTracker()
+    return _politician_tracker
+
+
 class PortfolioAnalyzer:
     """
     Analyze portfolio holdings with real-time P&L, risk metrics, and recommendations
@@ -661,12 +673,23 @@ class PortfolioAnalyzer:
                     base_reason += (f' Note: strong technical entry ({entry_score:.0f}/100), '
                                     'but averaging down a loss is disabled by policy.')
             
+            # Congressional-trading overlay (Signal A — weak & lagged, so INFORMATIONAL
+            # with only a mild nudge, never a hard override).
+            congress = self._get_congress_signal(getattr(holding, 'symbol', None))
+            if congress and congress.get('summary'):
+                base_reason += ' ' + congress['summary']
+                # Fresh multi-member buying supports holding a name flagged for review.
+                if congress.get('distinct_buyers', 0) >= 2 and base_action == 'REVIEW':
+                    base_action = 'HOLD'
+                    base_reason += ' Congressional buying supports the thesis.'
+
             logger.debug(f"Generated recommendation: {base_action}")
-            
+
             return {
                 'action': base_action,
                 'reason': base_reason,
-                'confidence': 'high' if phase3 else 'medium'
+                'confidence': 'high' if phase3 else 'medium',
+                'congress': congress
             }
             
         except Exception as e:
@@ -674,6 +697,40 @@ class PortfolioAnalyzer:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {'action': 'HOLD', 'reason': 'Unable to generate recommendation', 'confidence': 'low'}
     
+    def _get_congress_signal(self, symbol):
+        """Recent congressional trading signal for a symbol (weak/lagged — informational).
+
+        Returns distinct buyer/seller counts + a short summary, or None. Uses the shared
+        cached tracker, so it's cheap even across a whole portfolio.
+        """
+        if not symbol:
+            return None
+        try:
+            trades = _get_politician_tracker().search_by_symbol(symbol)
+            if not trades:
+                return None
+            buyers = sorted({t.get('politician') for t in trades
+                             if t.get('transaction') == 'Purchase' and t.get('politician')})
+            sellers = sorted({t.get('politician') for t in trades
+                              if t.get('transaction') == 'Sale' and t.get('politician')})
+            if not buyers and not sellers:
+                return None
+            parts = []
+            if buyers:
+                parts.append(f"{len(buyers)} member{'s' if len(buyers) != 1 else ''} of Congress recently bought {symbol}")
+            if sellers:
+                parts.append(f"{len(sellers)} sold")
+            return {
+                'distinct_buyers': len(buyers),
+                'distinct_sellers': len(sellers),
+                'buyers': buyers,
+                'sellers': sellers,
+                'summary': 'Congress: ' + '; '.join(parts) + '.'
+            }
+        except Exception as e:
+            logger.debug(f"Congress signal unavailable for {symbol}: {e}")
+            return None
+
     def _calculate_risk_contribution(self, holding, holding_type):
         """Calculate how much this position contributes to portfolio risk"""
         try:
