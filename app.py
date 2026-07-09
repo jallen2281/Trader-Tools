@@ -105,9 +105,9 @@ if PHASE2_ENABLED:
         ml_detector = MLPatternDetector()
         logger.info("✓ ML Pattern Detector initialized")
         
-        # Initialize monitoring service with longer interval to reduce API load
-        monitoring_svc = init_monitoring_service(app, check_interval=900)  # 15 minutes
-        logger.info("✓ Real-time Monitoring Service initialized (15min interval)")
+        # Base tick 60s; each user's own alert_check_interval gates actual checks
+        monitoring_svc = init_monitoring_service(app, check_interval=60)
+        logger.info("✓ Real-time Monitoring Service initialized (60s base tick, per-user intervals)")
         
         # Register authentication routes
         auth_routes = get_auth_routes(google_oauth)
@@ -2236,6 +2236,99 @@ def monitoring_status():
     
     except Exception as e:
         logger.error(f"Error getting monitoring status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Selectable alert-check intervals. Faster options are gated by tier/role via
+# TIER_MIN_INTERVAL so future member tiers can unlock them without loop changes.
+ALERT_INTERVAL_OPTIONS = [
+    {'seconds': 60,    'label': '1 minute'},
+    {'seconds': 300,   'label': '5 minutes'},
+    {'seconds': 900,   'label': '15 minutes'},
+    {'seconds': 1800,  'label': '30 minutes'},
+    {'seconds': 3600,  'label': '1 hour'},
+    {'seconds': 21600, 'label': '6 hours'},
+]
+DEFAULT_ALERT_INTERVAL = 900
+# Minimum interval (fastest allowed) per role. Everyone can go slower; only
+# higher tiers can go faster than the base 'user' floor.
+TIER_MIN_INTERVAL = {
+    'admin': 60,
+    'moderator': 60,
+    'premium': 300,
+    'user': 900,
+}
+
+
+def _tier_min_interval(role):
+    return TIER_MIN_INTERVAL.get((role or 'user'), 900)
+
+
+@app.route('/api/monitoring/interval', methods=['GET'])
+@require_api_auth
+def get_alert_interval():
+    """Return the user's alert-check interval, their tier floor, and the option
+    list (each flagged locked if faster than their tier allows)."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        user = User.query.get(user_id)
+        role = user.role if user else 'user'
+        floor = _tier_min_interval(role)
+        current = (user.alert_check_interval if user and user.alert_check_interval else DEFAULT_ALERT_INTERVAL)
+        options = [
+            {**opt, 'locked': opt['seconds'] < floor}
+            for opt in ALERT_INTERVAL_OPTIONS
+        ]
+        return jsonify({
+            'interval': current,
+            'min_interval': floor,
+            'default': DEFAULT_ALERT_INTERVAL,
+            'role': role,
+            'options': options
+        })
+    except Exception as e:
+        logger.error(f"Error getting alert interval: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/monitoring/interval', methods=['PUT'])
+@require_api_auth
+def set_alert_interval():
+    """Set the user's alert-check interval. Must be one of the offered options
+    and no faster than the user's tier floor."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        data = request.get_json() or {}
+        try:
+            interval = int(data.get('interval'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'interval (seconds) is required'}), 400
+
+        allowed = {o['seconds'] for o in ALERT_INTERVAL_OPTIONS}
+        if interval not in allowed:
+            return jsonify({'error': 'Invalid interval', 'options': sorted(allowed)}), 400
+
+        floor = _tier_min_interval(user.role)
+        if interval < floor:
+            return jsonify({
+                'error': f'Your tier ({user.role or "user"}) allows a minimum of {floor}s. Upgrade for faster checks.',
+                'min_interval': floor
+            }), 403
+
+        user.alert_check_interval = interval
+        db.session.commit()
+        return jsonify({'message': 'Interval updated', 'interval': interval})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error setting alert interval: {e}")
         return jsonify({'error': str(e)}), 500
 
 

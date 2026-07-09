@@ -12,22 +12,30 @@ from data_fetcher import FinancialDataFetcher
 # triggers (or a bad-data spike) can never flood the notification feed.
 MAX_ALERT_NOTIFS_PER_DAY = 25
 
+# Fallback interval (seconds) if a user has no preference stored.
+DEFAULT_ALERT_INTERVAL = 900
+
 class MonitoringService:
     """Background service for real-time market monitoring"""
     
-    def __init__(self, app=None, check_interval=300):
+    def __init__(self, app=None, check_interval=60):
         """
         Initialize monitoring service
-        
+
         Args:
             app: Flask application instance
-            check_interval: Seconds between checks (default 300 = 5 minutes to reduce API load)
+            check_interval: Base tick in seconds. The loop wakes this often and
+                evaluates only users whose per-user interval has elapsed, so this
+                should be the finest granularity any tier can select (default 60s).
         """
         self.app = app
         self.check_interval = check_interval
         self.running = False
         self.thread = None
         self.data_fetcher = FinancialDataFetcher()
+        # user_id -> monotonic timestamp of last alert check (in-memory; on
+        # restart everyone is treated as due, which is fine).
+        self._last_checked = {}
         
     def start(self):
         """Start the monitoring service"""
@@ -56,7 +64,7 @@ class MonitoringService:
         implementation compared alert_type against 'above'/'below', which never
         matched the stored types ('price', 'pnl', ...), so nothing ever fired.
         """
-        from models import db, Alert, Notification
+        from models import db, Alert, Notification, User
         from smart_alerts import SmartAlertsEngine
 
         engine = SmartAlertsEngine()
@@ -71,8 +79,20 @@ class MonitoringService:
                         .distinct().all()
                     ]
 
+                    # Each user's preferred check interval (seconds)
+                    intervals = {}
+                    if user_ids:
+                        for u in User.query.filter(User.id.in_(user_ids)).all():
+                            intervals[u.id] = u.alert_check_interval or DEFAULT_ALERT_INTERVAL
+
+                    now = time.monotonic()
                     total_fired = 0
                     for user_id in user_ids:
+                        interval = intervals.get(user_id, DEFAULT_ALERT_INTERVAL)
+                        last = self._last_checked.get(user_id)
+                        if last is not None and (now - last) < interval:
+                            continue  # not due yet for this user
+
                         try:
                             # Flips status->'triggered' and commits inside the engine
                             triggered = engine.check_all_alerts(user_id)
@@ -81,6 +101,7 @@ class MonitoringService:
                                 total_fired += 1
                             if triggered:
                                 db.session.commit()
+                            self._last_checked[user_id] = now
                         except Exception as e:
                             print(f"⚠️ Error checking alerts for user {user_id}: {e}")
                             db.session.rollback()
@@ -92,7 +113,7 @@ class MonitoringService:
             except Exception as e:
                 print(f"⚠️ Error in monitoring loop: {e}")
 
-            # Wait before next check
+            # Base tick — per-user intervals gate actual checks above
             time.sleep(self.check_interval)
 
     def _record_notification(self, db, Notification, user_id, trigger):

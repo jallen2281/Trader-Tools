@@ -23,6 +23,9 @@ class User(UserMixin, db.Model):
     is_active = db.Column(db.Boolean, default=True)
     bio = db.Column(db.Text)
     copy_trading_enabled = db.Column(db.Boolean, default=False)
+    # How often (seconds) the monitor checks this user's alerts. Floor is gated
+    # by tier/role at set-time; the monitor just honors whatever is stored.
+    alert_check_interval = db.Column(db.Integer, default=900)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     last_active = db.Column(db.DateTime)
@@ -50,6 +53,7 @@ class User(UserMixin, db.Model):
             'is_active': self.is_active if self.is_active is not None else True,
             'bio': self.bio,
             'copy_trading_enabled': self.copy_trading_enabled or False,
+            'alert_check_interval': self.alert_check_interval or 900,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_login': self.last_login.isoformat() if self.last_login else None,
             'last_active': self.last_active.isoformat() if self.last_active else None,

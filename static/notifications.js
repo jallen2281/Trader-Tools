@@ -20,6 +20,7 @@ class NotificationCenter {
         // Load initial suggestions + fired-alert notifications
         this.loadSuggestions();
         this.loadNotifications();
+        this.loadInterval();
 
         // Auto-refresh every 2 minutes
         this.refreshInterval = setInterval(() => {
@@ -62,6 +63,51 @@ class NotificationCenter {
             this.render();
         } catch (e) {
             console.error('Error marking notification read:', e);
+        }
+    }
+
+    async loadInterval() {
+        try {
+            const response = await fetch('/api/monitoring/interval', {
+                headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
+            });
+            if (!response.ok) return;
+            const data = await response.json();
+            const sel = document.getElementById('alertIntervalSelect');
+            if (!sel) return;
+            sel.innerHTML = (data.options || []).map(o => {
+                const locked = o.locked ? ' 🔒' : '';
+                const sel2 = o.seconds === data.interval ? ' selected' : '';
+                const dis = o.locked ? ' disabled' : '';
+                return `<option value="${o.seconds}"${sel2}${dis}>${o.label}${locked}</option>`;
+            }).join('');
+            this._intervalMeta = data;
+        } catch (e) {
+            console.error('Error loading interval:', e);
+        }
+    }
+
+    async changeInterval(seconds) {
+        try {
+            const response = await fetch('/api/monitoring/interval', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': localStorage.getItem('apiKey') || ''
+                },
+                body: JSON.stringify({ interval: parseInt(seconds, 10) })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (response.ok) {
+                const label = (this._intervalMeta?.options || []).find(o => o.seconds == seconds)?.label || `${seconds}s`;
+                this.showToast(`✓ Alerts now checked every ${label}`, 'success');
+            } else {
+                this.showToast(data.error || 'Could not update interval', 'error');
+                this.loadInterval();  // reset selection to server truth
+            }
+        } catch (e) {
+            console.error('Error changing interval:', e);
+            this.showToast('Could not update interval', 'error');
         }
     }
 
@@ -111,6 +157,13 @@ class NotificationCenter {
             </div>
             <div class="notification-body" id="notificationBody">
                 <div class="loading-small">Loading suggestions...</div>
+            </div>
+            <div class="notification-footer" style="padding:10px 14px;border-top:1px solid var(--border,rgba(255,255,255,0.1));display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:.85em;">
+                <span style="color:var(--text-secondary);white-space:nowrap;">⏱️ Check alerts every</span>
+                <select id="alertIntervalSelect" onchange="notificationCenter.changeInterval(this.value)"
+                        style="flex:1;max-width:160px;padding:4px 6px;border-radius:6px;background:var(--bg-secondary,#1e2230);color:inherit;border:1px solid var(--border,rgba(255,255,255,0.15));">
+                    <option>Loading…</option>
+                </select>
             </div>
         `;
         

@@ -211,6 +211,8 @@ def init_database(app):
         inspector = inspect(db.engine)
         if _add_column_if_missing(db, inspector, 'users', 'last_active', timestamp_type):
             logger.info("✓ Added user profile columns")
+        inspector = inspect(db.engine)
+        _add_column_if_missing(db, inspector, 'users', 'alert_check_interval', 'INTEGER', '900')
         
         logger.info("✓ Database tables created successfully")
         
