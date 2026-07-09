@@ -248,45 +248,70 @@ class AlertSuggestionEngine:
         return suggestions
     
     def _check_portfolio_alerts(self, holdings: List) -> List[Dict]:
-        """Generate portfolio-specific alerts"""
+        """Generate take-profit and stop-loss suggestions for each holding.
+
+        One of each is offered per position (not only when already deep in
+        profit/loss), with levels placed on the correct side of the current
+        price so the alert can actually trigger:
+          - take-profit : max(cost*1.25, price*1.05)  -> fires on the way UP
+          - stop-loss   : price*0.92                   -> fires on the way DOWN
+        Priority is raised when the position is already extended, so urgent
+        ones surface first.
+        """
         suggestions = []
-        
-        try:
-            for holding in holdings:
+
+        for holding in holdings:
+            try:
                 symbol = holding.get('symbol')
-                current_price = holding.get('current_price', 0)
-                avg_cost = holding.get('avg_cost', 0)
-                pnl_pct = holding.get('pnl_pct', 0)
-                
-                # Profit-taking suggestion
-                if pnl_pct > 20:  # 20% gain
-                    suggestions.append({
-                        'symbol': symbol,
-                        'type': 'profit_taking',
-                        'priority': 2,
-                        'message': f"{symbol} up {pnl_pct:.1f}% - Consider taking profits",
-                        'trigger_price': round(current_price * 1.05, 2),
-                        'direction': 'above',
-                        'reason': f"Position up {pnl_pct:.1f}% - lock in gains at next resistance",
-                        'icon': '💰'
-                    })
-                
-                # Stop-loss suggestion
-                elif pnl_pct < -10:  # 10% loss
+                current_price = float(holding.get('current_price') or 0)
+                # Portfolio.to_dict() emits average_cost / gain_loss_pct; accept
+                # the older avg_cost / pnl_pct keys too for safety.
+                avg_cost = float(holding.get('average_cost') or holding.get('avg_cost') or 0)
+                pnl_raw = holding.get('gain_loss_pct')
+                if pnl_raw is None:
+                    pnl_raw = holding.get('pnl_pct', 0)
+                pnl_pct = float(pnl_raw or 0)
+
+                if not symbol or current_price <= 0 or avg_cost <= 0:
+                    continue
+
+                # --- Take-profit (sell into strength) ---
+                tp_price = round(max(avg_cost * 1.25, current_price * 1.05), 2)
+                tp_gain_pct = (tp_price - avg_cost) / avg_cost * 100
+                already_up = pnl_pct >= 20
+                suggestions.append({
+                    'symbol': symbol,
+                    'type': 'take_profit',
+                    'priority': 3 if already_up else 2,
+                    'message': f"Take-profit on {symbol} at ${tp_price:.2f}",
+                    'trigger_price': tp_price,
+                    'direction': 'above',
+                    'reason': (f"Locks in ~{tp_gain_pct:.0f}% vs your ${avg_cost:.2f} cost"
+                               + (f" — already up {pnl_pct:.0f}%" if already_up else "")),
+                    'icon': '🎯'
+                })
+
+                # --- Stop-loss (protect capital), always below current price ---
+                sl_price = round(current_price * 0.92, 2)
+                if 0 < sl_price < current_price:
+                    sl_vs_cost = (sl_price - avg_cost) / avg_cost * 100
+                    already_down = pnl_pct <= -5
                     suggestions.append({
                         'symbol': symbol,
                         'type': 'stop_loss',
-                        'priority': 3,
-                        'message': f"{symbol} down {abs(pnl_pct):.1f}% - Consider stop-loss",
-                        'trigger_price': round(current_price * 0.95, 2),
+                        'priority': 3 if already_down else 2,
+                        'message': f"Stop-loss on {symbol} at ${sl_price:.2f}",
+                        'trigger_price': sl_price,
                         'direction': 'below',
-                        'reason': f"Position down {abs(pnl_pct):.1f}% - protect capital with stop",
+                        'reason': (f"Caps a ~8% drop from ${current_price:.2f} "
+                                   f"({sl_vs_cost:+.0f}% vs your ${avg_cost:.2f} cost)"
+                                   + (f" — position down {abs(pnl_pct):.0f}%" if already_down else "")),
                         'icon': '🛑'
                     })
-        
-        except Exception as e:
-            logger.error(f"Portfolio alert check error: {e}")
-        
+
+            except Exception as e:
+                logger.error(f"Portfolio alert check error for {holding.get('symbol','?')}: {e}")
+
         return suggestions
     
     def save_suggestions(self, suggestions: List[Dict], existing_alerts: List = None) -> int:
