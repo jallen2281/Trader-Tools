@@ -552,6 +552,36 @@ class AlertSuggestion(db.Model):
             'actioned_at': self.actioned_at.isoformat() if self.actioned_at else None
         }
 
+class Notification(db.Model):
+    """Durable feed of fired alerts / system messages so the user can always
+    see what triggered and when (Phase 6)."""
+    __tablename__ = 'notifications'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    alert_id = db.Column(db.Integer, db.ForeignKey('alerts.id'), nullable=True)  # source alert, if any
+    category = db.Column(db.String(20), default='alert', index=True)  # 'alert', 'system'
+    symbol = db.Column(db.String(10), index=True)
+    title = db.Column(db.String(200))
+    message = db.Column(db.Text)
+    priority = db.Column(db.String(20), default='medium')  # 'low','medium','high','critical'
+    read = db.Column(db.Boolean, default=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'alert_id': self.alert_id,
+            'category': self.category,
+            'symbol': self.symbol,
+            'title': self.title,
+            'message': self.message,
+            'priority': self.priority,
+            'read': self.read,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
 class Dividend(db.Model):
     """Dividend payments tracking"""
     __tablename__ = 'dividends'

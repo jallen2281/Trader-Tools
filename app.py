@@ -23,7 +23,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -3135,6 +3135,167 @@ def dismiss_alert(alert_id):
     except Exception as e:
         logger.error(f"Error dismissing alert: {e}")
         return jsonify({'error': str(e)}), 500
+
+# ===========================
+# LIMIT-PRICE ALERT (convenience)
+# ===========================
+
+@app.route('/api/alerts/limit', methods=['POST'])
+@require_api_auth
+def create_limit_alert():
+    """Create a buy/sell limit-price alert.
+
+    Body: {symbol, price, side}. side='buy' fires when price drops to/below the
+    limit; side='sell' fires when price rises to/above it. Thin wrapper over the
+    smart-alerts price engine so 'notify me at my limit' is one call.
+    """
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Phase 4 not enabled'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        data = request.get_json() or {}
+        symbol = (data.get('symbol') or '').upper().strip()
+        side = (data.get('side') or 'buy').lower().strip()
+        try:
+            price = float(data.get('price'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'A numeric price is required'}), 400
+
+        if not symbol:
+            return jsonify({'error': 'symbol is required'}), 400
+        if side not in ('buy', 'sell'):
+            return jsonify({'error': "side must be 'buy' or 'sell'"}), 400
+
+        # buy limit -> alert when price falls to/below; sell limit -> rises to/above
+        direction = 'below' if side == 'buy' else 'above'
+        alert = smart_alerts.create_price_alert(
+            user_id=user_id,
+            symbol=symbol,
+            target_price=price,
+            direction=direction
+        )
+
+        if alert:
+            return jsonify(alert.to_dict()), 201
+        return jsonify({'error': 'Failed to create limit alert'}), 500
+
+    except Exception as e:
+        logger.error(f"Error creating limit alert: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ===========================
+# NOTIFICATION FEED (durable history of fired alerts)
+# ===========================
+
+@app.route('/api/notifications', methods=['GET'])
+@require_api_auth
+def list_notifications():
+    """List the user's notifications (fired alerts + system messages).
+
+    Query params: unread=1 to only return unread; limit (default 50, max 200).
+    """
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        q = Notification.query.filter_by(user_id=user_id)
+        if request.args.get('unread') in ('1', 'true', 'yes'):
+            q = q.filter_by(read=False)
+
+        try:
+            limit = min(int(request.args.get('limit', 50)), 200)
+        except (TypeError, ValueError):
+            limit = 50
+
+        items = q.order_by(Notification.created_at.desc()).limit(limit).all()
+        unread_count = Notification.query.filter_by(user_id=user_id, read=False).count()
+
+        return jsonify({
+            'notifications': [n.to_dict() for n in items],
+            'unread_count': unread_count,
+            'count': len(items)
+        })
+    except Exception as e:
+        logger.error(f"Error listing notifications: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/notifications/unread-count', methods=['GET'])
+@require_api_auth
+def notifications_unread_count():
+    """Lightweight badge count of unread notifications."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        count = Notification.query.filter_by(user_id=user_id, read=False).count()
+        return jsonify({'unread_count': count})
+    except Exception as e:
+        logger.error(f"Error counting notifications: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/notifications/<int:notification_id>/read', methods=['PUT', 'POST'])
+@require_api_auth
+def mark_notification_read(notification_id):
+    """Mark a single notification as read."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        note = Notification.query.filter_by(id=notification_id, user_id=user_id).first()
+        if not note:
+            return jsonify({'error': 'Notification not found'}), 404
+        note.read = True
+        db.session.commit()
+        return jsonify({'message': 'marked read'})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error marking notification read: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/notifications/read-all', methods=['PUT', 'POST'])
+@require_api_auth
+def mark_all_notifications_read():
+    """Mark every unread notification for the user as read."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        updated = Notification.query.filter_by(user_id=user_id, read=False).update({'read': True})
+        db.session.commit()
+        return jsonify({'message': 'all marked read', 'updated': updated})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error marking all notifications read: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/notifications/<int:notification_id>', methods=['DELETE'])
+@require_api_auth
+def delete_notification(notification_id):
+    """Delete a notification from the feed."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        note = Notification.query.filter_by(id=notification_id, user_id=user_id).first()
+        if not note:
+            return jsonify({'error': 'Notification not found'}), 404
+        db.session.delete(note)
+        db.session.commit()
+        return jsonify({'message': 'deleted'})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error deleting notification: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 # ===========================
 # PHASE 5: AI ALERT SUGGESTIONS

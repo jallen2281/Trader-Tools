@@ -8,6 +8,10 @@ import time
 from datetime import datetime
 from data_fetcher import FinancialDataFetcher
 
+# Per-user cap on alert notifications created in a single day, so a burst of
+# triggers (or a bad-data spike) can never flood the notification feed.
+MAX_ALERT_NOTIFS_PER_DAY = 25
+
 class MonitoringService:
     """Background service for real-time market monitoring"""
     
@@ -44,76 +48,82 @@ class MonitoringService:
         print("🛑 Monitoring service stopped")
     
     def _monitor_loop(self):
-        """Main monitoring loop"""
-        from models import db, Alert, MonitoringLog
-        
+        """Main monitoring loop.
+
+        Evaluates every active alert through the SmartAlertsEngine (which knows
+        how to check price / pnl / technical / sentiment / risk conditions) and
+        records a durable Notification for each fresh trigger. The previous
+        implementation compared alert_type against 'above'/'below', which never
+        matched the stored types ('price', 'pnl', ...), so nothing ever fired.
+        """
+        from models import db, Alert, Notification
+        from smart_alerts import SmartAlertsEngine
+
+        engine = SmartAlertsEngine()
+
         while self.running:
             try:
                 with self.app.app_context():
-                    # Get all active alerts
-                    alerts = Alert.query.filter_by(enabled=True, triggered=False).all()
-                    
-                    if alerts:
-                        print(f"🔍 Checking {len(alerts)} active alerts...")
-                    
-                    # Group alerts by symbol for efficient fetching
-                    symbols = {}
-                    for alert in alerts:
-                        if alert.symbol not in symbols:
-                            symbols[alert.symbol] = []
-                        symbols[alert.symbol].append(alert)
-                    
-                    # Check each symbol
-                    for symbol, symbol_alerts in symbols.items():
+                    # Distinct users that currently have active, enabled alerts
+                    user_ids = [
+                        row[0] for row in db.session.query(Alert.user_id)
+                        .filter_by(status='active', enabled=True)
+                        .distinct().all()
+                    ]
+
+                    total_fired = 0
+                    for user_id in user_ids:
                         try:
-                            # Fetch current price
-                            stock_data = self.data_fetcher.fetch_stock_data(symbol, '1d')
-                            
-                            if stock_data is not None and not stock_data.empty:
-                                current_price = float(stock_data.iloc[-1]['Close'])
-                                
-                                # Check each alert for this symbol
-                                for alert in symbol_alerts:
-                                    triggered = False
-                                    
-                                    if alert.alert_type == 'above' and current_price >= float(alert.target_price):
-                                        triggered = True
-                                    elif alert.alert_type == 'below' and current_price <= float(alert.target_price):
-                                        triggered = True
-                                    
-                                    if triggered:
-                                        # Trigger alert
-                                        alert.triggered = True
-                                        alert.triggered_at = datetime.utcnow()
-                                        alert.current_price = current_price
-                                        
-                                        print(f"🚨 Alert triggered: {symbol} {alert.alert_type} ${alert.target_price} (current: ${current_price})")
-                                        
-                                        # Log to monitoring table
-                                        log = MonitoringLog(
-                                            symbol=symbol,
-                                            check_type='alert_triggered',
-                                            result={
-                                                'alert_id': alert.id,
-                                                'alert_type': alert.alert_type,
-                                                'target_price': float(alert.target_price),
-                                                'triggered_price': current_price,
-                                                'user_id': alert.user_id
-                                            }
-                                        )
-                                        db.session.add(log)
-                                
+                            # Flips status->'triggered' and commits inside the engine
+                            triggered = engine.check_all_alerts(user_id)
+                            for t in triggered:
+                                self._record_notification(db, Notification, user_id, t)
+                                total_fired += 1
+                            if triggered:
                                 db.session.commit()
-                        
                         except Exception as e:
-                            print(f"⚠️ Error checking {symbol}: {e}")
+                            print(f"⚠️ Error checking alerts for user {user_id}: {e}")
+                            db.session.rollback()
                             continue
-            
+
+                    if total_fired:
+                        print(f"🚨 {total_fired} alert(s) fired this cycle")
+
             except Exception as e:
                 print(f"⚠️ Error in monitoring loop: {e}")
-            
+
             # Wait before next check
             time.sleep(self.check_interval)
+
+    def _record_notification(self, db, Notification, user_id, trigger):
+        """Create a Notification row for a freshly-triggered alert, respecting a
+        per-user daily cap so a burst of triggers can't flood the feed.
+
+        Autoflush ensures notifications added earlier in this same cycle are
+        counted, so the cap holds even before the cycle commits.
+        """
+        today = datetime.utcnow().date()
+        day_start = datetime(today.year, today.month, today.day)
+        todays_count = Notification.query.filter(
+            Notification.user_id == user_id,
+            Notification.category == 'alert',
+            Notification.created_at >= day_start
+        ).count()
+
+        if todays_count >= MAX_ALERT_NOTIFS_PER_DAY:
+            return  # daily cap reached — skip to avoid flooding
+
+        symbol = trigger.get('symbol', '')
+        note = Notification(
+            user_id=user_id,
+            alert_id=trigger.get('id'),
+            category='alert',
+            symbol=symbol,
+            title=f"{symbol} alert triggered",
+            message=trigger.get('message'),
+            priority=trigger.get('priority', 'medium'),
+        )
+        db.session.add(note)
     
     def check_symbol(self, symbol):
         """

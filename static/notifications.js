@@ -6,6 +6,8 @@
 class NotificationCenter {
     constructor() {
         this.suggestions = [];
+        this.notifications = [];   // durable feed of fired alerts
+        this.unreadCount = 0;
         this.isOpen = false;
         this.refreshInterval = null;
         this.init();
@@ -14,17 +16,68 @@ class NotificationCenter {
     init() {
         // Create notification center UI
         this.createUI();
-        
-        // Load initial suggestions
+
+        // Load initial suggestions + fired-alert notifications
         this.loadSuggestions();
-        
+        this.loadNotifications();
+
         // Auto-refresh every 2 minutes
-        this.refreshInterval = setInterval(() => this.loadSuggestions(), 120000);
-        
+        this.refreshInterval = setInterval(() => {
+            this.loadSuggestions();
+            this.loadNotifications();
+        }, 120000);
+
         // Listen for custom events
         window.addEventListener('watchlistchange', () => {
             this.generateSuggestions();
         });
+    }
+
+    async loadNotifications() {
+        try {
+            const response = await fetch('/api/notifications?limit=20', {
+                headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                this.notifications = data.notifications || [];
+                this.unreadCount = data.unread_count || 0;
+                this.updateBadge();
+                if (this.isOpen) this.render();
+            }
+        } catch (e) {
+            console.error('Error loading notifications:', e);
+        }
+    }
+
+    async markRead(id) {
+        try {
+            await fetch(`/api/notifications/${id}/read`, {
+                method: 'PUT',
+                headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
+            });
+            const n = this.notifications.find(x => x.id === id);
+            if (n && !n.read) { n.read = true; this.unreadCount = Math.max(0, this.unreadCount - 1); }
+            this.updateBadge();
+            this.render();
+        } catch (e) {
+            console.error('Error marking notification read:', e);
+        }
+    }
+
+    async markAllRead() {
+        try {
+            await fetch('/api/notifications/read-all', {
+                method: 'PUT',
+                headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
+            });
+            this.notifications.forEach(n => n.read = true);
+            this.unreadCount = 0;
+            this.updateBadge();
+            this.render();
+        } catch (e) {
+            console.error('Error marking all read:', e);
+        }
     }
 
     createUI() {
@@ -37,7 +90,7 @@ class NotificationCenter {
         bellButton.className = 'btn btn-icon';
         bellButton.style.position = 'relative';
         bellButton.innerHTML = '🔔 <span id="notificationBadge" class="notification-badge" style="display: none;">0</span>';
-        bellButton.title = 'AI Alert Suggestions';
+        bellButton.title = 'Notifications & AI Alert Suggestions';
         bellButton.onclick = () => this.toggle();
         
         headerActions.insertBefore(bellButton, headerActions.firstChild);
@@ -50,7 +103,7 @@ class NotificationCenter {
         
         panel.innerHTML = `
             <div class="notification-header">
-                <h3>🤖 AI Alert Suggestions</h3>
+                <h3>🔔 Notifications</h3>
                 <div style="display: flex; gap: 10px;">
                     <button onclick="notificationCenter.generateSuggestions()" class="btn-icon" title="Refresh">🔄</button>
                     <button onclick="notificationCenter.close()" class="btn-icon">×</button>
@@ -85,7 +138,7 @@ class NotificationCenter {
                 this.suggestions = data.suggestions || [];
                 this.updateBadge();
                 if (this.isOpen) {
-                    this.renderSuggestions();
+                    this.render();
                 }
             }
         } catch (e) {
@@ -144,7 +197,61 @@ class NotificationCenter {
         this.isOpen = true;
         const panel = document.getElementById('notificationPanel');
         panel.style.display = 'block';
-        this.renderSuggestions();
+        this.render();
+    }
+
+    // Compose the panel: fired-alert notifications on top, AI suggestions below.
+    render() {
+        const body = document.getElementById('notificationBody');
+        if (!body) return;
+        const notifHtml = this._notificationsHtml();
+        const suggHtml = this._suggestionsHtml();
+        if (!notifHtml && !suggHtml) {
+            body.innerHTML = `
+                <div class="empty-state" style="padding: 40px 20px; text-align: center;">
+                    <div style="font-size: 3em; margin-bottom: 15px;">🔕</div>
+                    <div style="color: var(--text-secondary); margin-bottom: 15px;">No notifications yet</div>
+                    <button onclick="notificationCenter.generateSuggestions()" class="btn btn-primary">
+                        Generate Suggestions
+                    </button>
+                </div>
+            `;
+            return;
+        }
+        body.innerHTML = notifHtml + suggHtml;
+    }
+
+    _notificationsHtml() {
+        if (!this.notifications || this.notifications.length === 0) return '';
+        const rows = this.notifications.map(n => {
+            const when = n.created_at ? new Date(n.created_at).toLocaleString() : '';
+            const pr = (n.priority || 'medium');
+            const prColor = pr === 'critical' || pr === 'high' ? 'var(--danger)'
+                : pr === 'low' ? 'var(--info)' : 'var(--warning)';
+            const unreadDot = n.read ? '' :
+                `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${prColor};margin-right:6px;"></span>`;
+            const bg = n.read ? 'transparent' : 'rgba(245,158,11,0.08)';
+            return `
+                <div class="suggestion-item" style="background:${bg};" onclick="notificationCenter.markRead(${n.id})">
+                    <div class="suggestion-icon">🔔</div>
+                    <div class="suggestion-content">
+                        <div class="suggestion-message">${unreadDot}${n.title || (n.symbol + ' alert')}</div>
+                        ${n.message ? `<div class="suggestion-reason">${n.message}</div>` : ''}
+                        <div class="suggestion-reason" style="opacity:.6;">${when}</div>
+                    </div>
+                </div>`;
+        }).join('');
+        const unread = this.unreadCount > 0
+            ? `<button onclick="event.stopPropagation(); notificationCenter.markAllRead()" class="btn-icon" title="Mark all read" style="font-size:.8em;">Mark all read</button>`
+            : '';
+        return `
+            <div class="suggestion-group">
+                <div class="suggestion-group-header" style="display:flex;justify-content:space-between;align-items:center;color:var(--warning);">
+                    <span>🔔 Recent Alerts${this.unreadCount ? ` (${this.unreadCount} new)` : ''}</span>
+                    ${unread}
+                </div>
+                ${rows}
+            </div>`;
     }
 
     close() {
@@ -157,7 +264,7 @@ class NotificationCenter {
         const badge = document.getElementById('notificationBadge');
         if (!badge) return;
 
-        const count = this.suggestions.length;
+        const count = this.unreadCount + this.suggestions.length;
         if (count > 0) {
             badge.textContent = count > 99 ? '99+' : count;
             badge.style.display = 'inline-block';
@@ -166,36 +273,16 @@ class NotificationCenter {
         }
     }
 
-    renderSuggestions() {
-        const body = document.getElementById('notificationBody');
-        if (!body) return;
+    // Returns the AI-suggestions section as an HTML string (empty string if none).
+    _suggestionsHtml() {
+        if (!this.suggestions || this.suggestions.length === 0) return '';
 
-        if (this.suggestions.length === 0) {
-            body.innerHTML = `
-                <div class="empty-state" style="padding: 40px 20px; text-align: center;">
-                    <div style="font-size: 3em; margin-bottom: 15px;">🎯</div>
-                    <div style="color: var(--text-secondary); margin-bottom: 15px;">No AI suggestions yet</div>
-                    <button onclick="notificationCenter.generateSuggestions()" class="btn btn-primary">
-                        Generate Suggestions
-                    </button>
-                </div>
-            `;
-            return;
-        }
-
-        const groupedByPriority = {
-            3: [],  // High priority
-            2: [],  // Medium priority
-            1: []   // Low priority
-        };
-
+        const groupedByPriority = { 3: [], 2: [], 1: [] };
         this.suggestions.forEach(sugg => {
             groupedByPriority[sugg.priority]?.push(sugg);
         });
 
         let html = '';
-
-        // High priority first
         [3, 2, 1].forEach(priority => {
             const items = groupedByPriority[priority];
             if (items.length === 0) return;
@@ -206,7 +293,7 @@ class NotificationCenter {
             html += `
                 <div class="suggestion-group">
                     <div class="suggestion-group-header" style="color: ${priorityColor};">
-                        ${priorityLabel}
+                        🤖 AI Suggestions · ${priorityLabel}
                     </div>
             `;
 
@@ -217,7 +304,7 @@ class NotificationCenter {
             html += '</div>';
         });
 
-        body.innerHTML = html;
+        return html;
     }
 
     renderSuggestion(sugg) {
@@ -260,7 +347,7 @@ class NotificationCenter {
                 // Remove from local list
                 this.suggestions = this.suggestions.filter(s => s.id !== suggestionId);
                 this.updateBadge();
-                this.renderSuggestions();
+                this.render();
                 
                 this.showToast('✓ Alert created successfully!', 'success');
                 
@@ -290,7 +377,7 @@ class NotificationCenter {
                 // Remove from local list
                 this.suggestions = this.suggestions.filter(s => s.id !== suggestionId);
                 this.updateBadge();
-                this.renderSuggestions();
+                this.render();
                 
                 this.showToast('Suggestion dismissed', 'info');
             } else {
