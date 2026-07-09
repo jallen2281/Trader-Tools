@@ -276,24 +276,29 @@ class AlertSuggestionEngine:
                     continue
 
                 # --- Take-profit (sell into strength) ---
-                tp_price = round(max(avg_cost * 1.25, current_price * 1.05), 2)
-                tp_gain_pct = (tp_price - avg_cost) / avg_cost * 100
-                already_up = pnl_pct >= 20
-                suggestions.append({
-                    'symbol': symbol,
-                    'type': 'take_profit',
-                    'priority': 3 if already_up else 2,
-                    'message': f"Take-profit on {symbol} at ${tp_price:.2f}",
-                    'trigger_price': tp_price,
-                    'direction': 'above',
-                    'reason': (f"Locks in ~{tp_gain_pct:.0f}% vs your ${avg_cost:.2f} cost"
-                               + (f" — already up {pnl_pct:.0f}%" if already_up else "")),
-                    'icon': '🎯'
-                })
+                # Skip deep losers: there's no realistic near-term profit to take,
+                # and a cost-anchored target would be absurdly far above price.
+                if pnl_pct > -25:
+                    tp_price = round(max(avg_cost * 1.25, current_price * 1.05), 2)
+                    tp_gain_pct = (tp_price - avg_cost) / avg_cost * 100
+                    already_up = pnl_pct >= 20
+                    suggestions.append({
+                        'symbol': symbol,
+                        'type': 'take_profit',
+                        'priority': 3 if already_up else 2,
+                        'message': f"Take-profit on {symbol} at ${tp_price:.2f}",
+                        'trigger_price': tp_price,
+                        'direction': 'above',
+                        'reason': (f"Locks in ~{tp_gain_pct:.0f}% vs your ${avg_cost:.2f} cost"
+                                   + (f" — already up {pnl_pct:.0f}%" if already_up else "")),
+                        'icon': '🎯'
+                    })
 
                 # --- Stop-loss (protect capital), always below current price ---
+                # Skip positions already impaired beyond ~50%: little capital left
+                # to protect, so a stop adds noise rather than value.
                 sl_price = round(current_price * 0.92, 2)
-                if 0 < sl_price < current_price:
+                if pnl_pct > -50 and 0 < sl_price < current_price:
                     sl_vs_cost = (sl_price - avg_cost) / avg_cost * 100
                     already_down = pnl_pct <= -5
                     suggestions.append({
