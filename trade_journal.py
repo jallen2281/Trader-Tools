@@ -109,41 +109,42 @@ class TradeJournal:
         try:
             since = datetime.now() - timedelta(days=days)
             
-            # Get all transactions
-            transactions = Transaction.query.filter(
-                Transaction.user_id == user_id,
-                Transaction.transaction_date >= since
+            # Load ALL of the user's transactions (ordered) so a sell is matched to its
+            # real cost basis even when the matching buy predates the analysis window.
+            # A realized trade is then counted only if the SELL itself falls in the window.
+            all_transactions = Transaction.query.filter(
+                Transaction.user_id == user_id
             ).order_by(Transaction.transaction_date.asc()).all()
-            
-            if not transactions:
+
+            if not all_transactions:
                 return {'error': 'No transactions found'}
-            
+
             # Track positions to calculate realized P&L
-            positions = {}  # symbol -> {quantity, avg_cost}
+            positions = {}  # symbol -> {quantity, total_cost}
             realized_gains = []
-            
-            for txn in transactions:
+            windowed_count = 0
+
+            for txn in all_transactions:
                 symbol = txn.symbol
-                
+                in_window = txn.transaction_date >= since
+                if in_window:
+                    windowed_count += 1
+
                 if txn.transaction_type == 'buy':
                     if symbol not in positions:
                         positions[symbol] = {'quantity': 0, 'total_cost': 0}
-                    
                     positions[symbol]['quantity'] += float(txn.quantity)
                     positions[symbol]['total_cost'] += float(txn.quantity * txn.price)
-                    
+
                 elif txn.transaction_type == 'sell':
                     if symbol in positions and positions[symbol]['quantity'] > 0:
-                        # Calculate average cost
+                        # Average cost from accumulated buys (any date)
                         avg_cost = positions[symbol]['total_cost'] / positions[symbol]['quantity']
-                        
-                        # Realized gain/loss
                         sell_proceeds = float(txn.quantity * txn.price)
                         cost_basis = float(txn.quantity) * avg_cost
                         gain = sell_proceeds - cost_basis
                         gain_pct = (gain / cost_basis * 100) if cost_basis > 0 else 0
-                        
-                        # Hold time calculation
+
                         hold_time = None
                         buy_txn = Transaction.query.filter(
                             Transaction.user_id == user_id,
@@ -151,27 +152,28 @@ class TradeJournal:
                             Transaction.transaction_type == 'buy',
                             Transaction.transaction_date < txn.transaction_date
                         ).order_by(Transaction.transaction_date.desc()).first()
-                        
                         if buy_txn:
                             hold_time = (txn.transaction_date - buy_txn.transaction_date).days
-                        
-                        realized_gains.append({
-                            'symbol': symbol,
-                            'sell_date': txn.transaction_date.isoformat(),
-                            'quantity': float(txn.quantity),
-                            'sell_price': float(txn.price),
-                            'avg_cost': round(avg_cost, 2),
-                            'gain': round(gain, 2),
-                            'gain_pct': round(gain_pct, 2),
-                            'hold_days': hold_time
-                        })
-                        
-                        # Update position
+
+                        # Reduce the position
                         positions[symbol]['quantity'] -= float(txn.quantity)
                         if positions[symbol]['quantity'] > 0:
                             positions[symbol]['total_cost'] -= cost_basis
                         else:
                             positions[symbol] = {'quantity': 0, 'total_cost': 0}
+
+                        # Count as a realized (completed) trade only if the sell is in-window
+                        if in_window:
+                            realized_gains.append({
+                                'symbol': symbol,
+                                'sell_date': txn.transaction_date.isoformat(),
+                                'quantity': float(txn.quantity),
+                                'sell_price': float(txn.price),
+                                'avg_cost': round(avg_cost, 2),
+                                'gain': round(gain, 2),
+                                'gain_pct': round(gain_pct, 2),
+                                'hold_days': hold_time
+                            })
             
             # Calculate unrealized P&L for open positions
             unrealized_total = 0
@@ -214,7 +216,7 @@ class TradeJournal:
                         'best_trade': None,
                         'worst_trade': None,
                         'total_trades': 0,
-                        'total_transactions': len(transactions)
+                        'total_transactions': windowed_count
                     }
                 }
             
