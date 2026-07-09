@@ -213,6 +213,8 @@ def init_database(app):
             logger.info("✓ Added user profile columns")
         inspector = inspect(db.engine)
         _add_column_if_missing(db, inspector, 'users', 'alert_check_interval', 'INTEGER', '900')
+        inspector = inspect(db.engine)
+        _add_column_if_missing(db, inspector, 'users', 'watchlist_refresh_interval', 'INTEGER', '60')
         
         logger.info("✓ Database tables created successfully")
         

@@ -151,7 +151,7 @@ class NotificationCenter {
             <div class="notification-header">
                 <h3>🔔 Notifications</h3>
                 <div style="display: flex; gap: 10px;">
-                    <button onclick="notificationCenter.generateSuggestions()" class="btn-icon" title="Refresh">🔄</button>
+                    <button onclick="notificationCenter.loadNotifications(); notificationCenter.loadSuggestions();" class="btn-icon" title="Refresh feed">🔄</button>
                     <button onclick="notificationCenter.close()" class="btn-icon">×</button>
                 </div>
             </div>
@@ -326,38 +326,38 @@ class NotificationCenter {
         }
     }
 
-    // Returns the AI-suggestions section as an HTML string (empty string if none).
+    // Returns the AI-suggestions section. Always shows a header with a visible
+    // "Generate" button so the AI generator is discoverable even with no
+    // suggestions yet (it used to hide behind the header refresh icon).
     _suggestionsHtml() {
-        if (!this.suggestions || this.suggestions.length === 0) return '';
+        const header = `
+            <div class="suggestion-group-header" style="display:flex;justify-content:space-between;align-items:center;color:var(--info);">
+                <span>🤖 AI Suggestions</span>
+                <button onclick="notificationCenter.generateSuggestions()" class="btn-icon"
+                        title="Scan watchlist & portfolio for alert ideas" style="font-size:.8em;">✨ Generate</button>
+            </div>`;
 
-        const groupedByPriority = { 3: [], 2: [], 1: [] };
-        this.suggestions.forEach(sugg => {
-            groupedByPriority[sugg.priority]?.push(sugg);
-        });
-
-        let html = '';
-        [3, 2, 1].forEach(priority => {
-            const items = groupedByPriority[priority];
-            if (items.length === 0) return;
-
-            const priorityLabel = priority === 3 ? 'High Priority' : priority === 2 ? 'Medium Priority' : 'Low Priority';
-            const priorityColor = priority === 3 ? 'var(--danger)' : priority === 2 ? 'var(--warning)' : 'var(--info)';
-
-            html += `
-                <div class="suggestion-group">
-                    <div class="suggestion-group-header" style="color: ${priorityColor};">
-                        🤖 AI Suggestions · ${priorityLabel}
-                    </div>
-            `;
-
-            items.forEach(sugg => {
-                html += this.renderSuggestion(sugg);
+        let items = '';
+        if (this.suggestions && this.suggestions.length) {
+            const groupedByPriority = { 3: [], 2: [], 1: [] };
+            this.suggestions.forEach(sugg => {
+                groupedByPriority[sugg.priority]?.push(sugg);
             });
+            [3, 2, 1].forEach(priority => {
+                const group = groupedByPriority[priority];
+                if (group.length === 0) return;
+                const priorityLabel = priority === 3 ? 'High Priority' : priority === 2 ? 'Medium Priority' : 'Low Priority';
+                const priorityColor = priority === 3 ? 'var(--danger)' : priority === 2 ? 'var(--warning)' : 'var(--info)';
+                items += `<div class="suggestion-subheader" style="font-size:.75em;opacity:.6;padding:4px 4px 0;color:${priorityColor};">${priorityLabel}</div>`;
+                group.forEach(sugg => { items += this.renderSuggestion(sugg); });
+            });
+        } else {
+            items = `<div style="padding:12px 4px;color:var(--text-secondary);font-size:.85em;">
+                No AI suggestions right now. Click <strong>✨ Generate</strong> to scan your watchlist & portfolio for alert ideas.
+            </div>`;
+        }
 
-            html += '</div>';
-        });
-
-        return html;
+        return `<div class="suggestion-group">${header}${items}</div>`;
     }
 
     renderSuggestion(sugg) {

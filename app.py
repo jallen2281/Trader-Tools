@@ -2239,55 +2239,102 @@ def monitoring_status():
         return jsonify({'error': str(e)}), 500
 
 
-# Selectable alert-check intervals. Faster options are gated by tier/role via
-# TIER_MIN_INTERVAL so future member tiers can unlock them without loop changes.
-ALERT_INTERVAL_OPTIONS = [
-    {'seconds': 60,    'label': '1 minute'},
-    {'seconds': 300,   'label': '5 minutes'},
-    {'seconds': 900,   'label': '15 minutes'},
-    {'seconds': 1800,  'label': '30 minutes'},
-    {'seconds': 3600,  'label': '1 hour'},
-    {'seconds': 21600, 'label': '6 hours'},
-]
-DEFAULT_ALERT_INTERVAL = 900
-# Minimum interval (fastest allowed) per role. Everyone can go slower; only
-# higher tiers can go faster than the base 'user' floor.
-TIER_MIN_INTERVAL = {
-    'admin': 60,
-    'moderator': 60,
-    'premium': 300,
-    'user': 900,
+# Selectable intervals for alerts and watchlist refresh. Faster options are
+# gated per role via each config's 'floors', so future member tiers can unlock
+# them by editing one dict — no loop/UI changes needed.
+INTERVAL_CONFIG = {
+    'alerts': {
+        'column': 'alert_check_interval',
+        'default': 900,
+        'options': [
+            {'seconds': 60,    'label': '1 minute'},
+            {'seconds': 300,   'label': '5 minutes'},
+            {'seconds': 900,   'label': '15 minutes'},
+            {'seconds': 1800,  'label': '30 minutes'},
+            {'seconds': 3600,  'label': '1 hour'},
+            {'seconds': 21600, 'label': '6 hours'},
+        ],
+        'floors': {'admin': 60, 'moderator': 60, 'premium': 300, 'user': 900},
+        'floor_default': 900,
+    },
+    'watchlist': {
+        'column': 'watchlist_refresh_interval',
+        'default': 60,
+        'options': [
+            {'seconds': 15,  'label': '15 seconds'},
+            {'seconds': 30,  'label': '30 seconds'},
+            {'seconds': 60,  'label': '1 minute'},
+            {'seconds': 120, 'label': '2 minutes'},
+            {'seconds': 300, 'label': '5 minutes'},
+        ],
+        'floors': {'admin': 15, 'moderator': 15, 'premium': 30, 'user': 60},
+        'floor_default': 60,
+    },
 }
 
 
-def _tier_min_interval(role):
-    return TIER_MIN_INTERVAL.get((role or 'user'), 900)
+def _interval_floor(cfg, role):
+    return cfg['floors'].get((role or 'user'), cfg['floor_default'])
+
+
+def _get_interval_payload(kind):
+    """Shared GET handler: current value, tier floor, and locked-flagged options."""
+    cfg = INTERVAL_CONFIG[kind]
+    user_id = _get_current_user_id()
+    if not user_id:
+        return jsonify({'error': 'Authentication required'}), 401
+    user = User.query.get(user_id)
+    role = user.role if user else 'user'
+    floor = _interval_floor(cfg, role)
+    current = getattr(user, cfg['column'], None) or cfg['default']
+    options = [{**opt, 'locked': opt['seconds'] < floor} for opt in cfg['options']]
+    return jsonify({
+        'interval': current,
+        'min_interval': floor,
+        'default': cfg['default'],
+        'role': role,
+        'options': options
+    })
+
+
+def _set_interval(kind):
+    """Shared PUT handler: validate against options + tier floor, then persist."""
+    cfg = INTERVAL_CONFIG[kind]
+    user_id = _get_current_user_id()
+    if not user_id:
+        return jsonify({'error': 'Authentication required'}), 401
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json() or {}
+    try:
+        interval = int(data.get('interval'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'interval (seconds) is required'}), 400
+
+    allowed = {o['seconds'] for o in cfg['options']}
+    if interval not in allowed:
+        return jsonify({'error': 'Invalid interval', 'options': sorted(allowed)}), 400
+
+    floor = _interval_floor(cfg, user.role)
+    if interval < floor:
+        return jsonify({
+            'error': f'Your tier ({user.role or "user"}) allows a minimum of {floor}s. Upgrade for faster updates.',
+            'min_interval': floor
+        }), 403
+
+    setattr(user, cfg['column'], interval)
+    db.session.commit()
+    return jsonify({'message': 'Interval updated', 'interval': interval})
 
 
 @app.route('/api/monitoring/interval', methods=['GET'])
 @require_api_auth
 def get_alert_interval():
-    """Return the user's alert-check interval, their tier floor, and the option
-    list (each flagged locked if faster than their tier allows)."""
+    """Alert-check interval + tier floor + option list."""
     try:
-        user_id = _get_current_user_id()
-        if not user_id:
-            return jsonify({'error': 'Authentication required'}), 401
-        user = User.query.get(user_id)
-        role = user.role if user else 'user'
-        floor = _tier_min_interval(role)
-        current = (user.alert_check_interval if user and user.alert_check_interval else DEFAULT_ALERT_INTERVAL)
-        options = [
-            {**opt, 'locked': opt['seconds'] < floor}
-            for opt in ALERT_INTERVAL_OPTIONS
-        ]
-        return jsonify({
-            'interval': current,
-            'min_interval': floor,
-            'default': DEFAULT_ALERT_INTERVAL,
-            'role': role,
-            'options': options
-        })
+        return _get_interval_payload('alerts')
     except Exception as e:
         logger.error(f"Error getting alert interval: {e}")
         return jsonify({'error': str(e)}), 500
@@ -2296,39 +2343,35 @@ def get_alert_interval():
 @app.route('/api/monitoring/interval', methods=['PUT'])
 @require_api_auth
 def set_alert_interval():
-    """Set the user's alert-check interval. Must be one of the offered options
-    and no faster than the user's tier floor."""
+    """Set the alert-check interval (validated against options + tier floor)."""
     try:
-        user_id = _get_current_user_id()
-        if not user_id:
-            return jsonify({'error': 'Authentication required'}), 401
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-
-        data = request.get_json() or {}
-        try:
-            interval = int(data.get('interval'))
-        except (TypeError, ValueError):
-            return jsonify({'error': 'interval (seconds) is required'}), 400
-
-        allowed = {o['seconds'] for o in ALERT_INTERVAL_OPTIONS}
-        if interval not in allowed:
-            return jsonify({'error': 'Invalid interval', 'options': sorted(allowed)}), 400
-
-        floor = _tier_min_interval(user.role)
-        if interval < floor:
-            return jsonify({
-                'error': f'Your tier ({user.role or "user"}) allows a minimum of {floor}s. Upgrade for faster checks.',
-                'min_interval': floor
-            }), 403
-
-        user.alert_check_interval = interval
-        db.session.commit()
-        return jsonify({'message': 'Interval updated', 'interval': interval})
+        return _set_interval('alerts')
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error setting alert interval: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/monitoring/watchlist-interval', methods=['GET'])
+@require_api_auth
+def get_watchlist_interval():
+    """Watchlist refresh interval + tier floor + option list."""
+    try:
+        return _get_interval_payload('watchlist')
+    except Exception as e:
+        logger.error(f"Error getting watchlist interval: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/monitoring/watchlist-interval', methods=['PUT'])
+@require_api_auth
+def set_watchlist_interval():
+    """Set the watchlist refresh interval (validated against options + tier floor)."""
+    try:
+        return _set_interval('watchlist')
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error setting watchlist interval: {e}")
         return jsonify({'error': str(e)}), 500
 
 
