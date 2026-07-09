@@ -248,7 +248,7 @@ class TradeJournal:
                     'best_trade': best_trade,
                     'worst_trade': worst_trade,
                     'total_trades': len(realized_gains),
-                    'total_transactions': len(transactions)
+                    'total_transactions': windowed_count
                 }
             }
             
