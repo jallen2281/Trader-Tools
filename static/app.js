@@ -538,9 +538,17 @@ async function renderAlertsList() {
 
 async function deleteAlert(alertId) {
     try {
-        await fetch(`/api/alerts/${alertId}`, { method: 'DELETE' });
+        const res = await fetch(`/api/alerts/${alertId}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            console.error('Delete alert failed:', res.status, err);
+            alert(err.error || `Failed to delete alert (HTTP ${res.status})`);
+            return;
+        }
     } catch (e) {
         console.error('Error deleting alert:', e);
+        alert('Failed to delete alert');
+        return;
     }
     renderAlertsList();
     fetchSidebarAlerts();

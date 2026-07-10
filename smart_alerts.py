@@ -304,14 +304,26 @@ class SmartAlertsEngine:
         """Delete alert"""
         try:
             alert = Alert.query.get(alert_id)
-            
+
             if alert:
+                # Detach notifications that reference this alert so the FK
+                # constraint doesn't block deletion. We keep the notification
+                # rows (fired-alert history) and just null their alert_id.
+                # Without this, triggered alerts — which always have a
+                # notification — could never be deleted.
+                try:
+                    from models import Notification
+                    Notification.query.filter_by(alert_id=alert_id).update(
+                        {'alert_id': None}, synchronize_session=False)
+                except Exception as detach_err:
+                    logger.warning(f"Could not detach notifications for alert {alert_id}: {detach_err}")
+
                 db.session.delete(alert)
                 db.session.commit()
                 return True
-            
+
             return False
-            
+
         except Exception as e:
             logger.error(f"Error deleting alert: {str(e)}")
             db.session.rollback()

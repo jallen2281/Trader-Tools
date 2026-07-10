@@ -572,7 +572,7 @@ class Notification(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    alert_id = db.Column(db.Integer, db.ForeignKey('alerts.id'), nullable=True)  # source alert, if any
+    alert_id = db.Column(db.Integer, db.ForeignKey('alerts.id', ondelete='SET NULL'), nullable=True)  # source alert, if any
     category = db.Column(db.String(20), default='alert', index=True)  # 'alert', 'system'
     symbol = db.Column(db.String(10), index=True)
     title = db.Column(db.String(200))
