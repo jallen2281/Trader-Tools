@@ -195,6 +195,10 @@ class Portfolio(db.Model):
     # a deliberate lottery bet or an IPO-restricted hold.
     intent = db.Column(db.String(20))       # 'core' | 'lottery' | 'signal' | None
     ipo_lock_until = db.Column(db.Date)     # if set and in the future, can't be sold yet
+    # Per-position take-profit / stop-loss targets, as % of average cost. When
+    # set, they override the engine's default TP/SL rules for this holding.
+    take_profit_pct = db.Column(db.Numeric(6, 2, asdecimal=False))   # e.g. 50 -> +50% from cost
+    stop_loss_pct = db.Column(db.Numeric(6, 2, asdecimal=False))     # e.g. 10 -> -10% from cost
 
     __table_args__ = (
         db.UniqueConstraint('user_id', 'symbol', 'asset_type', 'account_id', name='unique_user_position'),
@@ -226,7 +230,9 @@ class Portfolio(db.Model):
             'account_id': self.account_id,
             'account_name': self.account.name if self.account else None,
             'intent': self.intent,
-            'ipo_lock_until': self.ipo_lock_until.isoformat() if self.ipo_lock_until else None
+            'ipo_lock_until': self.ipo_lock_until.isoformat() if self.ipo_lock_until else None,
+            'take_profit_pct': float(self.take_profit_pct) if self.take_profit_pct is not None else None,
+            'stop_loss_pct': float(self.stop_loss_pct) if self.stop_loss_pct is not None else None
         }
 
 class Transaction(db.Model):

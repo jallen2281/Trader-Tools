@@ -275,10 +275,28 @@ class AlertSuggestionEngine:
                 if not symbol or current_price <= 0 or avg_cost <= 0:
                     continue
 
+                # Per-position overrides (% of average cost), if the user set them.
+                tp_custom = holding.get('take_profit_pct')
+                sl_custom = holding.get('stop_loss_pct')
+
                 # --- Take-profit (sell into strength) ---
-                # Skip deep losers: there's no realistic near-term profit to take,
-                # and a cost-anchored target would be absurdly far above price.
-                if pnl_pct > -25:
+                if tp_custom:
+                    # Honor the user's explicit target regardless of current P&L.
+                    tp_pct = float(tp_custom)
+                    tp_price = round(avg_cost * (1 + tp_pct / 100), 2)
+                    suggestions.append({
+                        'symbol': symbol,
+                        'type': 'take_profit',
+                        'priority': 3,
+                        'message': f"Take-profit on {symbol} at ${tp_price:.2f}",
+                        'trigger_price': tp_price,
+                        'direction': 'above',
+                        'reason': f"Your +{tp_pct:.0f}% target vs ${avg_cost:.2f} cost",
+                        'icon': '🎯'
+                    })
+                elif pnl_pct > -25:
+                    # Default rule; skip deep losers where a cost-anchored target
+                    # would sit absurdly far above price.
                     tp_price = round(max(avg_cost * 1.25, current_price * 1.05), 2)
                     tp_gain_pct = (tp_price - avg_cost) / avg_cost * 100
                     already_up = pnl_pct >= 20
@@ -294,25 +312,41 @@ class AlertSuggestionEngine:
                         'icon': '🎯'
                     })
 
-                # --- Stop-loss (protect capital), always below current price ---
-                # Skip positions already impaired beyond ~50%: little capital left
-                # to protect, so a stop adds noise rather than value.
-                sl_price = round(current_price * 0.92, 2)
-                if pnl_pct > -50 and 0 < sl_price < current_price:
-                    sl_vs_cost = (sl_price - avg_cost) / avg_cost * 100
-                    already_down = pnl_pct <= -5
-                    suggestions.append({
-                        'symbol': symbol,
-                        'type': 'stop_loss',
-                        'priority': 3 if already_down else 2,
-                        'message': f"Stop-loss on {symbol} at ${sl_price:.2f}",
-                        'trigger_price': sl_price,
-                        'direction': 'below',
-                        'reason': (f"Caps a ~8% drop from ${current_price:.2f} "
-                                   f"({sl_vs_cost:+.0f}% vs your ${avg_cost:.2f} cost)"
-                                   + (f" — position down {abs(pnl_pct):.0f}%" if already_down else "")),
-                        'icon': '🛑'
-                    })
+                # --- Stop-loss (protect capital) ---
+                if sl_custom:
+                    # Honor the user's explicit stop (relative to cost).
+                    sl_pct = float(sl_custom)
+                    sl_price = round(avg_cost * (1 - sl_pct / 100), 2)
+                    if sl_price > 0:
+                        suggestions.append({
+                            'symbol': symbol,
+                            'type': 'stop_loss',
+                            'priority': 3,
+                            'message': f"Stop-loss on {symbol} at ${sl_price:.2f}",
+                            'trigger_price': sl_price,
+                            'direction': 'below',
+                            'reason': f"Your -{sl_pct:.0f}% stop vs ${avg_cost:.2f} cost",
+                            'icon': '🛑'
+                        })
+                else:
+                    # Default 8%-below-current protective stop; skip positions
+                    # already impaired beyond ~50% (little capital left to protect).
+                    sl_price = round(current_price * 0.92, 2)
+                    if pnl_pct > -50 and 0 < sl_price < current_price:
+                        sl_vs_cost = (sl_price - avg_cost) / avg_cost * 100
+                        already_down = pnl_pct <= -5
+                        suggestions.append({
+                            'symbol': symbol,
+                            'type': 'stop_loss',
+                            'priority': 3 if already_down else 2,
+                            'message': f"Stop-loss on {symbol} at ${sl_price:.2f}",
+                            'trigger_price': sl_price,
+                            'direction': 'below',
+                            'reason': (f"Caps a ~8% drop from ${current_price:.2f} "
+                                       f"({sl_vs_cost:+.0f}% vs your ${avg_cost:.2f} cost)"
+                                       + (f" — position down {abs(pnl_pct):.0f}%" if already_down else "")),
+                            'icon': '🛑'
+                        })
 
             except Exception as e:
                 logger.error(f"Portfolio alert check error for {holding.get('symbol','?')}: {e}")

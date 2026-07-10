@@ -2928,6 +2928,24 @@ def update_holding(holding_id):
             else:
                 holding.ipo_lock_until = None
 
+        # Per-position take-profit / stop-loss targets (% of average cost).
+        # Send null/empty to clear. TP must be positive; SL between 0 and 100.
+        for field, label in (('take_profit_pct', 'take_profit_pct'), ('stop_loss_pct', 'stop_loss_pct')):
+            if field in data:
+                raw = data[field]
+                if raw in (None, ''):
+                    setattr(holding, field, None)
+                else:
+                    try:
+                        pct = float(raw)
+                    except (TypeError, ValueError):
+                        return jsonify({'error': f'{label} must be a number'}), 400
+                    if pct <= 0:
+                        return jsonify({'error': f'{label} must be greater than 0'}), 400
+                    if field == 'stop_loss_pct' and pct >= 100:
+                        return jsonify({'error': 'stop_loss_pct must be less than 100'}), 400
+                    setattr(holding, field, pct)
+
         db.session.commit()
 
         logger.info(f"Updated holding {holding.symbol} (ID: {holding_id}) for user {user_id}")

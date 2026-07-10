@@ -142,6 +142,10 @@ def init_database(app):
         inspector = inspect(db.engine)
         if _add_column_if_missing(db, inspector, 'portfolio', 'ipo_lock_until', 'DATE'):
             logger.info("✓ Added intent/ipo_lock_until to portfolio table")
+        inspector = inspect(db.engine)
+        _add_column_if_missing(db, inspector, 'portfolio', 'take_profit_pct', 'NUMERIC(6,2)')
+        inspector = inspect(db.engine)
+        _add_column_if_missing(db, inspector, 'portfolio', 'stop_loss_pct', 'NUMERIC(6,2)')
         
         # Re-inspect after potential schema change
         inspector = inspect(db.engine)

@@ -208,7 +208,9 @@ class PortfolioAnalyzer:
                 'recommendation': recommendation,
                 'phase3': phase3_analysis,
                 'account_id': getattr(holding, 'account_id', None),
-                'account_name': holding.account.name if getattr(holding, 'account_id', None) and hasattr(holding, 'account') and holding.account else None
+                'account_name': holding.account.name if getattr(holding, 'account_id', None) and hasattr(holding, 'account') and holding.account else None,
+                'take_profit_pct': float(holding.take_profit_pct) if getattr(holding, 'take_profit_pct', None) is not None else None,
+                'stop_loss_pct': float(holding.stop_loss_pct) if getattr(holding, 'stop_loss_pct', None) is not None else None
             }
             
             # Add stock-specific data

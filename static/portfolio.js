@@ -335,7 +335,33 @@ async function openHoldingModal(holdingId, type = 'stock') {
                     <button onclick="changeHoldingAccount(${holdingId}, '${type}')" class="btn btn-primary" style="padding: 8px 16px; white-space: nowrap;">Move</button>
                 </div>
             </div>
-            
+
+            <div style="margin-bottom: 20px; padding: 15px; background: var(--light); border-radius: 8px;">
+                <h3 style="margin-bottom: 6px;">🎯 Take-Profit / Stop-Loss Targets</h3>
+                <p style="font-size: 0.82em; opacity: 0.7; margin: 0 0 10px;">
+                    % of your $${data.cost_basis.toFixed(2)} cost basis. These override the default
+                    suggestions and drive the take-profit / stop-loss alert ideas.
+                </p>
+                <div style="display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;">
+                    <label style="flex: 1; min-width: 120px; font-size: 0.85em;">
+                        Take-profit (+%)
+                        <input type="number" id="holdingTpPct" step="1" min="0" placeholder="e.g. 50"
+                            value="${data.take_profit_pct != null ? data.take_profit_pct : ''}"
+                            oninput="updateTargetsPreview(${data.cost_basis})"
+                            style="width: 100%; padding: 8px; margin-top: 4px; border-radius: 6px; border: 1px solid var(--border-color, #ccc); background: var(--card-bg, #fff); color: var(--text-color, #333);">
+                    </label>
+                    <label style="flex: 1; min-width: 120px; font-size: 0.85em;">
+                        Stop-loss (−%)
+                        <input type="number" id="holdingSlPct" step="1" min="0" max="99" placeholder="e.g. 10"
+                            value="${data.stop_loss_pct != null ? data.stop_loss_pct : ''}"
+                            oninput="updateTargetsPreview(${data.cost_basis})"
+                            style="width: 100%; padding: 8px; margin-top: 4px; border-radius: 6px; border: 1px solid var(--border-color, #ccc); background: var(--card-bg, #fff); color: var(--text-color, #333);">
+                    </label>
+                    <button onclick="saveHoldingTargets(${holdingId}, '${type}')" class="btn btn-primary" style="padding: 8px 16px; white-space: nowrap;">Save</button>
+                </div>
+                <div id="holdingTargetsPreview" style="font-size: 0.82em; opacity: 0.8; margin-top: 8px;"></div>
+            </div>
+
             <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button onclick="openSellPositionModal(${holdingId}, '${type}')" class="btn btn-primary" style="flex: 1;">💰 Sell/Edit Position</button>
                 <button onclick="deletePosition(${holdingId}, '${type}')" class="btn btn-danger">🗑️ Delete</button>
@@ -373,7 +399,8 @@ async function openHoldingModal(holdingId, type = 'stock') {
         `;
         
         document.getElementById('holdingModal').classList.add('active');
-        
+        updateTargetsPreview(data.cost_basis);
+
     } catch (error) {
         console.error('Error loading holding details:', error);
         alert('Could not load holding details');
@@ -382,6 +409,47 @@ async function openHoldingModal(holdingId, type = 'stock') {
 
 // Make function globally accessible
 window.openHoldingModal = openHoldingModal;
+
+// Show the price levels the entered TP/SL percentages translate to.
+function updateTargetsPreview(costBasis) {
+    const preview = document.getElementById('holdingTargetsPreview');
+    if (!preview) return;
+    const tp = parseFloat(document.getElementById('holdingTpPct')?.value);
+    const sl = parseFloat(document.getElementById('holdingSlPct')?.value);
+    const parts = [];
+    if (!isNaN(tp) && tp > 0) parts.push(`🎯 Take-profit at <strong>$${(costBasis * (1 + tp / 100)).toFixed(2)}</strong>`);
+    if (!isNaN(sl) && sl > 0) parts.push(`🛑 Stop-loss at <strong>$${(costBasis * (1 - sl / 100)).toFixed(2)}</strong>`);
+    preview.innerHTML = parts.join(' &nbsp;·&nbsp; ') || 'Leave blank to use the default suggestion rules.';
+}
+window.updateTargetsPreview = updateTargetsPreview;
+
+async function saveHoldingTargets(holdingId, type) {
+    const tpEl = document.getElementById('holdingTpPct');
+    const slEl = document.getElementById('holdingSlPct');
+    // Empty string clears the target; otherwise send the number.
+    const tpVal = tpEl.value.trim() === '' ? null : parseFloat(tpEl.value);
+    const slVal = slEl.value.trim() === '' ? null : parseFloat(slEl.value);
+
+    if (tpVal !== null && (isNaN(tpVal) || tpVal <= 0)) { showToast('Take-profit % must be greater than 0', 'error'); return; }
+    if (slVal !== null && (isNaN(slVal) || slVal <= 0 || slVal >= 100)) { showToast('Stop-loss % must be between 0 and 100', 'error'); return; }
+
+    try {
+        const response = await fetch(`/api/portfolio/holding/${holdingId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ take_profit_pct: tpVal, stop_loss_pct: slVal })
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to save targets');
+        }
+        showToast('Take-profit / stop-loss saved', 'success');
+    } catch (error) {
+        console.error('Error saving targets:', error);
+        showToast(error.message, 'error');
+    }
+}
+window.saveHoldingTargets = saveHoldingTargets;
 
 async function changeHoldingAccount(holdingId, type) {
     const select = document.getElementById('holdingAccountSelect');
