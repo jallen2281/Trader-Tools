@@ -231,6 +231,9 @@ class TradeJournal {
         const unrealizedClass = (metrics.unrealized_pnl || 0) >= 0 ? 'positive' : 'negative';
         const winRateClass = metrics.win_rate >= 60 ? 'good' : metrics.win_rate >= 40 ? 'moderate' : 'poor';
 
+        // Format a P&L value with an honest sign (never render a loss as +).
+        const fmtSigned = (v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}`;
+
         container.innerHTML = `
             <h3>📊 Performance Summary</h3>
             <div class="metrics-grid">
@@ -291,26 +294,33 @@ class TradeJournal {
                 </div>
             ` : ''}
 
-            ${metrics.best_trade ? `
+            ${metrics.best_trade ? (() => {
+                const bt = metrics.best_trade, wt = metrics.worst_trade;
+                const btWin = bt.gain >= 0, wtWin = wt.gain >= 0;
+                // When there are no winners, the "best" trade is really the
+                // smallest loss — say so, and colour it by its true sign.
+                const btLabel = btWin ? 'Best Trade' : 'Best Trade (smallest loss)';
+                const wtLabel = wtWin ? 'Worst Trade (smallest gain)' : 'Worst Trade';
+                return `
                 <div class="best-worst-section">
-                    <div class="trade-highlight best">
-                        <span class="icon">🏆</span>
+                    <div class="trade-highlight ${btWin ? 'best' : 'worst'}">
+                        <span class="icon">${btWin ? '🏆' : '📉'}</span>
                         <div>
-                            <strong>Best Trade:</strong> ${metrics.best_trade.symbol} 
-                            <span class="gain">+$${metrics.best_trade.gain.toFixed(2)} 
-                            (${metrics.best_trade.gain_pct.toFixed(1)}%)</span>
+                            <strong>${btLabel}:</strong> ${bt.symbol}
+                            <span class="${btWin ? 'gain' : 'loss'}">${fmtSigned(bt.gain)}
+                            (${bt.gain_pct.toFixed(1)}%)</span>
                         </div>
                     </div>
-                    <div class="trade-highlight worst">
-                        <span class="icon">📉</span>
+                    <div class="trade-highlight ${wtWin ? 'best' : 'worst'}">
+                        <span class="icon">${wtWin ? '📈' : '📉'}</span>
                         <div>
-                            <strong>Worst Trade:</strong> ${metrics.worst_trade.symbol} 
-                            <span class="loss">$${metrics.worst_trade.gain.toFixed(2)} 
-                            (${metrics.worst_trade.gain_pct.toFixed(1)}%)</span>
+                            <strong>${wtLabel}:</strong> ${wt.symbol}
+                            <span class="${wtWin ? 'gain' : 'loss'}">${fmtSigned(wt.gain)}
+                            (${wt.gain_pct.toFixed(1)}%)</span>
                         </div>
                     </div>
-                </div>
-            ` : ''}
+                </div>`;
+            })() : ''}
         `;
     }
 
