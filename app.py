@@ -2982,10 +2982,11 @@ def record_portfolio_transaction():
         # Record transaction in Transaction table
         transaction = Transaction(
             user_id=user_id,
+            account_id=holding.account_id,
             symbol=holding.symbol,
-            asset_type='stock',
+            asset_type=holding.asset_type or 'stock',
             transaction_type=transaction_type,
-            quantity=quantity if quantity else holding.quantity,
+            quantity=(float(quantity) if quantity else float(holding.quantity)),
             price=price,
             transaction_date=datetime.utcnow()
         )
@@ -2994,7 +2995,21 @@ def record_portfolio_transaction():
         # Update or delete holding
         holding_quantity = float(holding.quantity)
         sell_quantity = float(quantity) if quantity else holding_quantity
-        
+        if sell_all:
+            sell_quantity = holding_quantity
+        sell_quantity = min(sell_quantity, holding_quantity)
+
+        # A sale returns cash to the account it was sold from: proceeds =
+        # shares sold x execution price. Credit the account's cash balance so
+        # available cash reflects the sale (buy-side cash handling lives elsewhere).
+        proceeds = round(sell_quantity * float(price or 0), 2)
+        new_cash = None
+        if transaction_type == 'sell' and holding.account_id:
+            _acct = PortfolioAccount.query.filter_by(id=holding.account_id, user_id=user_id).first()
+            if _acct:
+                _acct.cash_balance = round(float(_acct.cash_balance or 0) + proceeds, 2)
+                new_cash = float(_acct.cash_balance)
+
         if sell_all or sell_quantity >= holding_quantity:
             # Selling entire position
             db.session.delete(holding)
@@ -3006,7 +3021,10 @@ def record_portfolio_transaction():
         
         db.session.commit()
         
-        return jsonify({'message': 'Transaction recorded successfully'}), 200
+        _resp = {'message': 'Transaction recorded successfully', 'proceeds': proceeds}
+        if new_cash is not None:
+            _resp['cash_balance'] = new_cash
+        return jsonify(_resp), 200
     
     except Exception as e:
         logger.error(f"Error recording transaction: {e}")
