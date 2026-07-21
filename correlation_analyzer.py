@@ -221,17 +221,27 @@ class CorrelationAnalyzer:
             if 'error' in corr_result:
                 return corr_result
             
-            # Calculate position weights
-            total_value = sum([float(pos.quantity * pos.average_cost) for pos in positions])
-            weights = {}
-            for pos in positions:
-                position_value = float(pos.quantity * pos.average_cost)
-                weights[pos.symbol] = position_value / total_value if total_value > 0 else 0
+            # Only analyze positions we actually have price data for — this drops
+            # non-quotable placeholders (e.g. the manual 401k balance line
+            # 'TA401K') and failed downloads so they can't dominate a cost-weighted
+            # blend and fake out the score/sector. Sum duplicate symbols held
+            # across accounts (e.g. AMZN in both RH and SoFi).
+            priced = set(corr_result.get('symbols', []))
+            priced_positions = [p for p in positions
+                                if normalize_crypto_symbol(p.symbol, p.asset_type) in priced]
+            if len(priced_positions) < 2:
+                return {'diversification_score': 0,
+                        'message': 'Need at least 2 price-quotable positions for diversification analysis'}
+            value_by_symbol = {}
+            for pos in priced_positions:
+                sym = normalize_crypto_symbol(pos.symbol, pos.asset_type)
+                value_by_symbol[sym] = value_by_symbol.get(sym, 0.0) + float(pos.quantity * pos.average_cost)
+            total_value = sum(value_by_symbol.values())
+            weights = {s: (v / total_value if total_value > 0 else 0) for s, v in value_by_symbol.items()}
             
             # Calculate weighted average correlation
             avg_corrs = corr_result['avg_correlations']
-            weighted_correlation = sum([weights.get(symbol, 0) * avg_corrs.get(symbol, 0) 
-                                       for symbol in weights.keys()])
+            weighted_correlation = sum(weights[sym] * avg_corrs.get(sym, 0) for sym in weights)
             
             # Diversification score (0-100, lower correlation = higher score)
             # Score = 100 * (1 - weighted_correlation)
@@ -248,15 +258,15 @@ class CorrelationAnalyzer:
             elif weighted_correlation > 0.5:
                 risk_level = 'Medium'
             
-            # Sector analysis
-            sector_exposure = self._analyze_sector_exposure(positions)
+            # Sector analysis (only the price-quotable holdings)
+            sector_exposure = self._analyze_sector_exposure(priced_positions)
             
             return {
                 'diversification_score': diversification_score,
                 'weighted_avg_correlation': round(weighted_correlation, 3),
                 'concentration_score': concentration_score,
                 'risk_level': risk_level,
-                'position_count': len(positions),
+                'position_count': len(priced_positions),
                 'sector_exposure': sector_exposure,
                 'recommendations': self._get_diversification_recommendations(
                     weighted_correlation, 
