@@ -128,18 +128,24 @@ class CorrelationAnalyzer:
                 }
             
             # Calculate returns
-            returns = close_prices.pct_change(fill_method=None).dropna()
-            
-            # Check if we have enough data
-            if returns.empty or len(returns) < 2:
+            # Do NOT drop rows here: dropping any day where *any* symbol is NaN
+            # lets the shortest-history holding (e.g. a recent IPO) truncate the
+            # sample for EVERY pair, collapsing all correlations toward noise.
+            returns = close_prices.pct_change(fill_method=None)
+
+            # Check we have at least a couple of usable rows overall
+            if returns.dropna(how='all').shape[0] < 2:
                 return {'error': 'Insufficient historical data for correlation analysis'}
+
+            # Pairwise correlation: each pair uses every day where BOTH symbols
+            # have data, so one short-history holding only shortens ITS pairs
+            # instead of truncating the whole matrix.
+            correlation_matrix = returns.corr(min_periods=20)
             
-            # Calculate correlation matrix
-            correlation_matrix = returns.corr()
-            
-            # Handle NaN values (can occur with insufficient data)
+            # Pairs lacking >=20 overlapping days come back NaN — treat as no
+            # signal (0) rather than letting them break the matrix.
             if correlation_matrix.isnull().any().any():
-                logger.warning("Correlation matrix contains NaN values, filling with 0")
+                logger.info("Some symbol pairs lacked sufficient overlap; filling those with 0")
                 correlation_matrix = correlation_matrix.fillna(0)
             
             # Convert to list format for JSON
@@ -175,7 +181,7 @@ class CorrelationAnalyzer:
                 'symbols': list(correlation_matrix.index),
                 'avg_correlations': avg_correlations,
                 'period': period,
-                'data_points': len(returns),
+                'data_points': int(returns.count().max()) if not returns.empty else 0,
                 'timestamp': datetime.now().isoformat()
             }
             
