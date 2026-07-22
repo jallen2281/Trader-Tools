@@ -461,6 +461,21 @@ async function openHoldingModal(holdingId, type = 'stock') {
         document.getElementById('holdingModal').classList.add('active');
         updateTargetsPreview(data.cost_basis);
 
+        // Live price chart (stocks only)
+        if (type === 'stock' && data.symbol) {
+            const detailsEl = document.getElementById('holdingDetails');
+            detailsEl.insertAdjacentHTML('afterbegin', `
+                <div id="priceChartBox" style="margin-bottom:20px;padding:12px 14px;background:var(--light);border-radius:8px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;">
+                        <h3 style="margin:0;">📈 Price</h3>
+                        <div id="priceChartRanges"></div>
+                    </div>
+                    <div id="priceChartCanvas"></div>
+                </div>
+            `);
+            startPriceChart(data.symbol);
+        }
+
     } catch (error) {
         console.error('Error loading holding details:', error);
         alert('Could not load holding details');
@@ -469,6 +484,103 @@ async function openHoldingModal(holdingId, type = 'stock') {
 
 // Make function globally accessible
 window.openHoldingModal = openHoldingModal;
+
+// ---- Live price chart (holding detail modal) ----
+const _PC_RANGES = [['1d', '1D'], ['1w', '1W'], ['1m', '1M'], ['3m', '3M'], ['1y', '1Y']];
+let _priceChart = { symbol: null, range: '1w', timer: null };
+
+function _pcRangeButtons(active) {
+    return _PC_RANGES.map(function (r) {
+        const on = r[0] === active;
+        return `<button onclick="setPriceChartRange('${r[0]}')" class="pc-range-btn" style="padding:3px 10px;margin-left:4px;border:1px solid ${on ? '#6366f1' : 'var(--border-color,#ccc)'};background:${on ? 'rgba(99,102,241,0.14)' : 'transparent'};border-radius:5px;cursor:pointer;font-size:0.8em;color:inherit;">${r[1]}</button>`;
+    }).join('');
+}
+
+function _drawPriceChart(el, points, rangeLabel) {
+    if (!points || points.length < 2) {
+        el.innerHTML = '<div style="opacity:0.6;padding:24px;text-align:center;">No price data for this range.</div>';
+        return;
+    }
+    const w = 600, h = 160, padL = 6, padR = 6, padT = 12, padB = 6;
+    const closes = points.map(function (p) { return p.c; });
+    const min = Math.min.apply(null, closes), max = Math.max.apply(null, closes);
+    const span = (max - min) || 1, n = points.length;
+    const X = function (i) { return padL + (i / (n - 1)) * (w - padL - padR); };
+    const Y = function (c) { return padT + (1 - (c - min) / span) * (h - padT - padB); };
+    const first = closes[0], last = closes[n - 1];
+    const color = last >= first ? '#10b981' : '#ef4444';
+    let line = '';
+    points.forEach(function (p, i) { line += (i === 0 ? 'M' : 'L') + X(i).toFixed(1) + ' ' + Y(p.c).toFixed(1) + ' '; });
+    const area = line + 'L' + X(n - 1).toFixed(1) + ' ' + (h - padB) + ' L' + X(0).toFixed(1) + ' ' + (h - padB) + ' Z';
+    const chg = first ? ((last - first) / first * 100) : 0;
+    const gid = 'pcg' + Math.floor(Math.random() * 1e6);
+    el.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">' +
+            '<span style="font-size:1.15em;font-weight:600;">$' + last.toFixed(2) + '</span>' +
+            '<span style="color:' + color + ';font-weight:600;font-size:0.9em;">' + (chg >= 0 ? '+' : '') + chg.toFixed(2) + '% · ' + rangeLabel + '</span>' +
+        '</div>' +
+        '<svg viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="' + h + '" preserveAspectRatio="none" style="display:block;overflow:visible;">' +
+            '<defs><linearGradient id="' + gid + '" x1="0" x2="0" y1="0" y2="1">' +
+                '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.22"/>' +
+                '<stop offset="100%" stop-color="' + color + '" stop-opacity="0"/>' +
+            '</linearGradient></defs>' +
+            '<path d="' + area + '" fill="url(#' + gid + ')" stroke="none"/>' +
+            '<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="1.6" vector-effect="non-scaling-stroke"/>' +
+            '<circle cx="' + X(n - 1).toFixed(1) + '" cy="' + Y(last).toFixed(1) + '" r="3" fill="' + color + '"/>' +
+        '</svg>';
+}
+
+async function loadPriceChart(symbol, range) {
+    const box = document.getElementById('priceChartBox');
+    if (!box) return;
+    const ranges = box.querySelector('#priceChartRanges');
+    if (ranges) ranges.innerHTML = _pcRangeButtons(range);
+    const canvas = box.querySelector('#priceChartCanvas');
+    if (canvas && !canvas.innerHTML.trim()) {
+        canvas.innerHTML = '<div style="opacity:0.6;padding:24px;text-align:center;">Loading…</div>';
+    }
+    try {
+        const resp = await fetch('/api/price-history?symbol=' + encodeURIComponent(symbol) + '&range=' + range, {
+            credentials: 'same-origin',
+            headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
+        });
+        const data = await resp.json();
+        if (!canvas) return;
+        if (data.points && data.points.length) {
+            _drawPriceChart(canvas, data.points, range.toUpperCase());
+        } else {
+            canvas.innerHTML = '<div style="opacity:0.6;padding:24px;text-align:center;">' + (data.message || 'Chart unavailable.') + '</div>';
+        }
+    } catch (e) {
+        if (canvas) canvas.innerHTML = '<div style="opacity:0.6;padding:24px;text-align:center;">Chart unavailable.</div>';
+        console.error('Price chart error', e);
+    }
+}
+
+function setPriceChartRange(range) {
+    _priceChart.range = range;
+    loadPriceChart(_priceChart.symbol, range);
+}
+window.setPriceChartRange = setPriceChartRange;
+
+function startPriceChart(symbol) {
+    stopPriceChart();
+    _priceChart.symbol = symbol;
+    _priceChart.range = '1w';
+    loadPriceChart(symbol, '1w');
+    _priceChart.timer = setInterval(function () {
+        const modal = document.getElementById('holdingModal');
+        if (modal && modal.classList.contains('active') && document.getElementById('priceChartBox')) {
+            loadPriceChart(_priceChart.symbol, _priceChart.range);
+        } else {
+            stopPriceChart();
+        }
+    }, 45000);
+}
+
+function stopPriceChart() {
+    if (_priceChart.timer) { clearInterval(_priceChart.timer); _priceChart.timer = null; }
+}
 
 // Show the price levels the entered TP/SL percentages translate to.
 function updateTargetsPreview(costBasis) {
@@ -555,6 +667,7 @@ function getActionClass(action) {
 
 function closeHoldingModal() {
     document.getElementById('holdingModal').classList.remove('active');
+    stopPriceChart();
 }
 
 // Make function globally accessible

@@ -3034,6 +3034,63 @@ def record_portfolio_transaction():
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/price-history', methods=['GET'])
+@require_api_auth
+def get_price_history():
+    """Price history for one symbol over a selectable range (holding detail chart).
+
+    Reuses the resilient FinancialDataFetcher (yfinance + DefeatBeta fallback).
+    """
+    if not PHASE2_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        symbol = (request.args.get('symbol') or '').upper().strip()
+        rng = (request.args.get('range') or '1w').lower()
+        if not symbol:
+            return jsonify({'empty': True, 'message': 'symbol required'}), 200
+
+        # range -> (yfinance period, interval)
+        RANGES = {
+            '1d': ('1d', '5m'),
+            '1w': ('5d', '30m'),
+            '1m': ('1mo', '1d'),
+            '3m': ('3mo', '1d'),
+            '1y': ('1y', '1d'),
+        }
+        period, interval = RANGES.get(rng, RANGES['1w'])
+
+        df = data_fetcher.fetch_stock_data(symbol, period=period, interval=interval)
+        if df is None or getattr(df, 'empty', True):
+            return jsonify({'symbol': symbol, 'range': rng, 'points': [], 'empty': True,
+                            'message': f'No price data for {symbol} ({rng})'}), 200
+
+        col = 'Close' if 'Close' in df.columns else ('close' if 'close' in df.columns else None)
+        if col is None:
+            return jsonify({'symbol': symbol, 'range': rng, 'points': [], 'empty': True,
+                            'message': 'No close prices'}), 200
+
+        series = df[col].dropna()
+        points = []
+        for ts, val in series.items():
+            try:
+                t = ts.isoformat()
+            except Exception:
+                t = str(ts)
+            points.append({'t': t, 'c': round(float(val), 4)})
+
+        # Downsample to keep the payload light (~300 points max)
+        if len(points) > 300:
+            step = (len(points) // 300) + 1
+            last = points[-1]
+            points = points[::step]
+            if points[-1] is not last:
+                points.append(last)
+
+        return jsonify({'symbol': symbol, 'range': rng, 'points': points}), 200
+    except Exception as e:
+        logger.error(f"Error in price-history: {e}", exc_info=True)
+        return jsonify({'error': str(e), 'empty': True, 'message': 'Price history unavailable'}), 200
+
 @app.route('/api/portfolio/rebalance', methods=['GET'])
 @require_api_auth
 def get_rebalancing_suggestions():
