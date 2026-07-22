@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tax Center - Trader Tools</title>
+    <link rel="icon" type="image/svg+xml" href="/static/robot-icon.svg">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        body { background: var(--bg-secondary); min-height: 100vh; }
+        .tax-wrap { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .tax-header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px; }
+        .tax-card { background: var(--card-bg); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:18px 20px; margin-bottom:20px; }
+        .tax-controls { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; }
+        .tax-controls label { display:block; font-size:0.78em; color:var(--text-secondary); margin-bottom:4px; }
+        .tax-controls select { padding:8px 12px; border-radius:6px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); }
+        .summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; }
+        .summary-tile { background:var(--bg-tertiary); border-radius:10px; padding:16px; text-align:center; }
+        .summary-tile .lbl { font-size:0.78em; color:var(--text-secondary); margin-bottom:6px; }
+        .summary-tile .val { font-size:1.5em; font-weight:700; }
+        .summary-tile .sub { font-size:0.72em; color:var(--text-secondary); margin-top:4px; }
+        .gain-pos { color: var(--success); }
+        .gain-neg { color: #ef4444; }
+        table.tax-table { width:100%; border-collapse:collapse; font-size:0.86em; }
+        table.tax-table th { text-align:left; padding:8px 10px; color:var(--text-secondary); border-bottom:1px solid var(--border); font-weight:600; white-space:nowrap; }
+        table.tax-table td { padding:8px 10px; border-bottom:1px solid var(--border); }
+        .term-badge { font-size:0.72em; font-weight:600; padding:2px 8px; border-radius:999px; }
+        .term-long { background:rgba(34,197,94,0.14); color:#16a34a; }
+        .term-short { background:rgba(245,158,11,0.16); color:#d97706; }
+        .est-flag { font-size:0.7em; color:#d97706; margin-left:5px; }
+        .note-banner { font-size:0.85em; padding:10px 14px; border-radius:8px; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.3); color:var(--text-primary); }
+        .roadmap { display:flex; flex-wrap:wrap; gap:8px; }
+        .roadmap span { font-size:0.8em; padding:5px 11px; border-radius:999px; background:rgba(127,127,127,0.1); color:var(--text-secondary); }
+        .muted { color:var(--text-secondary); }
+    </style>
+</head>
+<body>
+    <div class="tax-wrap">
+        <div class="tax-header">
+            <h1 style="margin:0;">🧾 Tax Center</h1>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <a href="/portfolio" class="btn btn-secondary">📈 Portfolio</a>
+                <a href="/dashboard" class="btn btn-secondary">Analysis Dashboard</a>
+            </div>
+        </div>
+        <p class="muted" style="margin-top:0;font-size:0.9em;">
+            Realized capital gains across your taxable accounts. A tracking tool — not tax advice.
+            Reconcile against your broker 1099s before filing.
+        </p>
+
+        <!-- Realized Gains -->
+        <div class="tax-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+                <h2 style="margin:0;">Realized Capital Gains</h2>
+                <div class="tax-controls">
+                    <div>
+                        <label>Tax Year</label>
+                        <select id="taxYear" onchange="loadRealized()"></select>
+                    </div>
+                    <div>
+                        <label>Account</label>
+                        <select id="taxAccount" onchange="loadRealized()"><option value="">All taxable</option></select>
+                    </div>
+                    <div>
+                        <label>Cost-basis method</label>
+                        <select id="taxMethod" onchange="loadRealized()">
+                            <option value="fifo">FIFO</option>
+                            <option value="hifo">HIFO (min gains)</option>
+                            <option value="lifo">LIFO</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="summary-grid" id="taxSummary">
+                <div class="summary-tile"><div class="lbl">Short-Term</div><div class="val" id="stVal">$0.00</div><div class="sub" id="stSub">0 lots</div></div>
+                <div class="summary-tile"><div class="lbl">Long-Term</div><div class="val" id="ltVal">$0.00</div><div class="sub" id="ltSub">0 lots</div></div>
+                <div class="summary-tile"><div class="lbl">Total Realized</div><div class="val" id="totVal">$0.00</div><div class="sub" id="totSub">0 disposals</div></div>
+                <div class="summary-tile"><div class="lbl">Proceeds</div><div class="val" id="procVal" style="color:var(--text-primary);">$0.00</div><div class="sub muted">gross sales</div></div>
+            </div>
+
+            <div id="taxNote" style="margin-top:14px;display:none;"></div>
+            <div id="taxExcluded" class="muted" style="margin-top:10px;font-size:0.8em;"></div>
+
+            <div id="taxDetail" style="margin-top:16px;overflow-x:auto;"></div>
+        </div>
+
+        <!-- Roadmap -->
+        <div class="tax-card">
+            <h3 style="margin:0 0 10px;">Coming next to the Tax Center</h3>
+            <div class="roadmap">
+                <span>📉 Tax-loss harvesting scanner</span>
+                <span>🚫 Wash-sale detection</span>
+                <span>⏳ Long-term threshold tracker</span>
+                <span>🪙 Crypto lots (Kraken CSV)</span>
+                <span>🧮 Qualified vs ordinary dividends</span>
+                <span>📄 Form 8949 / TurboTax export</span>
+                <span>🔁 1099 reconciliation</span>
+                <span>🤖 AI tax-move narrative</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fmt = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        const gainClass = (n) => (Number(n) >= 0 ? 'gain-pos' : 'gain-neg');
+        const esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+        async function init() {
+            // Accounts (exclude nothing here; the API decides taxable) + years in parallel
+            try {
+                const [accRes, yrRes] = await Promise.all([
+                    fetch('/api/portfolio/accounts', { credentials: 'same-origin' }),
+                    fetch('/api/tax/years', { credentials: 'same-origin' })
+                ]);
+                if (accRes.ok) {
+                    const accounts = await accRes.json();
+                    const sel = document.getElementById('taxAccount');
+                    (accounts || []).forEach(a => {
+                        const o = document.createElement('option');
+                        o.value = a.id; o.textContent = a.name;
+                        sel.appendChild(o);
+                    });
+                }
+                const yrSel = document.getElementById('taxYear');
+                let years = [];
+                if (yrRes.ok) years = (await yrRes.json()).years || [];
+                if (!years.length) years = [new Date().getFullYear()];
+                years.forEach(y => {
+                    const o = document.createElement('option');
+                    o.value = y; o.textContent = y;
+                    yrSel.appendChild(o);
+                });
+            } catch (e) { console.error('init error', e); }
+            loadRealized();
+        }
+
+        async function loadRealized() {
+            const year = document.getElementById('taxYear').value;
+            const account = document.getElementById('taxAccount').value;
+            const method = document.getElementById('taxMethod').value;
+            const params = new URLSearchParams();
+            if (year) params.set('year', year);
+            if (account) params.set('account_id', account);
+            if (method) params.set('method', method);
+            const detail = document.getElementById('taxDetail');
+            detail.innerHTML = '<p class="muted" style="padding:16px;">Calculating…</p>';
+            try {
+                const res = await fetch('/api/tax/realized?' + params.toString(), { credentials: 'same-origin' });
+                const data = await res.json();
+                if (data.error) { detail.innerHTML = '<p class="gain-neg" style="padding:16px;">' + esc(data.error) + '</p>'; return; }
+                renderRealized(data);
+            } catch (e) {
+                detail.innerHTML = '<p class="gain-neg" style="padding:16px;">Could not load realized gains.</p>';
+                console.error(e);
+            }
+        }
+
+        function renderRealized(data) {
+            const s = data.summary || {};
+            const st = s.short_term || {}, lt = s.long_term || {};
+            const stEl = document.getElementById('stVal'); stEl.textContent = fmt(st.gain); stEl.className = 'val ' + gainClass(st.gain);
+            const ltEl = document.getElementById('ltVal'); ltEl.textContent = fmt(lt.gain); ltEl.className = 'val ' + gainClass(lt.gain);
+            const totEl = document.getElementById('totVal'); totEl.textContent = fmt(s.total_gain); totEl.className = 'val ' + gainClass(s.total_gain);
+            document.getElementById('procVal').textContent = fmt(s.total_proceeds);
+            document.getElementById('stSub').textContent = (st.count || 0) + ' lots';
+            document.getElementById('ltSub').textContent = (lt.count || 0) + ' lots';
+            document.getElementById('totSub').textContent = (s.disposal_count || 0) + ' disposals';
+
+            const note = document.getElementById('taxNote');
+            if (s.estimated_count > 0) {
+                note.style.display = 'block';
+                note.innerHTML = '<div class="note-banner">⚠️ ' + s.estimated_count + ' of ' + s.disposal_count +
+                    ' disposals used an <strong>estimated</strong> basis (no matching buy lot in the ledger). ' +
+                    'Import full lot history (RH tax lots, Kraken CSV) for exact figures.</div>';
+            } else {
+                note.style.display = 'none';
+            }
+
+            const excl = document.getElementById('taxExcluded');
+            excl.textContent = (data.excluded_accounts && data.excluded_accounts.length)
+                ? 'Excluded (tax-advantaged): ' + data.excluded_accounts.join(', ')
+                : '';
+
+            const rows = data.disposals || [];
+            const detail = document.getElementById('taxDetail');
+            if (!rows.length) {
+                detail.innerHTML = '<p class="muted" style="padding:16px;text-align:center;">No realized sales for this selection yet. ' +
+                    'Once sells are recorded (or RH tax lots are imported), they show up here split by holding period.</p>';
+                return;
+            }
+            detail.innerHTML = '<table class="tax-table"><thead><tr>' +
+                '<th>Symbol</th><th>Account</th><th>Acquired</th><th>Sold</th><th style="text-align:right;">Hold</th>' +
+                '<th style="text-align:right;">Qty</th><th style="text-align:right;">Proceeds</th><th style="text-align:right;">Basis</th>' +
+                '<th style="text-align:right;">Gain/Loss</th><th style="text-align:center;">Term</th></tr></thead><tbody>' +
+                rows.map(r => {
+                    const termCls = r.term === 'long' ? 'term-long' : 'term-short';
+                    const termTxt = r.term === 'long' ? 'Long' : 'Short';
+                    const est = r.estimated ? '<span class="est-flag" title="Estimated basis">~est</span>' : '';
+                    return '<tr>' +
+                        '<td style="font-weight:600;">' + esc(r.symbol) + est + '</td>' +
+                        '<td class="muted">' + esc(r.account_name || '—') + '</td>' +
+                        '<td>' + (r.acquired_date || '—') + '</td>' +
+                        '<td>' + (r.sold_date || '—') + '</td>' +
+                        '<td style="text-align:right;">' + (r.hold_days == null ? '—' : r.hold_days + 'd') + '</td>' +
+                        '<td style="text-align:right;">' + (Number(r.quantity).toLocaleString('en-US', {maximumFractionDigits: 6})) + '</td>' +
+                        '<td style="text-align:right;">' + fmt(r.proceeds) + '</td>' +
+                        '<td style="text-align:right;">' + fmt(r.basis) + '</td>' +
+                        '<td style="text-align:right;font-weight:600;" class="' + gainClass(r.gain) + '">' + fmt(r.gain) + '</td>' +
+                        '<td style="text-align:center;"><span class="term-badge ' + termCls + '">' + termTxt + '</span></td>' +
+                        '</tr>';
+                }).join('') + '</tbody></table>';
+        }
+
+        init();
+    </script>
+</body>
+</html>

@@ -16,6 +16,7 @@ from pattern_recognizer import PatternRecognizer
 from llm_analyzer import LLMAnalyzer
 from claude_analyzer import ClaudeAnalyzer
 from gemini_analyzer import GeminiAnalyzer
+from tax_analyzer import TaxAnalyzer
 from config import Config
 from datetime import datetime, timedelta
 import json
@@ -224,6 +225,8 @@ try:
     logger.info("✓ ClaudeAnalyzer initialized (available=%s)", claude_analyzer.available())
     gemini_analyzer = GeminiAnalyzer()
     logger.info("✓ GeminiAnalyzer initialized (available=%s)", gemini_analyzer.available())
+    tax_analyzer = TaxAnalyzer()
+    logger.info("✓ TaxAnalyzer initialized")
 except Exception as e:
     logger.error(f"✗ Failed to initialize LLMAnalyzer: {e}")
     raise
@@ -339,6 +342,55 @@ def copytrading():
     """Render the copy trading research page."""
     logger.debug("Rendering copytrading.html")
     return render_template('copytrading.html')
+
+
+@app.route('/tax')
+@login_required
+def tax_center():
+    """Render the Tax Center — realized gains and (later) harvesting, wash sales, forms."""
+    if not PHASE4_ENABLED:
+        return "Tax features are not enabled", 503
+    return render_template('tax.html')
+
+
+@app.route('/api/tax/realized', methods=['GET'])
+@require_api_auth
+def get_tax_realized():
+    """Realized capital gains for a tax year, split short-term / long-term.
+
+    Query params: year (YYYY), account_id (int), method (fifo|lifo|hifo).
+    Tax-advantaged accounts are excluded automatically.
+    """
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        year = request.args.get('year', type=int)
+        account_id = request.args.get('account_id', type=int)
+        method = request.args.get('method', 'fifo')
+        result = tax_analyzer.realized_gains(user_id, year=year, account_id=account_id, method=method)
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error(f"Error in tax realized gains: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tax/years', methods=['GET'])
+@require_api_auth
+def get_tax_years():
+    """Tax years that have realized (sell) activity."""
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        return jsonify({'years': tax_analyzer.available_years(user_id)}), 200
+    except Exception as e:
+        logger.error(f"Error in tax years: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/admin')
