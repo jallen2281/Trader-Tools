@@ -197,9 +197,10 @@ async function loadHoldings() {
             return;
         }
         
-        // Add stock holdings
+        // Add stock holdings (with each position's weight in the displayed set for the concentration chip)
+        const totalStockMV = stocks.reduce((s, h) => s + (h.market_value || 0), 0);
         stocks.forEach(holding => {
-            const row = createHoldingRow(holding, 'stock');
+            const row = createHoldingRow(holding, 'stock', totalStockMV);
             tableBody.appendChild(row);
         });
         
@@ -217,11 +218,18 @@ async function loadHoldings() {
 /**
  * Create table row for stock holding
  */
-function createHoldingRow(holding, type = 'stock') {
+function createHoldingRow(holding, type = 'stock', totalMV = 0) {
     const row = document.createElement('tr');
     row.onclick = () => openHoldingModal(holding.id, type);
-    
+
     const pnlClass = holding.gain_loss >= 0 ? 'pnl-positive' : 'pnl-negative';
+
+    // Concentration chip: this position's weight within the displayed holdings
+    const weight = totalMV > 0 ? (holding.market_value / totalMV * 100) : 0;
+    const wColor = weight > 30 ? '#ef4444' : weight > 20 ? '#f59e0b' : 'var(--text-secondary, #888)';
+    const weightChip = totalMV > 0
+        ? ` <span title="${weight.toFixed(1)}% of displayed holdings" style="font-size:0.72em;color:${wColor};font-weight:600;">${weight.toFixed(1)}%</span>`
+        : '';
     
     // Generate recommendation badge
     let recommendation = 'HOLD';
@@ -243,7 +251,7 @@ function createHoldingRow(holding, type = 'stock') {
         <td>${holding.quantity.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 6})}</td>
         <td>$${holding.average_cost.toFixed(4)}</td>
         <td>$${holding.current_price.toFixed(2)}</td>
-        <td>$${holding.market_value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+        <td>$${holding.market_value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}${weightChip}</td>
         <td class="${pnlClass}">$${holding.gain_loss.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
         <td class="${pnlClass}">${holding.gain_loss_pct >= 0 ? '+' : ''}${holding.gain_loss_pct.toFixed(2)}%</td>
         <td><span class="action-badge ${actionClass}">${recommendation}</span></td>
