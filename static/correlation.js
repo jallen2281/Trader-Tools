@@ -6,6 +6,7 @@
 class CorrelationHeatMap {
     constructor() {
         this.currentPeriod = '3mo';
+        this.currentAccountId = '';
         this.heatmapContainer = null;
         this.diversificationContainer = null;
         this.refreshInterval = null;
@@ -14,6 +15,7 @@ class CorrelationHeatMap {
     async init() {
         console.log('Correlation Heat Map: Initializing...');
         this.createUI();
+        await this.populateAccountSelector();
         await this.loadData();
         this.startAutoRefresh();
     }
@@ -39,6 +41,9 @@ class CorrelationHeatMap {
             <div class="panel-header">
                 <h2>📊 Correlation Matrix & Diversification</h2>
                 <div class="panel-controls">
+                    <select class="period-selector" id="correlationAccount" title="Account scope">
+                        <option value="">All Accounts</option>
+                    </select>
                     <select class="period-selector" id="correlationPeriod">
                         <option value="1mo">1 Month</option>
                         <option value="3mo" selected>3 Months</option>
@@ -98,7 +103,32 @@ class CorrelationHeatMap {
             this.loadData();
         });
 
+        document.getElementById('correlationAccount').addEventListener('change', (e) => {
+            this.currentAccountId = e.target.value;
+            this.loadData();
+        });
+
         console.log('Correlation Heat Map: UI created');
+    }
+
+    async populateAccountSelector() {
+        try {
+            const response = await fetch('/api/portfolio/accounts', {
+                method: 'GET', credentials: 'same-origin',
+                headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
+            });
+            const data = await response.json();
+            const sel = document.getElementById('correlationAccount');
+            if (!sel || !data.accounts) return;
+            data.accounts.forEach(acc => {
+                const opt = document.createElement('option');
+                opt.value = acc.id;
+                opt.textContent = acc.name;
+                sel.appendChild(opt);
+            });
+        } catch (e) {
+            console.error('Could not load accounts for correlation selector', e);
+        }
     }
 
     async loadData() {
@@ -112,7 +142,8 @@ class CorrelationHeatMap {
         try {
             this.showLoading(this.heatmapContainer);
 
-            const response = await fetch(`/api/correlation/matrix?period=${this.currentPeriod}`, {
+            const acctParam = this.currentAccountId ? `&account_id=${this.currentAccountId}` : '';
+            const response = await fetch(`/api/correlation/matrix?period=${this.currentPeriod}${acctParam}`, {
                 method: 'GET',
                 credentials: 'same-origin',
                 headers: {
@@ -150,7 +181,8 @@ class CorrelationHeatMap {
         try {
             this.showLoading(this.diversificationContainer);
 
-            const response = await fetch('/api/correlation/diversification', {
+            const acctParam = this.currentAccountId ? `?account_id=${this.currentAccountId}` : '';
+            const response = await fetch(`/api/correlation/diversification${acctParam}`, {
                 method: 'GET',
                 credentials: 'same-origin',
                 headers: {
@@ -264,7 +296,9 @@ class CorrelationHeatMap {
             risk_level,
             position_count,
             sector_exposure,
-            recommendations
+            recommendations,
+            largest_position,
+            top3_weight
         } = data;
 
         let html = '<div class="metrics-grid">';
@@ -311,6 +345,21 @@ class CorrelationHeatMap {
                 <div class="metric-sub">${position_count} positions</div>
             </div>
         `;
+
+        // Largest position + top-3 concentration (B1 data)
+        if (largest_position && largest_position.symbol) {
+            const lpColor = largest_position.weight > 25 ? '#ef4444' :
+                            largest_position.weight > 15 ? '#f59e0b' : '#10b981';
+            html += `
+                <div class="metric-card">
+                    <div class="metric-label">Largest Position</div>
+                    <div class="metric-value" style="color: ${lpColor};">
+                        ${largest_position.weight}%
+                    </div>
+                    <div class="metric-sub">${largest_position.symbol} · top-3 ${top3_weight != null ? top3_weight : '–'}%</div>
+                </div>
+            `;
+        }
 
         // Top Sector Exposure
         if (sector_exposure && sector_exposure.top_sector) {

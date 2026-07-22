@@ -360,11 +360,14 @@ class CorrelationAnalyzer:
                 'action': 'Portfolio has some diversification but could be improved'
             })
         else:
+            concentrated = (largest_position and largest_position.get('weight', 0) > 25) or top3_weight > 50
             recommendations.append({
-                'type': 'success',
-                'icon': '✓',
-                'message': 'Well-diversified portfolio with low correlation',
-                'action': 'Maintain this diversification across asset classes'
+                'type': 'info' if concentrated else 'success',
+                'icon': 'ℹ️' if concentrated else '✓',
+                'message': ('Low pairwise correlation — but the book leans on a few large positions (see below)'
+                            if concentrated else 'Well-diversified portfolio with low correlation'),
+                'action': ("Holdings don't move together, yet position sizing is concentrated"
+                           if concentrated else 'Maintain this diversification across asset classes')
             })
         
         # Single-name / top-3 concentration (more intuitive than a raw HHI number)
