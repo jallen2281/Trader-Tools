@@ -14,6 +14,7 @@ from data_fetcher import FinancialDataFetcher, normalize_crypto_symbol
 from chart_generator import ChartGenerator
 from pattern_recognizer import PatternRecognizer
 from llm_analyzer import LLMAnalyzer
+from claude_analyzer import ClaudeAnalyzer
 from config import Config
 from datetime import datetime, timedelta
 import json
@@ -218,6 +219,8 @@ except Exception as e:
 try:
     llm_analyzer = LLMAnalyzer()
     logger.info("✓ LLMAnalyzer initialized")
+    claude_analyzer = ClaudeAnalyzer()
+    logger.info("✓ ClaudeAnalyzer initialized (available=%s)", claude_analyzer.available())
 except Exception as e:
     logger.error(f"✗ Failed to initialize LLMAnalyzer: {e}")
     raise
@@ -3872,6 +3875,58 @@ def get_diversification():
     except Exception as e:
         logger.error(f"Error fetching diversification metrics: {e}", exc_info=True)
         return jsonify({'error': str(e), 'empty': True, 'message': 'Diversification analysis temporarily unavailable'}), 200
+
+@app.route('/api/correlation/ai-read', methods=['GET'])
+@require_api_auth
+def get_correlation_ai_read():
+    """Plain-English AI read of the diversification metrics.
+
+    Claude (Anthropic API) is the primary engine; falls back to the local LLM
+    (Ollama/RKLLM) when Claude is unavailable (no key / package / API error).
+    """
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        account_id = request.args.get('account_id', type=int)
+        metrics = correlation_analyzer.get_diversification_metrics(user_id, account_id=account_id)
+        if 'error' in metrics:
+            return jsonify({'empty': True, 'message': metrics.get('message', metrics['error'])}), 200
+
+        label = 'all accounts'
+        if account_id:
+            acc = PortfolioAccount.query.filter_by(id=account_id, user_id=user_id).first()
+            if acc:
+                label = acc.name
+
+        system = claude_analyzer.SYSTEM_PROMPT
+        facts = claude_analyzer.format_facts(metrics, label)
+
+        # 1) Claude (primary)
+        read = claude_analyzer.read(system, facts)
+        engine = 'claude' if read else None
+
+        # 2) Local LLM (fallback)
+        if not read:
+            try:
+                read = llm_analyzer._call_llm(
+                    [{'role': 'system', 'content': system}, {'role': 'user', 'content': facts}],
+                    timeout=60,
+                )
+                engine = 'local' if read else None
+            except Exception as e:
+                logger.warning(f"Local LLM fallback failed for ai-read: {e}")
+
+        if not read:
+            return jsonify({'empty': True, 'message': 'AI read unavailable right now.'}), 200
+        return jsonify({'read': read.strip(), 'engine': engine, 'account_label': label}), 200
+
+    except Exception as e:
+        logger.error(f"Error in correlation ai-read: {e}", exc_info=True)
+        return jsonify({'error': str(e), 'empty': True, 'message': 'AI read temporarily unavailable'}), 200
 
 @app.route('/api/correlation/time-series', methods=['GET'])
 @require_api_auth

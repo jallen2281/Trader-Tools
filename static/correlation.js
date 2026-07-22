@@ -54,6 +54,7 @@ class CorrelationHeatMap {
                     <button class="btn-refresh" id="refreshCorrelation" title="Refresh">
                         ↻
                     </button>
+                    <button class="btn-refresh" id="aiReadBtn" title="Plain-English AI read of your diversification">🧠 AI Read</button>
                 </div>
             </div>
             
@@ -61,6 +62,7 @@ class CorrelationHeatMap {
                 <!-- Diversification Metrics -->
                 <div class="diversification-section">
                     <h3>Portfolio Diversification</h3>
+                    <div id="aiReadBox" class="ai-read-box" style="display:none;margin:8px 0;padding:10px 12px;border-left:3px solid #6366f1;background:rgba(99,102,241,0.08);border-radius:6px;font-size:0.92em;line-height:1.5;"></div>
                     <div id="diversificationMetrics" class="metrics-container">
                         <div class="loading">Loading diversification metrics...</div>
                     </div>
@@ -96,8 +98,11 @@ class CorrelationHeatMap {
         // Event listeners
         document.getElementById('correlationPeriod').addEventListener('change', (e) => {
             this.currentPeriod = e.target.value;
+            this._hideAiRead();
             this.loadData();
         });
+
+        document.getElementById('aiReadBtn').addEventListener('click', () => this.loadAiRead());
 
         document.getElementById('refreshCorrelation').addEventListener('click', () => {
             this.loadData();
@@ -105,6 +110,7 @@ class CorrelationHeatMap {
 
         document.getElementById('correlationAccount').addEventListener('change', (e) => {
             this.currentAccountId = e.target.value;
+            this._hideAiRead();
             this.loadData();
         });
 
@@ -136,6 +142,46 @@ class CorrelationHeatMap {
             this.loadCorrelationMatrix(),
             this.loadDiversificationMetrics()
         ]);
+    }
+
+    _hideAiRead() {
+        const box = document.getElementById('aiReadBox');
+        if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+    }
+
+    _escape(s) {
+        const d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    async loadAiRead() {
+        const box = document.getElementById('aiReadBox');
+        const btn = document.getElementById('aiReadBtn');
+        if (!box) return;
+        box.style.display = 'block';
+        box.innerHTML = '🧠 Thinking…';
+        if (btn) btn.disabled = true;
+        try {
+            const acctParam = this.currentAccountId ? `?account_id=${this.currentAccountId}` : '';
+            const response = await fetch(`/api/correlation/ai-read${acctParam}`, {
+                method: 'GET',
+                credentials: 'same-origin',
+                headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
+            });
+            const data = await response.json();
+            if (data.read) {
+                const via = data.engine === 'claude' ? 'Claude' : (data.engine === 'local' ? 'local model' : 'AI');
+                box.innerHTML = `${this._escape(data.read)} <span style="opacity:0.6;font-size:0.85em;">— via ${via}</span>`;
+            } else {
+                box.innerHTML = this._escape(data.message || 'AI read unavailable right now.');
+            }
+        } catch (e) {
+            box.innerHTML = 'AI read failed to load.';
+            console.error('AI read error', e);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     async loadCorrelationMatrix() {

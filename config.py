@@ -22,6 +22,12 @@ class Config:
     RKLLM_BASE_URL = os.getenv('RKLLM_BASE_URL', 'http://node1:8000')
     RKLLM_ENDPOINT = os.getenv('RKLLM_ENDPOINT', '/rkllm_chat')
     RKLLM_TIMEOUT = int(os.getenv('RKLLM_TIMEOUT', 120))
+
+    # Anthropic (Claude) API — primary engine for narrative portfolio reads.
+    # Injected via the k8s secret (envFrom: secretRef); when unset, the app falls
+    # back to the local LLM (Ollama/RKLLM), so this is safe to leave empty.
+    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+    ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-8')
     
     # Flask settings
     FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
