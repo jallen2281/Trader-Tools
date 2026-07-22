@@ -3912,10 +3912,11 @@ def get_correlation_ai_read():
         # 2) Local LLM (fallback)
         if not read:
             try:
-                read = llm_analyzer._call_llm(
-                    [{'role': 'system', 'content': system}, {'role': 'user', 'content': facts}],
-                    timeout=60,
-                )
+                local_prompt = f"{system}\n\n{facts}\nWrite the 3-4 sentence read now."
+                read = llm_analyzer._call_llm([{'role': 'user', 'content': local_prompt}], timeout=60)
+                # Guard: never surface a raw/empty local-LLM envelope as if it were the read
+                if read and (read.lstrip().startswith("{'") or "'choices'" in read or 'rkllm_chat' in read):
+                    read = None
                 engine = 'local' if read else None
             except Exception as e:
                 logger.warning(f"Local LLM fallback failed for ai-read: {e}")

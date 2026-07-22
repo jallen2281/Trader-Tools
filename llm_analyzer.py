@@ -95,7 +95,9 @@ class LLMAnalyzer:
                 elif 'content' in data:
                     return data['content']
                 else:
-                    return data.get('response', str(data))
+                    # Empty/unrecognized envelope (e.g. choices: []) => no completion.
+                    # Return None rather than the raw dict repr so callers can fall back.
+                    return data.get('response') or None
                     
             except requests.exceptions.Timeout:
                 print(f"⚠ RKLLM request timeout after {timeout}s (attempt {attempt + 1}/{retries})")
