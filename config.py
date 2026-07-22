@@ -32,7 +32,9 @@ class Config:
     # Google AI (Gemini) API — second-opinion engine for holding analysis.
     # Same injection story as ANTHROPIC_API_KEY (k8s secret); safe to leave empty.
     GOOGLE_AI_API_KEY = os.getenv('GOOGLE_AI_API_KEY', '')
-    GOOGLE_AI_MODEL = os.getenv('GOOGLE_AI_MODEL', 'gemini-2.5-flash')
+    # Rolling alias for the current flash model; the analyzer self-heals to a
+    # discovered model if this ever 404s.
+    GOOGLE_AI_MODEL = os.getenv('GOOGLE_AI_MODEL', 'gemini-flash-latest')
 
     # Flask settings
     FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))

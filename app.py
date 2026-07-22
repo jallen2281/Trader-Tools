@@ -3019,17 +3019,15 @@ def get_ai_status():
             'model': gemini_analyzer.model,
         },
     }
-    if request.args.get('test') == '1' and _gm._GENAI_AVAILABLE and getattr(Config, 'GOOGLE_AI_API_KEY', ''):
+    if request.args.get('test') == '1' and gemini_analyzer.available():
         try:
-            from google import genai as _g
-            from google.genai import types as _t
-            c = _g.Client(api_key=Config.GOOGLE_AI_API_KEY)
-            resp = c.models.generate_content(
-                model=gemini_analyzer.model,
-                contents="Say OK.",
-                config=_t.GenerateContentConfig(max_output_tokens=5),
-            )
-            out['gemini']['test_read'] = getattr(resp, 'text', None)
+            out['gemini']['available_models'] = gemini_analyzer.list_models()
+        except Exception as e:
+            out['gemini']['list_error'] = repr(e)
+        try:
+            # Uses the self-healing read path, so this reflects what users get.
+            out['gemini']['test_read'] = gemini_analyzer.read("Reply with the single word OK.", "Say OK.")
+            out['gemini']['resolved_model'] = gemini_analyzer._resolved_model
         except Exception as e:
             out['gemini']['test_error'] = repr(e)
     return jsonify(out), 200
