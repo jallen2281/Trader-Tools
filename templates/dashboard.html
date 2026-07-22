@@ -1,14 +1,14 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Financial Analysis Platform - AI Powered Trading Insights</title>
-    <link rel="icon" type="image/svg+xml" href="/static/robot-icon.svg">
-    <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-    <div class="app-container">
+{% extends "base.html" %}
+{% block title %}Dashboard - Trader Tools{% endblock %}
+
+{% block head %}
+<style>
+    /* Dashboard keeps its watchlist sidebar — make it sticky under the top nav. */
+    .app-body .sidebar { position: sticky; top: 56px; max-height: calc(100vh - 56px); align-self: stretch; }
+</style>
+{% endblock %}
+
+{% block sidebar %}
         <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">☰</button>
         <div class="sidebar-overlay" id="sidebarOverlay"></div>
         <!-- Sidebar with Watchlist -->
@@ -72,9 +72,9 @@
                 {% endif %}
             </div>
         </aside>
+{% endblock %}
 
-        <!-- Main Content -->
-        <main class="main-content">
+{% block content %}
             <header class="app-header">
                 <div>
                     <h1>🤖 AI Financial Analysis Platform</h1>
@@ -384,9 +384,9 @@
                     </div>
                 </div>
             </div>
-        </main>
-    </div>
+{% endblock %}
 
+{% block scripts %}
     <!-- Scripts -->
     <script src="/static/watchlist.js"></script>
     <script src="/static/news.js"></script>
@@ -508,5 +508,4 @@
             }
         })();
     </script>
-</body>
-</html>
+{% endblock %}
