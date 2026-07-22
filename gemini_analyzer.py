@@ -79,32 +79,50 @@ class GeminiAnalyzer:
                     return n
         return names[0]
 
+    def _build_config(self, system: str, thinking_off: bool):
+        """GenerateContentConfig with an ample output budget and (optionally)
+        thinking disabled — current flash models think by default, which starves
+        the visible answer of tokens and truncates it mid-sentence."""
+        kwargs = dict(system_instruction=system, max_output_tokens=1024, temperature=0.4)
+        TC = getattr(genai_types, 'ThinkingConfig', None)
+        if thinking_off and TC is not None:
+            try:
+                kwargs['thinking_config'] = TC(thinking_budget=0)
+            except Exception:
+                pass
+        return genai_types.GenerateContentConfig(**kwargs)
+
     def read(self, system: str, facts: str) -> str | None:
         """One-shot Gemini call. Returns the read text, or None on any failure.
 
-        Self-heals across Google's model churn: if the configured model returns
-        NOT_FOUND, discover a valid one via list_models(), cache it, and retry once.
+        Robust to two Gemini quirks: (1) model churn — on NOT_FOUND, discover a
+        valid model via list_models() and retry; (2) thinking models eating the
+        token budget — request thinking off, and if a model rejects that, retry
+        once with thinking left on and a larger budget.
         """
         if not self.client:
             return None
         model = self._resolved_model or self.model
-        for attempt in range(2):
+        thinking_off = True
+        tried_thinking_fallback = False
+        for _ in range(3):
             try:
                 resp = self.client.models.generate_content(
                     model=model,
                     contents=facts,
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=system,
-                        max_output_tokens=400,
-                        temperature=0.4,
-                    ),
+                    config=self._build_config(system, thinking_off),
                 )
                 text = (getattr(resp, 'text', None) or '').strip()
                 self._resolved_model = model  # remember what worked
                 return text or None
             except Exception as e:
                 msg = str(e)
-                if attempt == 0 and ('NOT_FOUND' in msg or '404' in msg):
+                low = msg.lower()
+                if not tried_thinking_fallback and thinking_off and ('thinking' in low or 'invalid_argument' in low):
+                    thinking_off = False
+                    tried_thinking_fallback = True
+                    continue
+                if 'NOT_FOUND' in msg or '404' in msg:
                     picked = self._pick_model()
                     if picked and picked != model:
                         logger.info("Gemini model '%s' unavailable; switching to '%s'", model, picked)
