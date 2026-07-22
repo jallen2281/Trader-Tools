@@ -2995,6 +2995,46 @@ def get_holding_ai_read(holding_id):
         return jsonify({'error': str(e), 'empty': True, 'message': 'AI analysis temporarily unavailable'}), 200
 
 
+@app.route('/api/ai/status', methods=['GET'])
+@require_api_auth
+def get_ai_status():
+    """Diagnostic: which AI engines are wired up (no secrets exposed, just booleans).
+
+    ?test=1 additionally fires a tiny live Gemini call and returns the raw error
+    string if it fails — for diagnosing why a provider is silent.
+    """
+    import claude_analyzer as _cl
+    import gemini_analyzer as _gm
+    out = {
+        'claude': {
+            'available': claude_analyzer.available(),
+            'package_importable': _cl._ANTHROPIC_AVAILABLE,
+            'key_set': bool(getattr(Config, 'ANTHROPIC_API_KEY', '')),
+            'model': claude_analyzer.model,
+        },
+        'gemini': {
+            'available': gemini_analyzer.available(),
+            'package_importable': _gm._GENAI_AVAILABLE,
+            'key_set': bool(getattr(Config, 'GOOGLE_AI_API_KEY', '')),
+            'model': gemini_analyzer.model,
+        },
+    }
+    if request.args.get('test') == '1' and _gm._GENAI_AVAILABLE and getattr(Config, 'GOOGLE_AI_API_KEY', ''):
+        try:
+            from google import genai as _g
+            from google.genai import types as _t
+            c = _g.Client(api_key=Config.GOOGLE_AI_API_KEY)
+            resp = c.models.generate_content(
+                model=gemini_analyzer.model,
+                contents="Say OK.",
+                config=_t.GenerateContentConfig(max_output_tokens=5),
+            )
+            out['gemini']['test_read'] = getattr(resp, 'text', None)
+        except Exception as e:
+            out['gemini']['test_error'] = repr(e)
+    return jsonify(out), 200
+
+
 @app.route('/api/portfolio/holding/<int:holding_id>', methods=['DELETE'])
 @require_api_auth
 def delete_holding(holding_id):
