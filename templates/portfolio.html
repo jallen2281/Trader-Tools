@@ -635,13 +635,13 @@
             <table>
                 <thead>
                     <tr>
-                        <th>Symbol</th>
-                        <th>Quantity</th>
-                        <th>Avg Cost</th>
-                        <th>Current Price</th>
-                        <th>Market Value</th>
-                        <th>P&L</th>
-                        <th>P&L %</th>
+                        <th data-sort="symbol" onclick="sortHoldings('symbol')" style="cursor:pointer;user-select:none;" title="Sort by symbol">Symbol<span class="sort-ind"></span></th>
+                        <th data-sort="quantity" onclick="sortHoldings('quantity')" style="cursor:pointer;user-select:none;" title="Sort by quantity">Quantity<span class="sort-ind"></span></th>
+                        <th data-sort="average_cost" onclick="sortHoldings('average_cost')" style="cursor:pointer;user-select:none;" title="Sort by avg cost">Avg Cost<span class="sort-ind"></span></th>
+                        <th data-sort="current_price" onclick="sortHoldings('current_price')" style="cursor:pointer;user-select:none;" title="Sort by price">Current Price<span class="sort-ind"></span></th>
+                        <th data-sort="market_value" onclick="sortHoldings('market_value')" style="cursor:pointer;user-select:none;" title="Sort by value">Market Value<span class="sort-ind"></span></th>
+                        <th data-sort="gain_loss" onclick="sortHoldings('gain_loss')" style="cursor:pointer;user-select:none;" title="Sort by P&L">P&L<span class="sort-ind"></span></th>
+                        <th data-sort="gain_loss_pct" onclick="sortHoldings('gain_loss_pct')" style="cursor:pointer;user-select:none;" title="Sort by P&L %">P&L %<span class="sort-ind"></span></th>
                         <th>Recommendation</th>
                     </tr>
                 </thead>

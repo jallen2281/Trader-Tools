@@ -182,6 +182,9 @@ async function loadHoldings() {
         const optionsResponse = await fetch('/api/options');
         const optionsData = await optionsResponse.json();
         const options = optionsData.positions || [];
+        _holdingsStocks = stocks;
+        _holdingsOptions = options;
+        _holdingsTotalMV = stocks.reduce((s, h) => s + (h.market_value || 0), 0);
         
         const tableBody = document.getElementById('holdingsTableBody');
         tableBody.innerHTML = '';
@@ -197,22 +200,71 @@ async function loadHoldings() {
             return;
         }
         
-        // Add stock holdings (with each position's weight in the displayed set for the concentration chip)
-        const totalStockMV = stocks.reduce((s, h) => s + (h.market_value || 0), 0);
-        stocks.forEach(holding => {
-            const row = createHoldingRow(holding, 'stock', totalStockMV);
-            tableBody.appendChild(row);
-        });
-        
-        // Add options positions
-        options.forEach(option => {
-            const row = createOptionRow(option);
-            tableBody.appendChild(row);
-        });
+        // Store for instant client-side sorting, then render (applies the active sort)
+        _holdingsStocks = stocks;
+        _holdingsOptions = options;
+        _holdingsTotalMV = stocks.reduce((s, h) => s + (h.market_value || 0), 0);
+        renderHoldings();
         
     } catch (error) {
         console.error('Error loading holdings:', error);
     }
+}
+
+// ---- Sortable holdings table (client-side; instant, no re-fetch) ----
+let _holdingsStocks = [];
+let _holdingsOptions = [];
+let _holdingsTotalMV = 0;
+let _holdingsSort = (function () {
+    try { return JSON.parse(localStorage.getItem('holdingsSort')) || { key: 'market_value', dir: 'desc' }; }
+    catch (e) { return { key: 'market_value', dir: 'desc' }; }
+})();
+const _HOLDINGS_STRING_KEYS = new Set(['symbol']);
+
+function sortHoldings(key) {
+    if (_holdingsSort.key === key) {
+        _holdingsSort.dir = _holdingsSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+        _holdingsSort = { key: key, dir: _HOLDINGS_STRING_KEYS.has(key) ? 'asc' : 'desc' };
+    }
+    try { localStorage.setItem('holdingsSort', JSON.stringify(_holdingsSort)); } catch (e) {}
+    renderHoldings();
+}
+window.sortHoldings = sortHoldings;
+
+function _updateHoldingSortIndicators() {
+    document.querySelectorAll('th[data-sort]').forEach(function (th) {
+        const ind = th.querySelector('.sort-ind');
+        if (!ind) return;
+        ind.textContent = (th.getAttribute('data-sort') === _holdingsSort.key)
+            ? (_holdingsSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    });
+}
+
+function renderHoldings() {
+    const tableBody = document.getElementById('holdingsTableBody');
+    if (!tableBody) return;
+    tableBody.innerHTML = '';
+    if ((_holdingsStocks.length + _holdingsOptions.length) === 0) {
+        tableBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#999;">No holdings yet. Add positions to track your portfolio.</td></tr>';
+        _updateHoldingSortIndicators();
+        return;
+    }
+    const key = _holdingsSort.key, dir = _holdingsSort.dir;
+    const isString = _HOLDINGS_STRING_KEYS.has(key);
+    const sorted = _holdingsStocks.slice().sort(function (a, b) {
+        if (isString) {
+            const av = (a[key] || '').toString().toUpperCase();
+            const bv = (b[key] || '').toString().toUpperCase();
+            if (av === bv) return 0;
+            return dir === 'asc' ? (av < bv ? -1 : 1) : (av > bv ? -1 : 1);
+        }
+        const av = Number(a[key]) || 0, bv = Number(b[key]) || 0;
+        return dir === 'asc' ? av - bv : bv - av;
+    });
+    sorted.forEach(function (holding) { tableBody.appendChild(createHoldingRow(holding, 'stock', _holdingsTotalMV)); });
+    _holdingsOptions.forEach(function (option) { tableBody.appendChild(createOptionRow(option)); });
+    _updateHoldingSortIndicators();
 }
 
 /**
