@@ -1,12 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Copy Trading Research - Financial Analyzer</title>
-    <link rel="icon" type="image/svg+xml" href="/static/robot-icon.svg">
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>    <style>
+{% extends "base.html" %}
+{% block title %}Copy Trading - Trader Tools{% endblock %}
+{% block head %}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
         .copy-trading-container {
             max-width: 1400px;
             margin: 0 auto;
@@ -509,44 +505,12 @@
             }
         }
     </style>
-</head>
-<body>
-    <div class="app-container">
-        <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">☰</button>
-        <div class="sidebar-overlay" id="sidebarOverlay"></div>
-        <aside class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <h2>📊 Watchlist</h2>
-                <button id="refreshWatchlist" class="icon-btn" title="Refresh Prices">🔄</button>
-            </div>
-            <div class="watchlist-add">
-                <input type="text" id="watchlistSymbolInput" placeholder="Add symbol..." />
-                <button id="addToWatchlist">+</button>
-            </div>
-            <div id="watchlistItems" class="watchlist-items"></div>
-            <div class="sidebar-section">
-                <h3>🔔 Active Alerts (<span id="alertCount">0</span>)</h3>
-                <div id="sidebarAlertsList" class="sidebar-alerts-list"></div>
-                <button id="manageAlerts" class="btn-secondary">Manage Alerts</button>
-            </div>
-            <div class="sidebar-section">
-                <h3>📈 Quick Links</h3>
-                <a href="/dashboard" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">Analysis Dashboard</a>
-                <a href="/portfolio" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">💼 Portfolio</a>
-                <a href="/community" class="btn-secondary" style="width:100%;margin-bottom:8px;display:block;text-align:center;">💬 Community</a>
-                {% if current_user.is_authenticated and current_user.is_admin() %}
-                <a href="/admin" class="btn-secondary" style="width:100%;display:block;text-align:center;">🛡️ Admin Panel</a>
-                {% endif %}
-            </div>
-        </aside>
-        <main class="main-content">
-    <div class="navbar">
-        <div class="nav-brand">📊 Copy Trading Research</div>
-        <div class="nav-actions">
-            <button onclick="location.href='/portfolio'" class="btn-secondary">← Back to Portfolio</button>
-            <button onclick="location.href='/dashboard'" class="btn-secondary">Dashboard</button>
-            <button id="settingsBtn" class="btn-icon" title="Settings">⚙️</button>
-        </div>
+{% endblock %}
+
+{% block content %}
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+        <h1 style="margin:0;">📊 Copy Trading Research</h1>
+        <button id="settingsBtn" class="btn btn-secondary" title="Settings">⚙️</button>
     </div>
 
     <div class="copy-trading-container">
@@ -703,27 +667,9 @@
         </div>
     </div>
 
-    </main>
-    </div><!-- /app-container -->
+{% endblock %}
 
-    <script src="{{ url_for('static', filename='watchlist.js') }}"></script>
+{% block scripts %}
     <script src="{{ url_for('static', filename='copytrading.js') }}"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
-    <script>
-        // Mobile sidebar toggle
-        const sidebarToggle = document.getElementById('sidebarToggle');
-        const sidebar = document.getElementById('sidebar');
-        const sidebarOverlay = document.getElementById('sidebarOverlay');
-        if (sidebarToggle && sidebar) {
-            sidebarToggle.addEventListener('click', () => {
-                sidebar.classList.toggle('open');
-                sidebarOverlay.classList.toggle('active');
-            });
-            sidebarOverlay.addEventListener('click', () => {
-                sidebar.classList.remove('open');
-                sidebarOverlay.classList.remove('active');
-            });
-        }
-    </script>
-</body>
-</html>
+{% endblock %}

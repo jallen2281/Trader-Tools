@@ -29,7 +29,10 @@
         .app-navactions { display: flex; align-items: center; gap: 8px; }
         .app-iconbtn { background: none; border: 1px solid var(--border); border-radius: 8px; min-width: 36px; height: 36px; padding: 0 8px; cursor: pointer; font-size: 1.02em; color: var(--text-primary); display: flex; align-items: center; justify-content: center; }
         .app-iconbtn:hover { background: var(--bg-tertiary); }
-        .app-main { max-width: 1280px; margin: 0 auto; padding: 22px 20px; }
+        /* Body row: optional sidebar block + main. With no sidebar the single
+           child still centers at max-width. */
+        .app-body { display: flex; align-items: flex-start; }
+        .app-main { flex: 1; min-width: 0; max-width: 1280px; margin: 0 auto; padding: 22px 20px; }
         @media (max-width: 680px) {
             .app-topnav { gap: 8px; }
             .app-navlink { padding: 6px 8px; font-size: 0.85em; }
@@ -57,9 +60,12 @@
         </div>
     </nav>
 
-    <main class="app-main">
-        {% block content %}{% endblock %}
-    </main>
+    <div class="app-body">
+        {% block sidebar %}{% endblock %}
+        <main class="app-main">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
 
     <script>
         // Self-contained theme control — works on every page, with or without app.js.
