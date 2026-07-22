@@ -13,7 +13,7 @@ image:
 # rendered manifest changes and ArgoCD rolls the pods (which then re-pull :latest).
 # Without this, a code-only commit leaves the :latest manifest unchanged and pods
 # never restart. Do not edit by hand — the build workflow overwrites it.
-commitSha: "b40709745f"
+commitSha: "9d41aacc33"
 
 imagePullSecrets: []
 nameOverride: ""
