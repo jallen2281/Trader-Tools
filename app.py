@@ -3828,8 +3828,9 @@ def get_correlation_matrix():
             return jsonify({'error': 'Authentication required'}), 401
         
         period = request.args.get('period', '3mo')
-        logger.debug(f"Fetching correlation matrix for user {user_id}, period={period}")
-        result = correlation_analyzer.get_portfolio_correlation_matrix(user_id, period)
+        account_id = request.args.get('account_id', type=int)
+        logger.debug(f"Fetching correlation matrix for user {user_id}, period={period}, account_id={account_id}")
+        result = correlation_analyzer.get_portfolio_correlation_matrix(user_id, period, account_id=account_id)
         
         if 'error' in result:
             logger.info(f"Correlation matrix error for user {user_id}: {result['error']}")
@@ -3856,8 +3857,9 @@ def get_diversification():
             logger.warning("Diversification metrics requested without authentication")
             return jsonify({'error': 'Authentication required'}), 401
         
-        logger.debug(f"Fetching diversification metrics for user {user_id}")
-        result = correlation_analyzer.get_diversification_metrics(user_id)
+        account_id = request.args.get('account_id', type=int)
+        logger.debug(f"Fetching diversification metrics for user {user_id}, account_id={account_id}")
+        result = correlation_analyzer.get_diversification_metrics(user_id, account_id=account_id)
         
         if 'error' in result:
             logger.info(f"Diversification metrics error for user {user_id}: {result['error']}")

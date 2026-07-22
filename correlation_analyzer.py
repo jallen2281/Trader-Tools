@@ -49,7 +49,7 @@ class CorrelationAnalyzer:
             logger.error(f"Cannot find 'Close' in columns. Level 0: {level_values_0}, Level 1: {level_values_1}")
             raise ValueError(f"Cannot extract close prices from columns: {data.columns.tolist()[:10]}")
     
-    def get_portfolio_correlation_matrix(self, user_id: int, period: str = '3mo') -> Dict:
+    def get_portfolio_correlation_matrix(self, user_id: int, period: str = '3mo', account_id=None) -> Dict:
         """
         Calculate correlation matrix for user's portfolio holdings
         
@@ -61,8 +61,11 @@ class CorrelationAnalyzer:
             Dict with correlation matrix, symbols, and metadata
         """
         try:
-            # Get portfolio holdings
-            positions = Portfolio.query.filter_by(user_id=user_id).all()
+            # Get portfolio holdings (optionally scoped to a single account)
+            q = Portfolio.query.filter_by(user_id=user_id)
+            if account_id is not None:
+                q = q.filter_by(account_id=account_id)
+            positions = q.all()
             if not positions:
                 return {'error': 'No portfolio found'}
             
@@ -84,7 +87,7 @@ class CorrelationAnalyzer:
                 }
             
             # Check cache
-            cache_key = f"{user_id}_{period}_{'_'.join(sorted(symbols))}"
+            cache_key = f"{user_id}_{account_id}_{period}_{'_'.join(sorted(symbols))}"
             if cache_key in self.cache:
                 cached_data, cached_time = self.cache[cache_key]
                 if datetime.now() - cached_time < self.cache_duration:
@@ -195,7 +198,7 @@ class CorrelationAnalyzer:
             logger.error(traceback.format_exc())
             return {'error': str(e)}
     
-    def get_diversification_metrics(self, user_id: int) -> Dict:
+    def get_diversification_metrics(self, user_id: int, account_id=None) -> Dict:
         """
         Calculate diversification metrics for portfolio
         
@@ -206,10 +209,13 @@ class CorrelationAnalyzer:
             Dict with diversification score and risk metrics
         """
         try:
-            positions = Portfolio.query.filter_by(user_id=user_id).all()
+            q = Portfolio.query.filter_by(user_id=user_id)
+            if account_id is not None:
+                q = q.filter_by(account_id=account_id)
+            positions = q.all()
             if not positions:
                 return {'error': 'No portfolio found'}
-            
+
             if len(positions) < 2:
                 return {
                     'diversification_score': 0,
@@ -217,7 +223,7 @@ class CorrelationAnalyzer:
                 }
             
             # Get correlation matrix
-            corr_result = self.get_portfolio_correlation_matrix(user_id, period='3mo')
+            corr_result = self.get_portfolio_correlation_matrix(user_id, period='3mo', account_id=account_id)
             if 'error' in corr_result:
                 return corr_result
             
@@ -243,19 +249,26 @@ class CorrelationAnalyzer:
             avg_corrs = corr_result['avg_correlations']
             weighted_correlation = sum(weights[sym] * avg_corrs.get(sym, 0) for sym in weights)
             
-            # Diversification score (0-100, lower correlation = higher score)
-            # Score = 100 * (1 - weighted_correlation)
-            diversification_score = max(0, min(100, round((1 - weighted_correlation) * 100)))
-            
-            # Calculate concentration (Herfindahl index)
-            herfindahl_index = sum([w**2 for w in weights.values()])
+            # Concentration (Herfindahl) + largest / top-3 exposure
+            herfindahl_index = sum(w**2 for w in weights.values())
             concentration_score = round(herfindahl_index * 100, 1)
+            ranked = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+            largest_position = ({'symbol': ranked[0][0], 'weight': round(ranked[0][1] * 100, 1)}
+                                if ranked else {'symbol': None, 'weight': 0})
+            top3_weight = round(sum(w for _, w in ranked[:3]) * 100, 1)
+
+            # Diversification score now penalizes BOTH high correlation AND high
+            # concentration — a low-correlation book can still be concentrated in a
+            # few names, which is not truly diversified.
+            corr_factor = max(0.0, 1 - weighted_correlation)
+            conc_factor = max(0.0, 1 - herfindahl_index)
+            diversification_score = max(0, min(100, round(100 * corr_factor * conc_factor)))
             
-            # Risk assessment
+            # Risk assessment (blend correlation + concentration)
             risk_level = 'Low'
-            if weighted_correlation > 0.7:
+            if weighted_correlation > 0.6 or largest_position['weight'] > 35 or top3_weight > 65:
                 risk_level = 'High'
-            elif weighted_correlation > 0.5:
+            elif weighted_correlation > 0.4 or largest_position['weight'] > 25 or top3_weight > 50:
                 risk_level = 'Medium'
             
             # Sector analysis (only the price-quotable holdings)
@@ -265,13 +278,17 @@ class CorrelationAnalyzer:
                 'diversification_score': diversification_score,
                 'weighted_avg_correlation': round(weighted_correlation, 3),
                 'concentration_score': concentration_score,
+                'largest_position': largest_position,
+                'top3_weight': top3_weight,
                 'risk_level': risk_level,
                 'position_count': len(priced_positions),
                 'sector_exposure': sector_exposure,
                 'recommendations': self._get_diversification_recommendations(
                     weighted_correlation, 
                     concentration_score,
-                    sector_exposure
+                    sector_exposure,
+                    largest_position,
+                    top3_weight
                 ),
                 'timestamp': datetime.now().isoformat()
             }
@@ -321,7 +338,9 @@ class CorrelationAnalyzer:
     
     def _get_diversification_recommendations(self, avg_correlation: float, 
                                             concentration: float,
-                                            sector_exposure: Dict) -> List[str]:
+                                            sector_exposure: Dict,
+                                            largest_position: Dict = None,
+                                            top3_weight: float = 0) -> List[str]:
         """Generate diversification recommendations"""
         recommendations = []
         
@@ -348,13 +367,20 @@ class CorrelationAnalyzer:
                 'action': 'Maintain this diversification across asset classes'
             })
         
-        # Concentration warning
-        if concentration > 50:
+        # Single-name / top-3 concentration (more intuitive than a raw HHI number)
+        if largest_position and largest_position.get('weight', 0) > 25:
             recommendations.append({
                 'type': 'warning',
                 'icon': '⚠️',
-                'message': f'High concentration ({concentration}%) - portfolio is not well-balanced',
-                'action': 'Consider balancing position sizes more evenly'
+                'message': f"Largest position {largest_position['symbol']} is {largest_position['weight']}% of the book",
+                'action': 'Consider trimming oversized single-name risk'
+            })
+        if top3_weight > 50:
+            recommendations.append({
+                'type': 'warning',
+                'icon': '⚠️',
+                'message': f'Top 3 positions are {top3_weight}% of the book',
+                'action': 'Concentrated — spreading into more names would reduce single-name risk'
             })
         
         # Sector concentration
