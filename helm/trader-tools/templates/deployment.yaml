@@ -46,6 +46,12 @@ spec:
                 name: {{ include "trader-tools.fullname" . }}
             - secretRef:
                 name: {{ include "trader-tools.fullname" . }}
+            # AI provider keys (ANTHROPIC_API_KEY, GOOGLE_AI_API_KEY) live in a
+            # separately-managed secret so they never sit in this chart. optional
+            # so the pod still starts if it's absent.
+            - secretRef:
+                name: {{ .Values.aiKeysSecret | default "ai-keys" }}
+                optional: true
           volumeMounts:
             - name: data
               mountPath: /data

@@ -461,9 +461,20 @@ async function openHoldingModal(holdingId, type = 'stock') {
         document.getElementById('holdingModal').classList.add('active');
         updateTargetsPreview(data.cost_basis);
 
-        // Live price chart (stocks only)
+        // Multi-model AI analysis (all holdings) — button-triggered to control cost.
+        const detailsEl = document.getElementById('holdingDetails');
+        detailsEl.insertAdjacentHTML('afterbegin', `
+            <div id="aiAnalysisBox" style="margin-bottom:20px;padding:12px 14px;background:var(--light);border-radius:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <h3 style="margin:0;">🤖 AI Analysis</h3>
+                    <button id="aiAnalysisBtn" onclick="loadHoldingAiRead(${holdingId}, '${type}')" style="padding:5px 14px;border:1px solid #6366f1;background:rgba(99,102,241,0.14);border-radius:6px;cursor:pointer;font-size:0.85em;color:inherit;">Generate</button>
+                </div>
+                <div id="aiAnalysisBody" style="margin-top:4px;"></div>
+            </div>
+        `);
+
+        // Live price chart (stocks only) — injected last so it sits at the top.
         if (type === 'stock' && data.symbol) {
-            const detailsEl = document.getElementById('holdingDetails');
             detailsEl.insertAdjacentHTML('afterbegin', `
                 <div id="priceChartBox" style="margin-bottom:20px;padding:12px 14px;background:var(--light);border-radius:8px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;">
@@ -580,6 +591,87 @@ function startPriceChart(symbol) {
 
 function stopPriceChart() {
     if (_priceChart.timer) { clearInterval(_priceChart.timer); _priceChart.timer = null; }
+}
+
+// ---- Multi-model AI analysis (holding detail modal) ----
+async function loadHoldingAiRead(holdingId, type) {
+    const btn = document.getElementById('aiAnalysisBtn');
+    const body = document.getElementById('aiAnalysisBody');
+    if (!body) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Analyzing…'; btn.style.opacity = '0.6'; btn.style.cursor = 'default'; }
+    body.innerHTML = '<div style="opacity:0.65;padding:14px 2px;">Consulting Claude + Gemini…</div>';
+    try {
+        const resp = await fetch('/api/portfolio/holding/' + holdingId + '/ai-read?type=' + encodeURIComponent(type), {
+            credentials: 'same-origin',
+            headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
+        });
+        const data = await resp.json();
+        _renderHoldingAiRead(body, data);
+    } catch (e) {
+        body.innerHTML = '<div style="opacity:0.65;padding:14px 2px;">AI analysis unavailable right now.</div>';
+        console.error('Holding AI read error', e);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Regenerate'; btn.style.opacity = '1'; btn.style.cursor = 'pointer'; }
+    }
+}
+window.loadHoldingAiRead = loadHoldingAiRead;
+
+function _sentimentColor(label) {
+    const s = (label || '').toLowerCase();
+    if (s.includes('bull')) return '#10b981';
+    if (s.includes('bear')) return '#ef4444';
+    return '#f59e0b';
+}
+function _riskGradeColor(grade) {
+    const g = (grade || '').toUpperCase();
+    if (g === 'A' || g === 'B') return '#10b981';
+    if (g === 'C') return '#f59e0b';
+    if (g === 'D' || g === 'F') return '#ef4444';
+    return '#9ca3af';
+}
+function _entryColor(score) {
+    if (score == null) return '#9ca3af';
+    if (score >= 66) return '#10b981';
+    if (score >= 40) return '#f59e0b';
+    return '#ef4444';
+}
+function _aiChip(label, value, color) {
+    return '<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:rgba(127,127,127,0.12);font-size:0.8em;margin:0 6px 6px 0;">' +
+        '<span style="opacity:0.7;">' + label + '</span>' +
+        '<span style="font-weight:600;color:' + color + ';">' + value + '</span></span>';
+}
+function _escapeAi(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function _renderHoldingAiRead(body, data) {
+    if (!data || (data.empty && !(data.reads && data.reads.length))) {
+        body.innerHTML = '<div style="opacity:0.65;padding:14px 2px;">' + _escapeAi((data && data.message) || 'AI analysis unavailable right now.') + '</div>';
+        return;
+    }
+    const sig = data.signals || {};
+    let chips = '';
+    if (sig.sentiment) chips += _aiChip('Sentiment', _escapeAi(sig.sentiment), _sentimentColor(sig.sentiment));
+    if (sig.risk_grade) chips += _aiChip('Risk', _escapeAi(sig.risk_grade), _riskGradeColor(sig.risk_grade));
+    if (sig.entry_score != null) chips += _aiChip('Entry', Math.round(sig.entry_score) + '/100', _entryColor(sig.entry_score));
+
+    let readsHtml = '';
+    (data.reads || []).forEach(function (r) {
+        const accent = r.engine === 'claude' ? '#8b5cf6' : (r.engine === 'gemini' ? '#3b82f6' : '#6b7280');
+        readsHtml +=
+            '<div style="margin-top:12px;padding:10px 12px;border-left:3px solid ' + accent + ';background:rgba(127,127,127,0.06);border-radius:0 6px 6px 0;">' +
+                '<div style="font-size:0.75em;text-transform:uppercase;letter-spacing:0.04em;opacity:0.65;margin-bottom:4px;">' + _escapeAi(r.label || r.engine) + '</div>' +
+                '<div style="line-height:1.55;">' + _escapeAi(r.text) + '</div>' +
+            '</div>';
+    });
+    if (!readsHtml) readsHtml = '<div style="opacity:0.65;padding:10px 2px;">' + _escapeAi(data.message || 'No reads returned.') + '</div>';
+
+    body.innerHTML =
+        (chips ? '<div style="margin:8px 0 2px;">' + chips + '</div>' : '') +
+        readsHtml +
+        '<div style="margin-top:10px;font-size:0.72em;opacity:0.5;">Informational only — not buy/sell advice.</div>';
 }
 
 // Show the price levels the entered TP/SL percentages translate to.

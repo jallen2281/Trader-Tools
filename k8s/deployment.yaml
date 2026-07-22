@@ -50,6 +50,11 @@ spec:
                 name: trader-tools-config
             - secretRef:
                 name: trader-tools-secret
+            # AI provider keys (ANTHROPIC_API_KEY, GOOGLE_AI_API_KEY) — managed
+            # separately; optional so the pod still starts if it's absent.
+            - secretRef:
+                name: ai-keys
+                optional: true
           
           volumeMounts:
             - name: data

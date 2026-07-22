@@ -15,6 +15,7 @@ from chart_generator import ChartGenerator
 from pattern_recognizer import PatternRecognizer
 from llm_analyzer import LLMAnalyzer
 from claude_analyzer import ClaudeAnalyzer
+from gemini_analyzer import GeminiAnalyzer
 from config import Config
 from datetime import datetime, timedelta
 import json
@@ -221,6 +222,8 @@ try:
     logger.info("✓ LLMAnalyzer initialized")
     claude_analyzer = ClaudeAnalyzer()
     logger.info("✓ ClaudeAnalyzer initialized (available=%s)", claude_analyzer.available())
+    gemini_analyzer = GeminiAnalyzer()
+    logger.info("✓ GeminiAnalyzer initialized (available=%s)", gemini_analyzer.available())
 except Exception as e:
     logger.error(f"✗ Failed to initialize LLMAnalyzer: {e}")
     raise
@@ -2851,6 +2854,146 @@ def get_holding_analysis(holding_id):
         logger.error(f"Error analyzing holding {holding_id}: {e}")
         logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
+
+def _format_holding_facts(a, intent, rec):
+    """Compact fact sheet about one holding for the AI models."""
+    p3 = a.get('phase3') or {}
+    unit = 'contracts' if a.get('type') == 'option' else 'shares'
+    lines = [
+        f"Symbol: {a.get('symbol')}",
+        f"Position: {a.get('quantity')} {unit}",
+        f"Cost basis: ${a.get('cost_basis')} per unit (${a.get('total_cost')} total)",
+        f"Current price: ${a.get('current_price')} (market value ${a.get('market_value')})",
+        f"Unrealized P&L: ${a.get('pnl')} ({a.get('pnl_pct')}%)",
+        f"Dividends collected on this symbol: ${a.get('dividend_income')}",
+        f"Owner's stated thesis / intent: {intent or 'none recorded'}",
+        "Quant signals:",
+        f"  - Sentiment: {p3.get('sentiment') or 'n/a'} (score {p3.get('sentiment_score')})",
+        f"  - Risk grade: {p3.get('risk_grade') or 'n/a'} (risk score {p3.get('risk_score')})",
+        f"  - Technical entry score: {p3.get('entry_score')}/100 ({p3.get('entry_recommendation') or 'n/a'})",
+        f"Rule-based recommendation: {rec.get('action')} — {rec.get('reason')}",
+    ]
+    opt = a.get('option_details')
+    if opt:
+        lines.append(
+            f"Option: {opt.get('type')} strike ${opt.get('strike')} exp {opt.get('expiration')} "
+            f"({opt.get('days_to_expiry')} days to expiry)"
+        )
+    return "\n".join(lines)
+
+
+@app.route('/api/portfolio/holding/<int:holding_id>/ai-read', methods=['GET'])
+@require_api_auth
+def get_holding_ai_read(holding_id):
+    """Multi-model AI read of ONE holding.
+
+    Claude gives the primary analyst take; Gemini gives an independent
+    counterpoint / bear-case (two different models, so the reads diverge instead
+    of echoing). Falls back to the local LLM only when neither cloud model is
+    available. Also surfaces the pre-computed quant signals (sentiment / risk /
+    technical entry) that feed the models.
+    """
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        holding_type = request.args.get('type', 'stock')
+
+        # Ownership check + fetch the stated thesis/intent
+        intent = None
+        if holding_type == 'stock':
+            row = Portfolio.query.filter_by(id=holding_id, user_id=user_id).first()
+            if not row:
+                return jsonify({'error': 'Holding not found'}), 404
+            intent = getattr(row, 'intent', None)
+        else:
+            row = OptionsPosition.query.filter_by(id=holding_id, user_id=user_id).first()
+            if not row:
+                return jsonify({'error': 'Holding not found'}), 404
+
+        analysis = portfolio_analyzer.analyze_holding(holding_id, holding_type)
+        if not analysis:
+            return jsonify({'empty': True, 'message': 'Could not analyze this holding right now.'}), 200
+
+        p3 = analysis.get('phase3') or {}
+        rec = analysis.get('recommendation') or {}
+        signals = {
+            'sentiment': p3.get('sentiment'),
+            'sentiment_score': p3.get('sentiment_score'),
+            'risk_grade': p3.get('risk_grade'),
+            'risk_score': p3.get('risk_score'),
+            'entry_score': p3.get('entry_score'),
+        }
+
+        facts = _format_holding_facts(analysis, intent, rec)
+
+        analyst_system = (
+            "You are a sharp, plain-spoken equity analyst. You are given the facts about ONE "
+            "position a retail investor holds: cost basis, current price, unrealized P&L, the owner's "
+            "stated thesis, and pre-computed quant signals (sentiment, risk grade, technical entry "
+            "score). In 3-4 sentences, tell the owner where this position stands relative to their "
+            "thesis and the quant signals, and name the single most important thing to watch next. "
+            "Be direct and specific. No bullet points, no preamble, no hedging. Do NOT tell them to buy or sell."
+        )
+        counter_system = (
+            "You are a rigorous, risk-focused analyst giving a SECOND OPINION on ONE position a retail "
+            "investor holds. You are given cost basis, current price, unrealized P&L, the owner's stated "
+            "thesis, and quant signals (sentiment, risk grade, technical entry score). In 2-3 sentences, "
+            "state the strongest counter-argument or the biggest risk to the owner's current stance — the "
+            "thing most likely to break the thesis. Be specific and unsentimental. No preamble, no bullet "
+            "points. Do NOT give an explicit buy or sell instruction."
+        )
+
+        # Run the two cloud models in parallel (both are network-bound).
+        from concurrent.futures import ThreadPoolExecutor
+        results = {}
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            futs = {}
+            if claude_analyzer.available():
+                futs['claude'] = ex.submit(claude_analyzer.read, analyst_system, facts)
+            if gemini_analyzer.available():
+                futs['gemini'] = ex.submit(gemini_analyzer.read, counter_system, facts)
+            for key, fut in futs.items():
+                try:
+                    results[key] = fut.result(timeout=45)
+                except Exception as e:
+                    logger.warning("Holding AI read (%s) failed: %s", key, e)
+                    results[key] = None
+
+        reads = []
+        if results.get('claude'):
+            reads.append({'engine': 'claude', 'label': 'Analyst Read · Claude', 'text': results['claude'].strip()})
+        if results.get('gemini'):
+            reads.append({'engine': 'gemini', 'label': 'Second Opinion · Gemini', 'text': results['gemini'].strip()})
+
+        # Local fallback only if neither cloud model produced anything.
+        if not reads:
+            try:
+                local_prompt = f"{analyst_system}\n\n{facts}\nWrite the 3-4 sentence read now."
+                local = llm_analyzer._call_llm([{'role': 'user', 'content': local_prompt}], timeout=60)
+                if local and not (local.lstrip().startswith("{'") or "'choices'" in local or 'rkllm_chat' in local):
+                    reads.append({'engine': 'local', 'label': 'Local LLM', 'text': local.strip()})
+            except Exception as e:
+                logger.warning("Local LLM fallback failed for holding ai-read: %s", e)
+
+        if not reads:
+            return jsonify({'empty': True, 'signals': signals, 'symbol': analysis.get('symbol'),
+                            'message': 'AI analysis unavailable right now.'}), 200
+
+        return jsonify({
+            'symbol': analysis.get('symbol'),
+            'signals': signals,
+            'recommendation': {'action': rec.get('action'), 'reason': rec.get('reason')},
+            'reads': reads,
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error in holding ai-read {holding_id}: {e}", exc_info=True)
+        return jsonify({'error': str(e), 'empty': True, 'message': 'AI analysis temporarily unavailable'}), 200
+
 
 @app.route('/api/portfolio/holding/<int:holding_id>', methods=['DELETE'])
 @require_api_auth

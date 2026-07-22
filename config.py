@@ -28,7 +28,12 @@ class Config:
     # back to the local LLM (Ollama/RKLLM), so this is safe to leave empty.
     ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
     ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-8')
-    
+
+    # Google AI (Gemini) API — second-opinion engine for holding analysis.
+    # Same injection story as ANTHROPIC_API_KEY (k8s secret); safe to leave empty.
+    GOOGLE_AI_API_KEY = os.getenv('GOOGLE_AI_API_KEY', '')
+    GOOGLE_AI_MODEL = os.getenv('GOOGLE_AI_MODEL', 'gemini-2.5-flash')
+
     # Flask settings
     FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
     FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'

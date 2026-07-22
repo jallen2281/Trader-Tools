@@ -19,6 +19,11 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Name of a separately-managed secret holding AI provider keys
+# (ANTHROPIC_API_KEY, GOOGLE_AI_API_KEY). Mounted via envFrom as optional, so an
+# absent secret won't block startup. The keys are NOT stored in this chart.
+aiKeysSecret: "ai-keys"
+
 serviceAccount:
   create: true
   annotations: {}
