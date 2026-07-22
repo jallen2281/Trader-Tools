@@ -25,6 +25,10 @@
 }
 
 /* Dark mode theme */
+/* Dark theme vars apply when EITHER <html> or <body> carries .dark-mode.
+   The shared shell (base.html) sets it on <html> in the <head> before first
+   paint (flash-free); app.js continues to set it on <body>. */
+html.dark-mode,
 body.dark-mode {
     --bg-primary: #1a1a1a;
     --bg-secondary: #2d2d2d;

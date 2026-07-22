@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Trader Tools{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/robot-icon.svg">
+    <!-- Flash-free theme: apply the saved preference to <html> before first paint. -->
+    <script>
+        (function () {
+            try { if (localStorage.getItem('darkMode') === 'true') document.documentElement.classList.add('dark-mode'); } catch (e) {}
+        })();
+    </script>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        /* ===== Unified app shell ===== */
+        body { background: var(--bg-secondary); min-height: 100vh; }
+        .app-topnav {
+            display: flex; align-items: center; gap: 16px;
+            padding: 0 20px; height: 56px;
+            background: var(--card-bg); border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; z-index: 1000; box-shadow: var(--shadow);
+        }
+        .app-brand { font-weight: 700; font-size: 1.05em; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .app-navlinks { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
+        .app-navlink { padding: 7px 12px; border-radius: 8px; color: var(--text-secondary); text-decoration: none; font-size: 0.92em; font-weight: 500; }
+        .app-navlink:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+        .app-navlink.active { background: rgba(99,102,241,0.14); color: #6366f1; }
+        .app-navactions { display: flex; align-items: center; gap: 8px; }
+        .app-iconbtn { background: none; border: 1px solid var(--border); border-radius: 8px; min-width: 36px; height: 36px; padding: 0 8px; cursor: pointer; font-size: 1.02em; color: var(--text-primary); display: flex; align-items: center; justify-content: center; }
+        .app-iconbtn:hover { background: var(--bg-tertiary); }
+        .app-main { max-width: 1280px; margin: 0 auto; padding: 22px 20px; }
+        @media (max-width: 680px) {
+            .app-topnav { gap: 8px; }
+            .app-navlink { padding: 6px 8px; font-size: 0.85em; }
+            .app-brand { font-size: 0.95em; }
+        }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="app-topnav">
+        <a class="app-brand" href="/dashboard">🤖 Trader&nbsp;Tools</a>
+        <div class="app-navlinks">
+            <a href="/dashboard" class="app-navlink">📊 Dashboard</a>
+            <a href="/portfolio" class="app-navlink">💼 Portfolio</a>
+            <a href="/tax" class="app-navlink">🧾 Tax Center</a>
+            <a href="/copytrading" class="app-navlink">🎯 Copy Trading</a>
+            <a href="/community" class="app-navlink">💬 Community</a>
+            {% if current_user.is_authenticated and current_user.is_admin() %}
+            <a href="/admin" class="app-navlink">🛡️ Admin</a>
+            {% endif %}
+        </div>
+        <div class="app-navactions">
+            {% block navactions %}{% endblock %}
+            <button id="appThemeToggle" class="app-iconbtn" title="Toggle light / dark" aria-label="Toggle theme">🌙</button>
+        </div>
+    </nav>
+
+    <main class="app-main">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+        // Self-contained theme control — works on every page, with or without app.js.
+        (function () {
+            function saved() { try { return localStorage.getItem('darkMode') === 'true'; } catch (e) { return false; } }
+            function apply(on) {
+                document.documentElement.classList.toggle('dark-mode', on);
+                document.body.classList.toggle('dark-mode', on);
+                var b = document.getElementById('appThemeToggle');
+                if (b) b.textContent = on ? '☀️' : '🌙';
+            }
+            apply(saved());
+
+            var btn = document.getElementById('appThemeToggle');
+            if (btn) btn.addEventListener('click', function () {
+                var on = !saved();
+                try { localStorage.setItem('darkMode', on); } catch (e) {}
+                apply(on);
+                if (typeof toggleDarkMode === 'function') { try { toggleDarkMode(on); } catch (e) {} }
+                // Persist to the server so app.js pages (which reconcile to the server on load) stay in sync.
+                try {
+                    fetch('/api/user/preferences', {
+                        method: 'PUT', credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ darkMode: on })
+                    });
+                } catch (e) {}
+            });
+
+            // Reconcile to the server's stored preference (source of truth) after paint.
+            fetch('/api/user/preferences', { credentials: 'same-origin' })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (d) {
+                    if (!d || !d.preferences || typeof d.preferences.darkMode !== 'boolean') return;
+                    if (d.preferences.darkMode !== saved()) {
+                        try { localStorage.setItem('darkMode', d.preferences.darkMode); } catch (e) {}
+                        apply(d.preferences.darkMode);
+                    }
+                }).catch(function () {});
+
+            // Highlight the active nav link.
+            var path = (location.pathname.replace(/\/+$/, '') || '/dashboard');
+            document.querySelectorAll('.app-navlink').forEach(function (a) {
+                if (a.getAttribute('href') === path) a.classList.add('active');
+            });
+        })();
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
