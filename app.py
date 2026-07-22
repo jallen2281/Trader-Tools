@@ -1668,7 +1668,9 @@ def get_cash_optimization():
         logger.error(f"Error getting cash optimization: {e}")
         return jsonify({'error': str(e)}), 500
 
-# Dividend tracking endpoints
+# Income (dividend / special distribution / share-lending / interest) tracking endpoints
+INCOME_TYPES = {'dividend', 'special', 'lending', 'interest'}
+
 @app.route('/api/portfolio/dividends', methods=['GET'])
 def get_dividends():
     """Get dividend history with optional filters."""
@@ -1707,6 +1709,9 @@ def record_dividend():
             amount_per_share = total_amount / shares
         elif amount_per_share > 0 and shares > 0 and total_amount == 0:
             total_amount = amount_per_share * shares
+        income_type = (data.get('income_type') or 'dividend').lower().strip()
+        if income_type not in INCOME_TYPES:
+            income_type = 'dividend'
         dividend = Dividend(
             user_id=current_user.id,
             account_id=int(data['account_id']) if data.get('account_id') else None,
@@ -1717,6 +1722,7 @@ def record_dividend():
             ex_date=datetime.strptime(data['ex_date'], '%Y-%m-%d').date() if data.get('ex_date') else None,
             pay_date=datetime.strptime(data['pay_date'], '%Y-%m-%d').date() if data.get('pay_date') else None,
             reinvested=data.get('reinvested', False),
+            income_type=income_type,
             notes=data.get('notes', '')
         )
         db.session.add(dividend)
@@ -1742,6 +1748,30 @@ def delete_dividend(dividend_id):
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error deleting dividend: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/dividends/<int:dividend_id>', methods=['PUT'])
+def update_dividend(dividend_id):
+    """Update an income record — reclassify its type (dividend/special/lending/interest) or edit notes."""
+    if not PHASE2_ENABLED or not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        dividend = Dividend.query.filter_by(id=dividend_id, user_id=current_user.id).first()
+        if not dividend:
+            return jsonify({'error': 'Dividend not found'}), 404
+        data = request.get_json() or {}
+        if 'income_type' in data:
+            it = (data.get('income_type') or 'dividend').lower().strip()
+            if it not in INCOME_TYPES:
+                return jsonify({'error': 'invalid income_type'}), 400
+            dividend.income_type = it
+        if 'notes' in data:
+            dividend.notes = (data.get('notes') or '').strip()
+        db.session.commit()
+        return jsonify(dividend.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error updating dividend: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/portfolio/dividends/summary', methods=['GET'])
@@ -1782,6 +1812,24 @@ def get_dividend_summary():
 
         by_symbol = [{'symbol': row[0], 'total': round(float(row[1]), 2), 'count': row[2]} for row in symbol_rows]
 
+        # Per-type breakdown (dividend / special / lending / interest); null -> dividend
+        type_query = db.session.query(
+            Dividend.income_type,
+            sqlfunc.sum(Dividend.total_amount),
+            sqlfunc.count(Dividend.id)
+        ).filter(Dividend.user_id == current_user.id)
+        if account_id and account_id.isdigit():
+            type_query = type_query.filter(Dividend.account_id == int(account_id))
+        elif account_id == 'unassigned':
+            type_query = type_query.filter(Dividend.account_id.is_(None))
+        _agg = {}
+        for row in type_query.group_by(Dividend.income_type).all():
+            t = row[0] or 'dividend'
+            bucket = _agg.setdefault(t, {'total': 0.0, 'count': 0})
+            bucket['total'] += float(row[1] or 0)
+            bucket['count'] += int(row[2] or 0)
+        by_type = [{'type': t, 'total': round(v['total'], 2), 'count': v['count']} for t, v in _agg.items()]
+
         # YTD income
         year_start = datetime(datetime.now().year, 1, 1).date()
         ytd_query = db.session.query(sqlfunc.sum(Dividend.total_amount)).filter(
@@ -1812,6 +1860,7 @@ def get_dividend_summary():
             'ytd_income': round(float(ytd_income), 2),
             'monthly_avg': monthly_avg,
             'by_symbol': sorted(by_symbol, key=lambda x: x['total'], reverse=True),
+            'by_type': sorted(by_type, key=lambda x: x['total'], reverse=True),
             'payment_count': base_query.count()
         })
     except Exception as e:
@@ -4537,7 +4586,9 @@ def import_user_data():
                 user_id=user_id, symbol=sym, amount_per_share=r.get('amount_per_share') or 0,
                 shares=r.get('shares') or 0, total_amount=r.get('total_amount') or 0,
                 ex_date=ex, pay_date=_pdate(r.get('pay_date')),
-                reinvested=r.get('reinvested', False), notes=r.get('notes'), account_id=_acct(r)))
+                reinvested=r.get('reinvested', False),
+                income_type=(r.get('income_type') or 'dividend'),
+                notes=r.get('notes'), account_id=_acct(r)))
             seen.add(key); imp += 1
         result['dividends'] = {'imported': imp, 'skipped': skip}
 

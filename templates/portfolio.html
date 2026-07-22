@@ -510,8 +510,8 @@
         <!-- Dividend Tracker Widget -->
         <div id="dividendWidget" style="background:var(--card-bg);border-radius:12px;padding:15px 20px;margin-bottom:20px;box-shadow:var(--shadow);border:1px solid var(--border);">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <h3 style="margin:0;color:var(--text-primary);">💰 Dividend Tracker</h3>
-                <button onclick="openRecordDividendModal()" class="btn btn-primary" style="padding:6px 14px;font-size:0.85em;">+ Record Dividend</button>
+                <h3 style="margin:0;color:var(--text-primary);">💰 Income Tracker</h3>
+                <button onclick="openRecordDividendModal()" class="btn btn-primary" style="padding:6px 14px;font-size:0.85em;">+ Record Income</button>
             </div>
             <div id="dividendSummaryBar" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px;">
                 <div style="text-align:center;padding:10px;background:var(--bg-tertiary);border-radius:8px;">
@@ -531,6 +531,7 @@
                     <div id="divPaymentCount" style="font-size:1.1em;font-weight:700;color:var(--text-primary);">0</div>
                 </div>
             </div>
+            <div id="dividendTypeBar" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;"></div>
             <div id="dividendHistory" style="max-height:250px;overflow-y:auto;"></div>
         </div>
         

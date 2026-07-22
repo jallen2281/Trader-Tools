@@ -1438,6 +1438,16 @@ window.addPosition = addPosition;
 /**
  * Load dividend summary and history
  */
+// Income-type metadata (shared with the record modal + reclassify select).
+const INCOME_TYPE_META = {
+    dividend: { label: 'Dividend', short: 'Dividend', color: '#22c55e' },
+    special:  { label: 'Special Distribution', short: 'Special', color: '#8b5cf6' },
+    lending:  { label: 'Share Lending', short: 'Lending', color: '#3b82f6' },
+    interest: { label: 'Interest', short: 'Interest', color: '#f59e0b' }
+};
+const INCOME_TYPE_ORDER = ['dividend', 'special', 'lending', 'interest'];
+function _incomeMeta(t) { return INCOME_TYPE_META[t] || INCOME_TYPE_META.dividend; }
+
 async function loadDividendData() {
     try {
         const accountId = document.getElementById('accountSelector')?.value;
@@ -1452,35 +1462,75 @@ async function loadDividendData() {
             document.getElementById('divYtdIncome').textContent = `$${(summary.ytd_income || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}`;
             document.getElementById('divMonthlyAvg').textContent = `$${(summary.monthly_avg || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}`;
             document.getElementById('divPaymentCount').textContent = summary.payment_count || 0;
+
+            // Income split by type — only render types that actually have entries.
+            const typeBar = document.getElementById('dividendTypeBar');
+            if (typeBar) {
+                const bt = summary.by_type || [];
+                typeBar.innerHTML = bt.map(row => {
+                    const m = _incomeMeta(row.type);
+                    return `<span style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;background:rgba(127,127,127,0.1);font-size:0.82em;">
+                        <span style="width:9px;height:9px;border-radius:50%;background:${m.color};"></span>
+                        <span style="font-weight:600;">${m.short}</span>
+                        <span style="color:var(--success);font-weight:600;">$${row.total.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                        <span style="color:var(--text-secondary);">(${row.count})</span>
+                    </span>`;
+                }).join('');
+            }
         }
         if (historyRes.ok) {
             const dividends = await historyRes.json();
             const container = document.getElementById('dividendHistory');
             if (!dividends.length) {
-                container.innerHTML = '<p style="color:var(--text-secondary);text-align:center;padding:15px;font-size:0.9em;">No dividends recorded yet. Click "+ Record Dividend" to add one.</p>';
+                container.innerHTML = '<p style="color:var(--text-secondary);text-align:center;padding:15px;font-size:0.9em;">No income recorded yet. Click "+ Record Income" to add one.</p>';
                 return;
             }
             container.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:0.85em;">
                 <thead><tr style="border-bottom:1px solid var(--border);color:var(--text-secondary);">
                     <th style="text-align:left;padding:6px 8px;">Symbol</th>
+                    <th style="text-align:center;padding:6px 8px;">Type</th>
                     <th style="text-align:right;padding:6px 8px;">Amount</th>
                     <th style="text-align:right;padding:6px 8px;">Per Share</th>
                     <th style="text-align:center;padding:6px 8px;">Pay Date</th>
                     <th style="text-align:center;padding:6px 8px;">DRIP</th>
                     <th style="text-align:center;padding:6px 8px;"></th>
                 </tr></thead>
-                <tbody>${dividends.map(d => `<tr style="border-bottom:1px solid var(--border);">
+                <tbody>${dividends.map(d => {
+                    const t = d.income_type || 'dividend';
+                    const color = _incomeMeta(t).color;
+                    const opts = INCOME_TYPE_ORDER.map(k => `<option value="${k}" ${k === t ? 'selected' : ''}>${_incomeMeta(k).short}</option>`).join('');
+                    return `<tr style="border-bottom:1px solid var(--border);">
                     <td style="padding:6px 8px;font-weight:600;">${d.symbol}</td>
+                    <td style="padding:6px 8px;text-align:center;">
+                        <select onchange="updateDividendType(${d.id}, this.value)" title="Reclassify income type" style="font-size:0.8em;padding:2px 4px;border-radius:5px;border:1px solid var(--border);background:var(--bg-primary);color:${color};font-weight:600;cursor:pointer;">${opts}</select>
+                    </td>
                     <td style="padding:6px 8px;text-align:right;color:var(--success);">$${d.total_amount.toFixed(2)}</td>
                     <td style="padding:6px 8px;text-align:right;">$${d.amount_per_share.toFixed(4)}</td>
                     <td style="padding:6px 8px;text-align:center;">${d.pay_date ? new Date(d.pay_date).toLocaleDateString() : '-'}</td>
                     <td style="padding:6px 8px;text-align:center;">${d.reinvested ? '✅' : ''}</td>
                     <td style="padding:6px 8px;text-align:center;"><button onclick="deleteDividend(${d.id})" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:0.9em;">🗑️</button></td>
-                </tr>`).join('')}</tbody>
+                </tr>`;
+                }).join('')}</tbody>
             </table>`;
         }
     } catch (error) {
         console.error('Error loading dividend data:', error);
+    }
+}
+
+async function updateDividendType(id, income_type) {
+    try {
+        const res = await fetch(`/api/portfolio/dividends/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ income_type })
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+        showToast('Income type updated', 'success');
+        loadDividendData();
+    } catch (error) {
+        console.error('Error updating income type:', error);
+        showToast('Failed to update income type', 'error');
     }
 }
 
@@ -1495,7 +1545,7 @@ function openRecordDividendModal() {
     modal.innerHTML = `
         <div style="background:var(--modal-bg);border-radius:12px;max-width:480px;width:90%;padding:24px;color:var(--text-primary);">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-                <h2 style="margin:0;">💰 Record Dividend</h2>
+                <h2 style="margin:0;">💰 Record Income</h2>
                 <button onclick="document.getElementById('recordDividendModal').remove()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text-secondary);">&times;</button>
             </div>
             <form onsubmit="submitDividend(event)" style="display:grid;gap:12px;">
@@ -1505,12 +1555,21 @@ function openRecordDividendModal() {
                         <input type="text" id="divSymbol" required style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;" placeholder="AAPL">
                     </div>
                     <div>
-                        <label style="font-size:0.85em;color:var(--text-secondary);">Account</label>
-                        <select id="divAccount" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;">
-                            <option value="">No Account</option>
-                            ${accountOptions}
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Income Type</label>
+                        <select id="divIncomeType" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;">
+                            <option value="dividend">Dividend</option>
+                            <option value="special">Special Distribution</option>
+                            <option value="lending">Share Lending</option>
+                            <option value="interest">Interest</option>
                         </select>
                     </div>
+                </div>
+                <div>
+                    <label style="font-size:0.85em;color:var(--text-secondary);">Account</label>
+                    <select id="divAccount" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;">
+                        <option value="">No Account</option>
+                        ${accountOptions}
+                    </select>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
                     <div>
@@ -1557,6 +1616,7 @@ async function submitDividend(event) {
     try {
         const body = {
             symbol: document.getElementById('divSymbol').value.trim(),
+            income_type: document.getElementById('divIncomeType').value,
             total_amount: parseFloat(document.getElementById('divTotal').value) || 0,
             amount_per_share: parseFloat(document.getElementById('divPerShare').value) || 0,
             shares: parseFloat(document.getElementById('divShares').value) || 0,

@@ -197,7 +197,12 @@ def init_database(app):
             db.session.execute(text('CREATE INDEX IF NOT EXISTS ix_dividends_symbol ON dividends(symbol)'))
             db.session.commit()
             logger.info("✓ Created dividends table")
-        
+
+        # Migrate: add income_type to dividends (dividend / special / lending / interest)
+        inspector = inspect(db.engine)
+        if _add_column_if_missing(db, inspector, 'dividends', 'income_type', 'VARCHAR(20)', "'dividend'"):
+            logger.info("✓ Added income_type to dividends table")
+
         # Migrate: add new user columns if missing
         inspector = inspect(db.engine)
         bool_false = 'FALSE' if is_pg else '0'

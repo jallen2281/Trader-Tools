@@ -610,8 +610,11 @@ class Dividend(db.Model):
     pay_date = db.Column(db.Date)
     recorded_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     reinvested = db.Column(db.Boolean, default=False)
+    # Income category: dividend (regular/qualified) | special (special distribution)
+    # | lending (share-lending income) | interest
+    income_type = db.Column(db.String(20), default='dividend', index=True)
     notes = db.Column(db.Text)
-    
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -623,6 +626,7 @@ class Dividend(db.Model):
             'pay_date': self.pay_date.isoformat() if self.pay_date else None,
             'recorded_at': self.recorded_at.isoformat() if self.recorded_at else None,
             'reinvested': self.reinvested,
+            'income_type': self.income_type or 'dividend',
             'account_id': self.account_id,
             'notes': self.notes
         }
