@@ -2122,6 +2122,124 @@ def get_transactions():
         return jsonify({'error': str(e)}), 500
 
 
+def _parse_txn_date(s):
+    """Parse a transaction date from ISO / YYYY-MM-DD / US formats; None if unparseable."""
+    if not s:
+        return None
+    s = str(s).strip()
+    try:
+        return datetime.fromisoformat(s.replace('Z', ''))
+    except Exception:
+        pass
+    for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S'):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            pass
+    return None
+
+
+@app.route('/api/portfolio/transactions/import', methods=['POST'])
+@require_api_auth
+def import_transactions():
+    """Bulk-import historical transactions (buys + sells) for cost-basis / tax.
+
+    Body: {"transactions": [{symbol, transaction_type, quantity, price,
+    transaction_date, account_id?, asset_type?, commission?, notes?}, ...],
+    "account_id": <default account for rows without one>}
+
+    Inserts raw Transaction rows only — does NOT touch holdings or cash (these
+    are historical records, not live position changes). Dedupes on
+    (symbol, type, date, qty, price, account) so re-imports are idempotent.
+    """
+    if not PHASE2_ENABLED:
+        return jsonify({'error': 'Phase 2 not enabled'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        data = request.get_json() or {}
+        rows = data.get('transactions') or []
+        default_account = data.get('account_id')
+        if not isinstance(rows, list) or not rows:
+            return jsonify({'error': 'transactions[] required'}), 400
+
+        def _key(sym, ttype, d, qty, price, acct):
+            return (sym, ttype, d, round(float(qty or 0), 6), round(float(price or 0), 4), acct)
+
+        existing = set()
+        for t in Transaction.query.filter_by(user_id=user_id).all():
+            d = t.transaction_date.date().isoformat() if t.transaction_date else None
+            existing.add(_key(t.symbol.upper(), t.transaction_type, d, t.quantity, t.price, t.account_id))
+
+        imported = skipped = 0
+        errors = []
+        for r in rows:
+            try:
+                sym = (r.get('symbol') or '').upper().strip()
+                ttype = (r.get('transaction_type') or '').lower().strip()
+                if ttype in ('b', 'buy', 'bought'):
+                    ttype = 'buy'
+                elif ttype in ('s', 'sell', 'sold'):
+                    ttype = 'sell'
+                if not sym or ttype not in ('buy', 'sell'):
+                    skipped += 1
+                    continue
+                qty = float(r.get('quantity') or 0)
+                price = float(r.get('price') or 0)
+                if qty <= 0:
+                    skipped += 1
+                    continue
+                acct = r.get('account_id', default_account)
+                acct = int(acct) if acct not in (None, '', 'null') else None
+                dt = _parse_txn_date(r.get('transaction_date'))
+                dkey = dt.date().isoformat() if dt else None
+                k = _key(sym, ttype, dkey, qty, price, acct)
+                if k in existing:
+                    skipped += 1
+                    continue
+                db.session.add(Transaction(
+                    user_id=user_id, account_id=acct, symbol=sym,
+                    asset_type=(r.get('asset_type') or 'stock'),
+                    transaction_type=ttype, quantity=qty, price=price,
+                    commission=float(r.get('commission') or 0),
+                    transaction_date=(dt or datetime.utcnow()),
+                    notes=r.get('notes')))
+                existing.add(k)
+                imported += 1
+            except Exception as ex:
+                errors.append(str(ex))
+                skipped += 1
+        db.session.commit()
+        return jsonify({'imported': imported, 'skipped': skipped, 'errors': errors[:5]}), 200
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error importing transactions: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/transactions/<int:txn_id>', methods=['DELETE'])
+@require_api_auth
+def delete_transaction(txn_id):
+    """Delete a single transaction (for cleaning up stray/duplicate records)."""
+    if not PHASE2_ENABLED:
+        return jsonify({'error': 'Phase 2 not enabled'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        t = Transaction.query.filter_by(id=txn_id, user_id=user_id).first()
+        if not t:
+            return jsonify({'error': 'Transaction not found'}), 404
+        db.session.delete(t)
+        db.session.commit()
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error deleting transaction: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/options', methods=['GET', 'POST'])
 def manage_options():
     """Manage options positions."""

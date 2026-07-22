@@ -85,6 +85,27 @@
             <div id="taxDetail" style="margin-top:16px;overflow-x:auto;"></div>
         </div>
 
+        <!-- Import transactions -->
+        <div class="tax-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+                <h3 style="margin:0;">📥 Import Transactions</h3>
+                <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+                    <div><label style="display:block;font-size:0.78em;color:var(--text-secondary);margin-bottom:4px;">Account</label>
+                        <select id="importAccount" style="padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);"><option value="">No account</option></select>
+                    </div>
+                    <button class="btn btn-primary" onclick="importCsv()">Import</button>
+                </div>
+            </div>
+            <p class="muted" style="margin:0 0 8px;font-size:0.82em;">
+                Paste CSV — one row per trade. Columns: <code>date, symbol, type, quantity, price</code>
+                (header optional; <code>type</code> = buy/sell). Assigns the selected account. Re-imports are de-duped.
+            </p>
+            <textarea id="csvBox" placeholder="date,symbol,type,quantity,price
+2024-06-18,TASK,buy,30.45,32.23
+2026-06-25,TASK,sell,30.45,4.55" style="width:100%;min-height:120px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-family:monospace;font-size:0.85em;box-sizing:border-box;"></textarea>
+            <div id="importResult" class="muted" style="margin-top:8px;font-size:0.85em;"></div>
+        </div>
+
         <!-- Roadmap -->
         <div class="tax-card">
             <h3 style="margin:0 0 10px;">Coming next to the Tax Center</h3>
@@ -107,6 +128,10 @@
         const esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
         async function init() {
+            // Reset dynamic options so re-running (after an import) doesn't duplicate them.
+            document.getElementById('taxAccount').innerHTML = '<option value="">All taxable</option>';
+            document.getElementById('importAccount').innerHTML = '<option value="">No account</option>';
+            document.getElementById('taxYear').innerHTML = '';
             // Accounts (exclude nothing here; the API decides taxable) + years in parallel
             try {
                 const [accRes, yrRes] = await Promise.all([
@@ -116,10 +141,14 @@
                 if (accRes.ok) {
                     const accounts = await accRes.json();
                     const sel = document.getElementById('taxAccount');
+                    const imp = document.getElementById('importAccount');
                     (accounts || []).forEach(a => {
                         const o = document.createElement('option');
                         o.value = a.id; o.textContent = a.name;
                         sel.appendChild(o);
+                        const o2 = document.createElement('option');
+                        o2.value = a.id; o2.textContent = a.name;
+                        imp.appendChild(o2);
                     });
                 }
                 const yrSel = document.getElementById('taxYear');
@@ -210,6 +239,64 @@
                         '<td style="text-align:center;"><span class="term-badge ' + termCls + '">' + termTxt + '</span></td>' +
                         '</tr>';
                 }).join('') + '</tbody></table>';
+        }
+
+        function parseCsv(text) {
+            const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+            if (!lines.length) return [];
+            const first = lines[0].toLowerCase();
+            const hasHeader = /date|symbol|type|qty|quantity|price|ticker|action/.test(first) && !/^\d/.test(first.trim());
+            let cols = null, start = 0;
+            if (hasHeader) { cols = lines[0].split(',').map(c => c.trim().toLowerCase()); start = 1; }
+            const idx = (names, dflt) => {
+                if (!cols) return dflt;
+                const i = cols.findIndex(c => names.includes(c));
+                return i >= 0 ? i : dflt;
+            };
+            const di = idx(['date','transaction_date','trade date','trade_date'], 0);
+            const si = idx(['symbol','ticker'], 1);
+            const ti = idx(['type','transaction_type','action','side'], 2);
+            const qi = idx(['quantity','qty','shares'], 3);
+            const pi = idx(['price','unit price','avg price','avg_price'], 4);
+            const out = [];
+            for (let i = start; i < lines.length; i++) {
+                const p = lines[i].split(',').map(c => c.trim());
+                if (!p[si]) continue;
+                const raw = (p[ti] || '').toLowerCase();
+                const type = raw.startsWith('b') ? 'buy' : (raw.startsWith('s') ? 'sell' : raw);
+                const qty = parseFloat((p[qi] || '').replace(/[^0-9.\-]/g, ''));
+                const price = parseFloat((p[pi] || '').replace(/[^0-9.\-]/g, ''));
+                if (!qty || !price) continue;
+                out.push({ transaction_date: p[di], symbol: p[si], transaction_type: type, quantity: qty, price: price });
+            }
+            return out;
+        }
+
+        async function importCsv() {
+            const box = document.getElementById('csvBox');
+            const result = document.getElementById('importResult');
+            const txns = parseCsv(box.value);
+            if (!txns.length) { result.innerHTML = '<span class="gain-neg">No valid rows parsed. Check the format.</span>'; return; }
+            const acct = document.getElementById('importAccount').value;
+            result.textContent = 'Importing ' + txns.length + ' rows…';
+            try {
+                const res = await fetch('/api/portfolio/transactions/import', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ transactions: txns, account_id: acct || null })
+                });
+                const d = await res.json();
+                if (d.error) { result.innerHTML = '<span class="gain-neg">' + esc(d.error) + '</span>'; return; }
+                result.innerHTML = '<span class="gain-pos">Imported ' + d.imported + '</span>, skipped ' + d.skipped +
+                    (d.errors && d.errors.length ? ' — ' + esc(d.errors.join('; ')) : '');
+                box.value = '';
+                // refresh year list + report
+                init();
+            } catch (e) {
+                result.innerHTML = '<span class="gain-neg">Import failed.</span>';
+                console.error(e);
+            }
         }
 
         init();

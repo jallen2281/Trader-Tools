@@ -262,6 +262,7 @@ class Transaction(db.Model):
             'commission': float(self.commission),
             'total': float(self.quantity * self.price + self.commission),
             'transaction_date': self.transaction_date.isoformat() if self.transaction_date else None,
+            'account_id': self.account_id,
             'notes': self.notes
         }
 
