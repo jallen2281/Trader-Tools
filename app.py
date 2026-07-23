@@ -377,6 +377,23 @@ def get_tax_realized():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/tax/harvest', methods=['GET'])
+@require_api_auth
+def get_tax_harvest():
+    """Tax-loss harvesting candidates — unrealized losers with wash-sale /
+    IPO-lock flags and short/long classification."""
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        return jsonify(tax_analyzer.harvest_candidates(user_id)), 200
+    except Exception as e:
+        logger.error(f"Error in tax harvest: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/tax/years', methods=['GET'])
 @require_api_auth
 def get_tax_years():

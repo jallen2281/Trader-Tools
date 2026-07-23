@@ -72,6 +72,25 @@
         <div id="taxDetail" style="margin-top:16px;overflow-x:auto;"></div>
     </div>
 
+    <!-- Tax-Loss Harvesting -->
+    <div class="tax-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+            <h2 style="margin:0;">📉 Tax-Loss Harvesting</h2>
+            <button class="btn btn-secondary" onclick="loadHarvest()" style="padding:5px 12px;font-size:0.85em;">↻ Refresh</button>
+        </div>
+        <div class="summary-grid">
+            <div class="summary-tile"><div class="lbl">Harvestable Loss</div><div class="val gain-neg" id="hvTotal">$0.00</div><div class="sub" id="hvCount">—</div></div>
+            <div class="summary-tile"><div class="lbl">Short-Term</div><div class="val" id="hvST">$0.00</div><div class="sub muted">offsets ST gains</div></div>
+            <div class="summary-tile"><div class="lbl">Long-Term</div><div class="val" id="hvLT">$0.00</div><div class="sub muted">offsets LT gains</div></div>
+            <div class="summary-tile"><div class="lbl">Blocked</div><div class="val" id="hvBlocked" style="color:var(--text-primary);">0</div><div class="sub muted">wash-sale / locked</div></div>
+        </div>
+        <div id="harvestDetail" style="margin-top:16px;overflow-x:auto;"></div>
+        <div class="muted" style="margin-top:10px;font-size:0.75em;">
+            Wash-sale flags are based on recorded buy dates (buying the same symbol within 30 days disallows the loss).
+            Mind binary catalysts before harvesting — don't sell into a pending FDA/earnings event. Informational, not tax advice.
+        </div>
+    </div>
+
     <!-- Import transactions -->
     <div class="tax-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
@@ -149,6 +168,57 @@
             });
         } catch (e) { console.error('init error', e); }
         loadRealized();
+        loadHarvest();
+    }
+
+    async function loadHarvest() {
+        const detail = document.getElementById('harvestDetail');
+        detail.innerHTML = '<p class="muted" style="padding:16px;">Scanning positions…</p>';
+        try {
+            const res = await fetch('/api/tax/harvest', { credentials: 'same-origin' });
+            const data = await res.json();
+            if (data.error) { detail.innerHTML = '<p class="gain-neg" style="padding:16px;">' + esc(data.error) + '</p>'; return; }
+            renderHarvest(data);
+        } catch (e) {
+            detail.innerHTML = '<p class="gain-neg" style="padding:16px;">Could not load harvest candidates.</p>';
+            console.error(e);
+        }
+    }
+
+    function renderHarvest(data) {
+        const s = data.summary || {};
+        document.getElementById('hvTotal').textContent = fmt(s.harvestable_loss);
+        document.getElementById('hvCount').textContent = (s.harvestable_count || 0) + ' of ' + (s.candidate_count || 0) + ' positions';
+        const stEl = document.getElementById('hvST'); stEl.textContent = fmt(s.harvestable_short); stEl.className = 'val ' + gainClass(s.harvestable_short || 0);
+        const ltEl = document.getElementById('hvLT'); ltEl.textContent = fmt(s.harvestable_long); ltEl.className = 'val ' + gainClass(s.harvestable_long || 0);
+        document.getElementById('hvBlocked').textContent = s.blocked_count || 0;
+
+        const rows = data.candidates || [];
+        const detail = document.getElementById('harvestDetail');
+        if (!rows.length) {
+            detail.innerHTML = '<p class="muted" style="padding:16px;text-align:center;">No unrealized losses to harvest right now.</p>';
+            return;
+        }
+        detail.innerHTML = '<table class="tax-table"><thead><tr>' +
+            '<th>Symbol</th><th>Account</th><th style="text-align:right;">Unrealized Loss</th><th style="text-align:right;">%</th>' +
+            '<th style="text-align:center;">Term</th><th>Status</th></tr></thead><tbody>' +
+            rows.map(r => {
+                let status, cls;
+                if (r.locked) { status = '🔒 Locked' + (r.lock_until ? ' → ' + r.lock_until : ''); cls = 'term-short'; }
+                else if (r.wash_sale) { status = '🚫 Wash-sale risk'; cls = 'term-short'; }
+                else { status = '✅ Harvestable'; cls = 'term-long'; }
+                const termCls = r.term === 'long' ? 'term-long' : 'term-short';
+                const termTxt = r.term === 'long' ? 'Long' : 'Short';
+                const intent = r.intent ? ' <span class="muted" style="font-size:0.85em;">(' + esc(r.intent) + ')</span>' : '';
+                return '<tr style="' + (r.harvestable ? '' : 'opacity:0.6;') + '">' +
+                    '<td style="font-weight:600;">' + esc(r.symbol) + intent + '</td>' +
+                    '<td class="muted">' + esc(r.account_name || '—') + '</td>' +
+                    '<td style="text-align:right;font-weight:600;" class="gain-neg">' + fmt(r.unrealized_loss) + '</td>' +
+                    '<td style="text-align:right;" class="gain-neg">' + (r.loss_pct != null ? r.loss_pct + '%' : '—') + '</td>' +
+                    '<td style="text-align:center;"><span class="term-badge ' + termCls + '">' + termTxt + '</span></td>' +
+                    '<td><span class="term-badge ' + cls + '">' + status + '</span></td>' +
+                    '</tr>';
+            }).join('') + '</tbody></table>';
     }
 
     async function loadRealized() {

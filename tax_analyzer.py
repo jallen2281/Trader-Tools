@@ -161,6 +161,92 @@ class TaxAnalyzer:
             'disposals': disposals,
         }
 
+    def harvest_candidates(self, user_id):
+        """Unrealized losers that could be harvested to offset gains, with
+        wash-sale and IPO-lock flags + short/long classification.
+
+        Wash sale = bought the same symbol within 30 days (a loss sale then has
+        its loss disallowed). Flags are based on recorded buy dates, so a
+        snapshot-dated position can over-flag until real lots are imported.
+        Uses each holding's cached current_price (kept fresh by the list view).
+        """
+        from datetime import date, timedelta
+        accounts = {a.id: a.name for a in self.PortfolioAccount.query.filter_by(user_id=user_id).all()}
+        advantaged = {aid for aid, nm in accounts.items() if is_tax_advantaged(nm)}
+        today = date.today()
+        wash_start = today - timedelta(days=30)
+
+        recent_buy_symbols = set()
+        for t in self.Transaction.query.filter(
+            self.Transaction.user_id == user_id,
+            self.Transaction.transaction_type == 'buy'
+        ).all():
+            d = self._as_date(t.transaction_date)
+            if d and d >= wash_start:
+                recent_buy_symbols.add((t.symbol or '').upper())
+
+        candidates = []
+        for h in self.Portfolio.query.filter_by(user_id=user_id).all():
+            if h.account_id in advantaged:
+                continue
+            sym = (h.symbol or '').upper()
+            if sym == 'TA401K':
+                continue
+            cp = getattr(h, 'current_price', None)
+            if not cp:
+                continue
+            cp = float(cp)
+            cost = float(h.average_cost or 0)
+            qty = float(h.quantity or 0)
+            loss = (cp - cost) * qty
+            if loss >= -0.5:  # losers only
+                continue
+            acq = self._as_date(getattr(h, 'purchase_date', None))
+            hold_days = (today - acq).days if acq else None
+            term = 'long' if (hold_days is not None and hold_days > LONG_TERM_DAYS) else 'short'
+            lock_until = self._as_date(getattr(h, 'ipo_lock_until', None))
+            locked = bool(lock_until and lock_until > today)
+            wash = (sym in recent_buy_symbols) or (acq is not None and acq >= wash_start)
+            candidates.append({
+                'symbol': sym,
+                'account_id': h.account_id,
+                'account_name': accounts.get(h.account_id),
+                'quantity': round(qty, 6),
+                'cost_basis': round(cost, 4),
+                'current_price': round(cp, 4),
+                'market_value': round(cp * qty, 2),
+                'unrealized_loss': round(loss, 2),
+                'loss_pct': round(loss / (cost * qty) * 100, 2) if cost * qty else None,
+                'term': term,
+                'hold_days': hold_days,
+                'wash_sale': wash,
+                'locked': locked,
+                'lock_until': lock_until.isoformat() if lock_until else None,
+                'intent': getattr(h, 'intent', None),
+                'harvestable': (not locked) and (not wash),
+            })
+
+        candidates.sort(key=lambda c: c['unrealized_loss'])  # biggest loss first
+        harvest = [c for c in candidates if c['harvestable']]
+
+        def _sum(rows):
+            return round(sum(r['unrealized_loss'] for r in rows), 2)
+
+        summary = {
+            'total_unrealized_loss': _sum(candidates),
+            'harvestable_loss': _sum(harvest),
+            'harvestable_short': _sum([c for c in harvest if c['term'] == 'short']),
+            'harvestable_long': _sum([c for c in harvest if c['term'] == 'long']),
+            'candidate_count': len(candidates),
+            'harvestable_count': len(harvest),
+            'blocked_count': len(candidates) - len(harvest),
+        }
+        return {
+            'summary': summary,
+            'candidates': candidates,
+            'excluded_accounts': sorted(accounts[a] for a in advantaged),
+        }
+
     def _disposal(self, symbol, acct, acct_name, qty, acquired, sold, proceeds, basis, hold_days, estimated):
         gain = proceeds - basis
         term = 'long' if (hold_days is not None and hold_days > LONG_TERM_DAYS) else 'short'
