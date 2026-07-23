@@ -91,6 +91,24 @@
         </div>
     </div>
 
+    <!-- Long-Term Threshold -->
+    <div class="tax-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+            <h2 style="margin:0;">⏳ Long-Term Threshold</h2>
+            <button class="btn btn-secondary" onclick="loadLtThreshold()" style="padding:5px 12px;font-size:0.85em;">↻ Refresh</button>
+        </div>
+        <div class="summary-grid">
+            <div class="summary-tile"><div class="lbl">Short-Term Gains</div><div class="val gain-pos" id="ltTotalGain">$0.00</div><div class="sub" id="ltCount">—</div></div>
+            <div class="summary-tile"><div class="lbl">Crossing ≤30d</div><div class="val" id="lt30" style="color:var(--text-primary);">0</div><div class="sub muted">hold a bit longer</div></div>
+            <div class="summary-tile"><div class="lbl">Crossing ≤90d</div><div class="val" id="lt90" style="color:var(--text-primary);">0</div><div class="sub" id="lt90gain">$0.00 of gains</div></div>
+        </div>
+        <div id="ltDetail" style="margin-top:16px;overflow-x:auto;"></div>
+        <div class="muted" style="margin-top:10px;font-size:0.75em;">
+            Holding &gt;1 year moves a gain from ordinary-income rates to the 15–20% long-term rate. ≈Saving is illustrative
+            at a ~10-point rate gap — apply your own bracket. Snapshot-dated positions may read newer than reality until real lots are imported.
+        </div>
+    </div>
+
     <!-- Import transactions -->
     <div class="tax-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
@@ -169,6 +187,53 @@
         } catch (e) { console.error('init error', e); }
         loadRealized();
         loadHarvest();
+        loadLtThreshold();
+    }
+
+    async function loadLtThreshold() {
+        const detail = document.getElementById('ltDetail');
+        detail.innerHTML = '<p class="muted" style="padding:16px;">Scanning positions…</p>';
+        try {
+            const res = await fetch('/api/tax/lt-threshold', { credentials: 'same-origin' });
+            const data = await res.json();
+            if (data.error) { detail.innerHTML = '<p class="gain-neg" style="padding:16px;">' + esc(data.error) + '</p>'; return; }
+            renderLtThreshold(data);
+        } catch (e) {
+            detail.innerHTML = '<p class="gain-neg" style="padding:16px;">Could not load long-term threshold.</p>';
+            console.error(e);
+        }
+    }
+
+    function renderLtThreshold(data) {
+        const s = data.summary || {};
+        document.getElementById('ltTotalGain').textContent = fmt(s.total_gain_short);
+        document.getElementById('ltCount').textContent = (s.count || 0) + ' short-term positions';
+        document.getElementById('lt30').textContent = s.within_30_count || 0;
+        document.getElementById('lt90').textContent = s.within_90_count || 0;
+        document.getElementById('lt90gain').textContent = fmt(s.gain_within_90) + ' of gains';
+
+        const rows = data.positions || [];
+        const detail = document.getElementById('ltDetail');
+        if (!rows.length) {
+            detail.innerHTML = '<p class="muted" style="padding:16px;text-align:center;">No short-term gain positions — anything with a gain is already long-term (or there are no gains yet).</p>';
+            return;
+        }
+        detail.innerHTML = '<table class="tax-table"><thead><tr>' +
+            '<th>Symbol</th><th>Account</th><th style="text-align:right;">Unrealized Gain</th><th style="text-align:right;">Held</th>' +
+            '<th style="text-align:right;">Days to LT</th><th>Long-Term On</th><th style="text-align:right;">≈ Saving*</th></tr></thead><tbody>' +
+            rows.map(r => {
+                const saving = (r.unrealized_gain || 0) * 0.10;
+                const soon = r.days_to_lt <= 30;
+                return '<tr>' +
+                    '<td style="font-weight:600;">' + esc(r.symbol) + '</td>' +
+                    '<td class="muted">' + esc(r.account_name || '—') + '</td>' +
+                    '<td style="text-align:right;font-weight:600;" class="gain-pos">' + fmt(r.unrealized_gain) + '</td>' +
+                    '<td style="text-align:right;">' + (r.hold_days == null ? '—' : r.hold_days + 'd') + '</td>' +
+                    '<td style="text-align:right;font-weight:600;' + (soon ? 'color:#d97706;' : '') + '">' + r.days_to_lt + 'd</td>' +
+                    '<td>' + (r.lt_date || '—') + '</td>' +
+                    '<td style="text-align:right;" class="muted">' + fmt(saving) + '</td>' +
+                    '</tr>';
+            }).join('') + '</tbody></table>';
     }
 
     async function loadHarvest() {

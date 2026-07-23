@@ -247,6 +247,75 @@ class TaxAnalyzer:
             'excluded_accounts': sorted(accounts[a] for a in advantaged),
         }
 
+    def lt_threshold(self, user_id):
+        """Positions with unrealized GAINS that are still short-term — i.e.
+        approaching the 1-year mark where the rate drops from ordinary income to
+        the long-term rate. Sorted by days-to-long-term (soonest first).
+
+        LT requires holding MORE than one year, so the first long-term day is
+        acquisition + 366 days. Only gains matter here (a loss is the harvesting
+        angle, not this one). Snapshot-dated positions (RH 2026-07-08 import)
+        will read as newer than reality until real lots are imported.
+        """
+        from datetime import date, timedelta
+        accounts = {a.id: a.name for a in self.PortfolioAccount.query.filter_by(user_id=user_id).all()}
+        advantaged = {aid for aid, nm in accounts.items() if is_tax_advantaged(nm)}
+        today = date.today()
+
+        rows = []
+        for h in self.Portfolio.query.filter_by(user_id=user_id).all():
+            if h.account_id in advantaged:
+                continue
+            sym = (h.symbol or '').upper()
+            if sym == 'TA401K':
+                continue
+            cp = getattr(h, 'current_price', None)
+            if not cp:
+                continue
+            cp = float(cp)
+            cost = float(h.average_cost or 0)
+            qty = float(h.quantity or 0)
+            gain = (cp - cost) * qty
+            if gain <= 0.5:  # only gains benefit from reaching long-term
+                continue
+            acq = self._as_date(getattr(h, 'purchase_date', None))
+            if not acq:
+                continue
+            hold_days = (today - acq).days
+            if hold_days > LONG_TERM_DAYS:  # already long-term
+                continue
+            days_to_lt = (LONG_TERM_DAYS + 1) - hold_days  # days until held > 1 year
+            lt_date = acq + timedelta(days=LONG_TERM_DAYS + 1)
+            rows.append({
+                'symbol': sym,
+                'account_id': h.account_id,
+                'account_name': accounts.get(h.account_id),
+                'quantity': round(qty, 6),
+                'cost_basis': round(cost, 4),
+                'current_price': round(cp, 4),
+                'unrealized_gain': round(gain, 2),
+                'gain_pct': round(gain / (cost * qty) * 100, 2) if cost * qty else None,
+                'hold_days': hold_days,
+                'days_to_lt': days_to_lt,
+                'lt_date': lt_date.isoformat(),
+                'intent': getattr(h, 'intent', None),
+            })
+
+        rows.sort(key=lambda r: r['days_to_lt'])
+
+        def _g(rows_):
+            return round(sum(r['unrealized_gain'] for r in rows_), 2)
+
+        summary = {
+            'count': len(rows),
+            'total_gain_short': _g(rows),
+            'within_30_count': sum(1 for r in rows if r['days_to_lt'] <= 30),
+            'within_90_count': sum(1 for r in rows if r['days_to_lt'] <= 90),
+            'gain_within_90': _g([r for r in rows if r['days_to_lt'] <= 90]),
+        }
+        return {'summary': summary, 'positions': rows,
+                'excluded_accounts': sorted(accounts[a] for a in advantaged)}
+
     def _disposal(self, symbol, acct, acct_name, qty, acquired, sold, proceeds, basis, hold_days, estimated):
         gain = proceeds - basis
         term = 'long' if (hold_days is not None and hold_days > LONG_TERM_DAYS) else 'short'

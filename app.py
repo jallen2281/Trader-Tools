@@ -394,6 +394,22 @@ def get_tax_harvest():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/tax/lt-threshold', methods=['GET'])
+@require_api_auth
+def get_tax_lt_threshold():
+    """Short-term gain positions approaching the 1-year long-term mark."""
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        return jsonify(tax_analyzer.lt_threshold(user_id)), 200
+    except Exception as e:
+        logger.error(f"Error in tax lt-threshold: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/tax/years', methods=['GET'])
 @require_api_auth
 def get_tax_years():
