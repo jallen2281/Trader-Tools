@@ -410,6 +410,62 @@ def get_tax_lt_threshold():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/tax/export/8949', methods=['GET'])
+@require_api_auth
+def export_tax_8949():
+    """Realized gains as a Form 8949-style CSV (TurboTax-friendly), split into
+    Part I (short-term) and Part II (long-term) with subtotals."""
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        year = request.args.get('year', type=int)
+        account_id = request.args.get('account_id', type=int)
+        method = request.args.get('method', 'fifo')
+        result = tax_analyzer.realized_gains(user_id, year=year, account_id=account_id, method=method)
+        disposals = result.get('disposals', [])
+
+        from flask import make_response
+        import csv
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(['Description (a)', 'Date Acquired (b)', 'Date Sold (c)',
+                    'Proceeds (d)', 'Cost Basis (e)', 'Gain/Loss (h)',
+                    'Term', 'Account', 'Basis quality'])
+
+        def _section(rows, label, part):
+            if not rows:
+                return
+            w.writerow([])
+            w.writerow([f'=== {label} — Form 8949 Part {part} ==='])
+            for d in rows:
+                w.writerow([
+                    f"{d['quantity']} sh {d['symbol']}",
+                    d.get('acquired_date') or '', d.get('sold_date') or '',
+                    f"{d['proceeds']:.2f}", f"{d['basis']:.2f}", f"{d['gain']:.2f}",
+                    'Long-term' if d['term'] == 'long' else 'Short-term',
+                    d.get('account_name') or '',
+                    'estimated' if d.get('estimated') else 'actual',
+                ])
+            w.writerow(['TOTAL ' + label, '', '',
+                        f"{sum(d['proceeds'] for d in rows):.2f}",
+                        f"{sum(d['basis'] for d in rows):.2f}",
+                        f"{sum(d['gain'] for d in rows):.2f}", '', '', ''])
+
+        _section([d for d in disposals if d['term'] == 'short'], 'Short-Term', 'I')
+        _section([d for d in disposals if d['term'] == 'long'], 'Long-Term', 'II')
+
+        resp = make_response(buf.getvalue())
+        resp.headers['Content-Type'] = 'text/csv'
+        resp.headers['Content-Disposition'] = f'attachment; filename=form8949_{year or "all"}.csv'
+        return resp
+    except Exception as e:
+        logger.error(f"Error exporting 8949: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/tax/years', methods=['GET'])
 @require_api_auth
 def get_tax_years():

@@ -38,7 +38,10 @@
     <!-- Realized Gains -->
     <div class="tax-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
-            <h2 style="margin:0;">Realized Capital Gains</h2>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <h2 style="margin:0;">Realized Capital Gains</h2>
+                <button class="btn btn-secondary" onclick="exportForm8949()" style="padding:5px 12px;font-size:0.85em;" title="Download realized gains as a Form 8949 CSV">📄 Export 8949</button>
+            </div>
             <div class="tax-controls">
                 <div>
                     <label>Tax Year</label>
@@ -284,6 +287,22 @@
                     '<td><span class="term-badge ' + cls + '">' + status + '</span></td>' +
                     '</tr>';
             }).join('') + '</tbody></table>';
+    }
+
+    function exportForm8949() {
+        const year = document.getElementById('taxYear').value;
+        const account = document.getElementById('taxAccount').value;
+        const method = document.getElementById('taxMethod').value;
+        const params = new URLSearchParams();
+        if (year) params.set('year', year);
+        if (account) params.set('account_id', account);
+        if (method) params.set('method', method);
+        const a = document.createElement('a');
+        a.href = '/api/tax/export/8949?' + params.toString();
+        a.download = 'form8949_' + (year || 'all') + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     }
 
     async function loadRealized() {
