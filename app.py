@@ -513,7 +513,7 @@ def get_tax_ai_read():
             "actual 1099s and a CPA."
         )
 
-        read = claude_analyzer.read(system, facts)
+        read = claude_analyzer.read(system, facts, max_tokens=700)
         engine = 'claude' if read else None
         if not read:
             read = gemini_analyzer.read(system, facts)

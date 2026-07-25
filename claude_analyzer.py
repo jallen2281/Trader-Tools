@@ -75,14 +75,14 @@ class ClaudeAnalyzer:
             f"Sector exposure: {sectors or 'unavailable'}\n"
         )
 
-    def read(self, system: str, facts: str) -> str | None:
+    def read(self, system: str, facts: str, max_tokens: int = 400) -> str | None:
         """One-shot Claude call. Returns the read text, or None on any failure (caller falls back)."""
         if not self.client:
             return None
         try:
             resp = self.client.messages.create(
                 model=self.model,
-                max_tokens=400,
+                max_tokens=max_tokens,
                 system=system,
                 messages=[{"role": "user", "content": facts}],
             )
