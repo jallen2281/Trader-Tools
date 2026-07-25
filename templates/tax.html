@@ -25,6 +25,7 @@
     .roadmap { display:flex; flex-wrap:wrap; gap:8px; }
     .roadmap span { font-size:0.8em; padding:5px 11px; border-radius:999px; background:rgba(127,127,127,0.1); color:var(--text-secondary); }
     .muted { color:var(--text-secondary); }
+    .rec-in { width:120px; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); text-align:right; box-sizing:border-box; }
 </style>
 {% endblock %}
 
@@ -140,6 +141,35 @@
 2024-06-18,TASK,buy,30.45,32.23
 2026-06-25,TASK,sell,30.45,4.55" style="width:100%;min-height:120px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-family:monospace;font-size:0.85em;box-sizing:border-box;"></textarea>
         <div id="importResult" class="muted" style="margin-top:8px;font-size:0.85em;"></div>
+    </div>
+
+    <!-- 1099 Reconciliation -->
+    <div class="tax-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px;">
+            <h2 style="margin:0;">🔁 1099 Reconciliation</h2>
+            <button class="btn btn-primary" onclick="runReconcile()" style="padding:5px 14px;font-size:0.85em;">Reconcile</button>
+        </div>
+        <p class="muted" style="margin:0 0 12px;font-size:0.82em;">
+            Enter your broker 1099 (1099-B / 1099-DA) totals, then compare to what the Tax Center computed for the
+            <strong>year + account selected above</strong>. Leave blank anything your 1099 doesn't report.
+        </p>
+        <div style="overflow-x:auto;">
+            <table class="tax-table" style="max-width:560px;">
+                <thead><tr><th></th><th style="text-align:right;">Short-Term $</th><th style="text-align:right;">Long-Term $</th></tr></thead>
+                <tbody>
+                    <tr><td>1099 Proceeds</td>
+                        <td style="text-align:right;"><input id="r_st_proceeds" type="number" step="0.01" class="rec-in"></td>
+                        <td style="text-align:right;"><input id="r_lt_proceeds" type="number" step="0.01" class="rec-in"></td></tr>
+                    <tr><td>1099 Cost Basis</td>
+                        <td style="text-align:right;"><input id="r_st_basis" type="number" step="0.01" class="rec-in"></td>
+                        <td style="text-align:right;"><input id="r_lt_basis" type="number" step="0.01" class="rec-in"></td></tr>
+                    <tr><td>1099 Gain / Loss</td>
+                        <td style="text-align:right;"><input id="r_st_gain" type="number" step="0.01" class="rec-in"></td>
+                        <td style="text-align:right;"><input id="r_lt_gain" type="number" step="0.01" class="rec-in"></td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="reconcileResult" style="margin-top:14px;"></div>
     </div>
 {% endblock %}
 
@@ -323,6 +353,56 @@
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+    }
+
+    async function runReconcile() {
+        const year = document.getElementById('taxYear').value;
+        const account = document.getElementById('taxAccount').value;
+        const method = document.getElementById('taxMethod').value;
+        const params = new URLSearchParams();
+        if (year) params.set('year', year);
+        if (account) params.set('account_id', account);
+        if (method) params.set('method', method);
+        const out = document.getElementById('reconcileResult');
+        out.innerHTML = '<div class="muted" style="padding:10px 2px;">Computing…</div>';
+        try {
+            const res = await fetch('/api/tax/realized?' + params.toString(), { credentials: 'same-origin' });
+            const data = await res.json();
+            const s = data.summary || {}, st = s.short_term || {}, lt = s.long_term || {};
+            const ours = { stP: st.proceeds || 0, stB: st.basis || 0, stG: st.gain || 0,
+                           ltP: lt.proceeds || 0, ltB: lt.basis || 0, ltG: lt.gain || 0 };
+            const f = id => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; };
+            const form = { stP: f('r_st_proceeds'), stB: f('r_st_basis'), stG: f('r_st_gain'),
+                           ltP: f('r_lt_proceeds'), ltB: f('r_lt_basis'), ltG: f('r_lt_gain') };
+            renderReconcile(ours, form, year || 'all');
+        } catch (e) {
+            out.innerHTML = '<div class="gain-neg" style="padding:10px 2px;">Reconcile failed.</div>';
+            console.error(e);
+        }
+    }
+
+    function renderReconcile(ours, form, year) {
+        const rowFor = (label, o, val) => {
+            if (val == null) return '<tr><td>' + label + '</td><td style="text-align:right;">' + fmt(o) +
+                '</td><td style="text-align:right;" class="muted">—</td><td style="text-align:center;" class="muted">not on 1099</td></tr>';
+            const d = val - o, ok = Math.abs(d) < 1.00;
+            const badge = ok ? '<span class="term-badge term-long">✓ match</span>'
+                             : '<span class="term-badge term-short">Δ ' + fmt(d) + '</span>';
+            return '<tr><td>' + label + '</td><td style="text-align:right;">' + fmt(o) +
+                '</td><td style="text-align:right;">' + fmt(val) + '</td><td style="text-align:center;">' + badge + '</td></tr>';
+        };
+        document.getElementById('reconcileResult').innerHTML =
+            '<div style="overflow-x:auto;"><table class="tax-table"><thead><tr>' +
+            '<th>Metric (' + esc(String(year)) + ')</th><th style="text-align:right;">Computed</th>' +
+            '<th style="text-align:right;">Your 1099</th><th style="text-align:center;">Status</th></tr></thead><tbody>' +
+            rowFor('Short-Term Proceeds', ours.stP, form.stP) +
+            rowFor('Short-Term Cost Basis', ours.stB, form.stB) +
+            rowFor('Short-Term Gain/Loss', ours.stG, form.stG) +
+            rowFor('Long-Term Proceeds', ours.ltP, form.ltP) +
+            rowFor('Long-Term Cost Basis', ours.ltB, form.ltB) +
+            rowFor('Long-Term Gain/Loss', ours.ltG, form.ltG) +
+            '</tbody></table></div>' +
+            '<div class="muted" style="margin-top:8px;font-size:0.72em;">Match = within $1. A Δ flags where your records and the broker 1099 diverge (e.g. unknown/estimated basis, or a different ST/LT bucketing). Informational only, not tax advice.</div>';
     }
 
     async function loadRealized() {
