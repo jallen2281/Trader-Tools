@@ -466,6 +466,73 @@ def export_tax_8949():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/tax/ai-read', methods=['GET'])
+@require_api_auth
+def get_tax_ai_read():
+    """Plain-English read of the whole tax picture — realized, harvestable
+    losses, and positions approaching long-term. Claude primary → Gemini →
+    local LLM fallback."""
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        year = request.args.get('year', type=int) or datetime.now().year
+        realized = tax_analyzer.realized_gains(user_id, year=year)
+        harvest = tax_analyzer.harvest_candidates(user_id)
+        lt = tax_analyzer.lt_threshold(user_id)
+        rs, hs, ls = realized['summary'], harvest['summary'], lt['summary']
+        top_harvest = [c for c in harvest['candidates'] if c['harvestable']][:4]
+        top_lt = lt['positions'][:3]
+
+        facts = (
+            f"Tax year: {year}\n"
+            f"REALIZED so far: short-term {rs['short_term']['gain']}, long-term {rs['long_term']['gain']}, "
+            f"total {rs['total_gain']} across {rs['disposal_count']} sales.\n"
+            f"HARVESTABLE unrealized losses: {hs['harvestable_loss']} total (short-term {hs['harvestable_short']}, "
+            f"long-term {hs['harvestable_long']}); {hs['harvestable_count']} positions harvestable, "
+            f"{hs['blocked_count']} blocked by wash-sale or IPO-lock.\n"
+            "Top harvestable positions: "
+            + (", ".join(f"{c['symbol']} {c['unrealized_loss']} ({c['term']})" for c in top_harvest) or "none")
+            + "\n"
+            f"APPROACHING LONG-TERM: {ls['count']} short-term gain positions, {ls['within_90_count']} cross within 90 days.\n"
+            "Soonest crossings: "
+            + (", ".join(f"{r['symbol']} gain {r['unrealized_gain']} in {r['days_to_lt']}d" for r in top_lt) or "none")
+            + "\n"
+        )
+        system = (
+            "You are a sharp, plain-spoken tax-aware portfolio analyst. Given the owner's realized gains, "
+            "harvestable unrealized losses, and positions approaching long-term status for the tax year, write a "
+            "4-6 sentence read: where they stand on realized gains/losses, the single most useful tax-loss "
+            "harvesting move (respecting the wash-sale and locked caveats), and any position worth holding a bit "
+            "longer for long-term treatment. Be specific with the numbers. Note when realized losses already "
+            "exceed likely gains, so extra harvesting mostly builds carryforward (losses offset gains, then up to "
+            "$3,000 of ordinary income per year, then carry forward). Do NOT recommend buying or selling specific "
+            "securities as investments. End by noting this is informational, not tax advice — reconcile with the "
+            "actual 1099s and a CPA."
+        )
+
+        read = claude_analyzer.read(system, facts)
+        engine = 'claude' if read else None
+        if not read:
+            read = gemini_analyzer.read(system, facts)
+            engine = 'gemini' if read else None
+        if not read:
+            try:
+                local = llm_analyzer._call_llm([{'role': 'user', 'content': system + '\n\n' + facts}], timeout=60)
+                if local and not (local.lstrip().startswith("{'") or "'choices'" in local or 'rkllm_chat' in local):
+                    read, engine = local, 'local'
+            except Exception as e:
+                logger.warning(f"Local LLM fallback failed for tax ai-read: {e}")
+        if not read:
+            return jsonify({'empty': True, 'message': 'AI tax read unavailable right now.'}), 200
+        return jsonify({'read': read.strip(), 'engine': engine, 'year': year}), 200
+    except Exception as e:
+        logger.error(f"Error in tax ai-read: {e}", exc_info=True)
+        return jsonify({'error': str(e), 'empty': True, 'message': 'AI tax read temporarily unavailable'}), 200
+
+
 @app.route('/api/tax/years', methods=['GET'])
 @require_api_auth
 def get_tax_years():

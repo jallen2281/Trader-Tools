@@ -35,6 +35,15 @@
         Reconcile against your broker 1099s before filing.
     </p>
 
+    <!-- AI Tax Read -->
+    <div class="tax-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">🤖 AI Tax Read</h2>
+            <button id="taxAiBtn" class="btn btn-primary" onclick="loadTaxAiRead()" style="padding:5px 14px;font-size:0.85em;">Generate</button>
+        </div>
+        <div id="taxAiBody" style="margin-top:12px;"></div>
+    </div>
+
     <!-- Realized Gains -->
     <div class="tax-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
@@ -287,6 +296,30 @@
                     '<td><span class="term-badge ' + cls + '">' + status + '</span></td>' +
                     '</tr>';
             }).join('') + '</tbody></table>';
+    }
+
+    async function loadTaxAiRead() {
+        const btn = document.getElementById('taxAiBtn');
+        const body = document.getElementById('taxAiBody');
+        if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; btn.style.opacity = '0.6'; }
+        body.innerHTML = '<div class="muted" style="padding:12px 2px;">Reading your realized gains, harvest candidates, and long-term positions…</div>';
+        try {
+            const year = document.getElementById('taxYear').value;
+            const res = await fetch('/api/tax/ai-read' + (year ? '?year=' + year : ''), { credentials: 'same-origin' });
+            const data = await res.json();
+            if (data.read) {
+                const label = data.engine === 'claude' ? 'Claude' : (data.engine === 'gemini' ? 'Gemini' : 'Local LLM');
+                body.innerHTML = '<div style="line-height:1.6;padding:10px 12px;border-left:3px solid #8b5cf6;background:rgba(127,127,127,0.06);border-radius:0 6px 6px 0;">' + esc(data.read) + '</div>' +
+                    '<div class="muted" style="margin-top:8px;font-size:0.72em;">' + label + ' · informational only, not tax advice.</div>';
+            } else {
+                body.innerHTML = '<div class="muted" style="padding:12px 2px;">' + esc(data.message || 'AI tax read unavailable.') + '</div>';
+            }
+        } catch (e) {
+            body.innerHTML = '<div class="muted" style="padding:12px 2px;">AI tax read unavailable right now.</div>';
+            console.error(e);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Regenerate'; btn.style.opacity = '1'; }
+        }
     }
 
     function exportForm8949() {
