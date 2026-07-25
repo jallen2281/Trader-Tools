@@ -32,7 +32,10 @@
         /* Body row: optional sidebar block + main. With no sidebar the single
            child still centers at max-width. */
         .app-body { display: flex; align-items: flex-start; }
-        .app-main { flex: 1; min-width: 0; max-width: 1280px; margin: 0 auto; padding: 22px 20px; }
+        .app-main { flex: 1; min-width: 0; padding: 22px 20px; }
+        /* Only cap + center width when there's no sidebar; with a sidebar the
+           main content fills the space beside it (no narrow column). */
+        .app-main:only-child { max-width: 1280px; margin-inline: auto; }
         @media (max-width: 680px) {
             .app-topnav { gap: 8px; }
             .app-navlink { padding: 6px 8px; font-size: 0.85em; }
@@ -56,7 +59,11 @@
         </div>
         <div class="app-navactions">
             {% block navactions %}{% endblock %}
+            <button id="settingsBtn" class="app-iconbtn" title="Settings">⚙️</button>
             <button id="appThemeToggle" class="app-iconbtn" title="Toggle light / dark" aria-label="Toggle theme">🌙</button>
+            {% if current_user.is_authenticated %}
+            <a href="/logout" class="app-iconbtn" title="Sign out" style="text-decoration:none;color:#ef4444;">⎋</a>
+            {% endif %}
         </div>
     </nav>
 
