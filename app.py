@@ -1920,6 +1920,11 @@ def record_dividend():
         income_type = (data.get('income_type') or 'dividend').lower().strip()
         if income_type not in INCOME_TYPES:
             income_type = 'dividend'
+        # Only regular dividends can be qualified; special/lending/interest are ordinary.
+        if 'qualified' in data:
+            qualified = bool(data.get('qualified')) and income_type == 'dividend'
+        else:
+            qualified = (income_type == 'dividend')
         dividend = Dividend(
             user_id=current_user.id,
             account_id=int(data['account_id']) if data.get('account_id') else None,
@@ -1931,6 +1936,7 @@ def record_dividend():
             pay_date=datetime.strptime(data['pay_date'], '%Y-%m-%d').date() if data.get('pay_date') else None,
             reinvested=data.get('reinvested', False),
             income_type=income_type,
+            qualified=qualified,
             notes=data.get('notes', '')
         )
         db.session.add(dividend)
@@ -1973,6 +1979,10 @@ def update_dividend(dividend_id):
             if it not in INCOME_TYPES:
                 return jsonify({'error': 'invalid income_type'}), 400
             dividend.income_type = it
+            if it != 'dividend':  # non-dividend income is inherently ordinary
+                dividend.qualified = False
+        if 'qualified' in data:
+            dividend.qualified = bool(data.get('qualified')) and (dividend.income_type == 'dividend')
         if 'notes' in data:
             dividend.notes = (data.get('notes') or '').strip()
         db.session.commit()
@@ -2063,10 +2073,26 @@ def get_dividend_summary():
         recent_total = recent_query.scalar() or 0
         monthly_avg = round(float(recent_total) / 12, 2)
 
+        # Qualified (long-term rate) vs ordinary income split. Only regular
+        # dividends flagged qualified count as qualified; everything else is ordinary.
+        qual_query = db.session.query(sqlfunc.sum(Dividend.total_amount)).filter(
+            Dividend.user_id == current_user.id,
+            Dividend.income_type == 'dividend',
+            Dividend.qualified.is_(True)
+        )
+        if account_id and account_id.isdigit():
+            qual_query = qual_query.filter(Dividend.account_id == int(account_id))
+        elif account_id == 'unassigned':
+            qual_query = qual_query.filter(Dividend.account_id.is_(None))
+        qualified_income = round(float(qual_query.scalar() or 0), 2)
+        ordinary_income = round(float(total_income) - qualified_income, 2)
+
         return jsonify({
             'total_income': round(float(total_income), 2),
             'ytd_income': round(float(ytd_income), 2),
             'monthly_avg': monthly_avg,
+            'qualified_income': qualified_income,
+            'ordinary_income': ordinary_income,
             'by_symbol': sorted(by_symbol, key=lambda x: x['total'], reverse=True),
             'by_type': sorted(by_type, key=lambda x: x['total'], reverse=True),
             'payment_count': base_query.count()
@@ -4914,6 +4940,7 @@ def import_user_data():
                 ex_date=ex, pay_date=_pdate(r.get('pay_date')),
                 reinvested=r.get('reinvested', False),
                 income_type=(r.get('income_type') or 'dividend'),
+                qualified=r.get('qualified', (r.get('income_type') or 'dividend') == 'dividend'),
                 notes=r.get('notes'), account_id=_acct(r)))
             seen.add(key); imp += 1
         result['dividends'] = {'imported': imp, 'skipped': skip}

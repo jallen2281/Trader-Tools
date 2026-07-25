@@ -614,6 +614,11 @@ class Dividend(db.Model):
     # Income category: dividend (regular/qualified) | special (special distribution)
     # | lending (share-lending income) | interest
     income_type = db.Column(db.String(20), default='dividend', index=True)
+    # Qualified dividends are taxed at long-term rates (0/15/20%); everything
+    # else (non-qualified dividends, special distributions, share-lending
+    # substitute payments, interest) is ordinary income. Only regular dividends
+    # can be qualified — the other income types are inherently ordinary.
+    qualified = db.Column(db.Boolean, default=True)
     notes = db.Column(db.Text)
 
     def to_dict(self):
@@ -628,6 +633,7 @@ class Dividend(db.Model):
             'recorded_at': self.recorded_at.isoformat() if self.recorded_at else None,
             'reinvested': self.reinvested,
             'income_type': self.income_type or 'dividend',
+            'qualified': bool(self.qualified) if self.qualified is not None else True,
             'account_id': self.account_id,
             'notes': self.notes
         }

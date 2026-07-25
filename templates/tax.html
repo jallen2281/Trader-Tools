@@ -175,10 +175,11 @@
                 fetch('/api/tax/years', { credentials: 'same-origin' })
             ]);
             if (accRes.ok) {
-                const accounts = await accRes.json();
+                const raw = await accRes.json();
+                const accounts = Array.isArray(raw) ? raw : (raw.accounts || []);
                 const sel = document.getElementById('taxAccount');
                 const imp = document.getElementById('importAccount');
-                (accounts || []).forEach(a => {
+                accounts.forEach(a => {
                     const o = document.createElement('option');
                     o.value = a.id; o.textContent = a.name;
                     sel.appendChild(o);

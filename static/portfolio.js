@@ -1467,7 +1467,7 @@ async function loadDividendData() {
             const typeBar = document.getElementById('dividendTypeBar');
             if (typeBar) {
                 const bt = summary.by_type || [];
-                typeBar.innerHTML = bt.map(row => {
+                let html = bt.map(row => {
                     const m = _incomeMeta(row.type);
                     return `<span style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;background:rgba(127,127,127,0.1);font-size:0.82em;">
                         <span style="width:9px;height:9px;border-radius:50%;background:${m.color};"></span>
@@ -1476,6 +1476,16 @@ async function loadDividendData() {
                         <span style="color:var(--text-secondary);">(${row.count})</span>
                     </span>`;
                 }).join('');
+                // Tax view: qualified (long-term rate) vs ordinary income
+                if (summary.qualified_income != null || summary.ordinary_income != null) {
+                    const q = summary.qualified_income || 0, o = summary.ordinary_income || 0;
+                    const money = v => '$' + v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                    html += `<span style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;background:rgba(34,197,94,0.12);font-size:0.82em;" title="Qualified dividends — taxed at long-term (0/15/20%) rates">
+                        <span style="font-weight:600;">🟢 Qualified</span><span style="color:var(--success);font-weight:600;">${money(q)}</span></span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;background:rgba(245,158,11,0.14);font-size:0.82em;" title="Ordinary income — non-qualified dividends, special distributions, share-lending, interest">
+                        <span style="font-weight:600;">⚪ Ordinary</span><span style="color:#d97706;font-weight:600;">${money(o)}</span></span>`;
+                }
+                typeBar.innerHTML = html;
             }
         }
         if (historyRes.ok) {
@@ -1489,6 +1499,7 @@ async function loadDividendData() {
                 <thead><tr style="border-bottom:1px solid var(--border);color:var(--text-secondary);">
                     <th style="text-align:left;padding:6px 8px;">Symbol</th>
                     <th style="text-align:center;padding:6px 8px;">Type</th>
+                    <th style="text-align:center;padding:6px 8px;">Tax</th>
                     <th style="text-align:right;padding:6px 8px;">Amount</th>
                     <th style="text-align:right;padding:6px 8px;">Per Share</th>
                     <th style="text-align:center;padding:6px 8px;">Pay Date</th>
@@ -1504,6 +1515,9 @@ async function loadDividendData() {
                     <td style="padding:6px 8px;text-align:center;">
                         <select onchange="updateDividendType(${d.id}, this.value)" title="Reclassify income type" style="font-size:0.8em;padding:2px 4px;border-radius:5px;border:1px solid var(--border);background:var(--bg-primary);color:${color};font-weight:600;cursor:pointer;">${opts}</select>
                     </td>
+                    <td style="padding:6px 8px;text-align:center;">${t === 'dividend'
+                        ? `<label style="cursor:pointer;font-size:0.75em;white-space:nowrap;" title="Qualified dividends are taxed at long-term rates"><input type="checkbox" ${d.qualified !== false ? 'checked' : ''} onchange="updateDividendQualified(${d.id}, this.checked)" style="vertical-align:middle;"> Qual</label>`
+                        : `<span style="color:var(--text-secondary);font-size:0.72em;">ordinary</span>`}</td>
                     <td style="padding:6px 8px;text-align:right;color:var(--success);">$${d.total_amount.toFixed(2)}</td>
                     <td style="padding:6px 8px;text-align:right;">$${d.amount_per_share.toFixed(4)}</td>
                     <td style="padding:6px 8px;text-align:center;">${d.pay_date ? new Date(d.pay_date).toLocaleDateString() : '-'}</td>
@@ -1531,6 +1545,22 @@ async function updateDividendType(id, income_type) {
     } catch (error) {
         console.error('Error updating income type:', error);
         showToast('Failed to update income type', 'error');
+    }
+}
+
+async function updateDividendQualified(id, qualified) {
+    try {
+        const res = await fetch(`/api/portfolio/dividends/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qualified })
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+        showToast(qualified ? 'Marked qualified' : 'Marked ordinary', 'success');
+        loadDividendData();
+    } catch (error) {
+        console.error('Error updating qualified flag:', error);
+        showToast('Failed to update qualified flag', 'error');
     }
 }
 

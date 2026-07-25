@@ -203,6 +203,17 @@ def init_database(app):
         if _add_column_if_missing(db, inspector, 'dividends', 'income_type', 'VARCHAR(20)', "'dividend'"):
             logger.info("✓ Added income_type to dividends table")
 
+        # Migrate: add qualified flag (qualified dividends taxed at LT rates).
+        # Non-dividend income types are inherently ordinary → set them non-qualified.
+        inspector = inspect(db.engine)
+        _bool_true = 'TRUE' if _is_postgres(db) else '1'
+        _bool_false = 'FALSE' if _is_postgres(db) else '0'
+        if _add_column_if_missing(db, inspector, 'dividends', 'qualified', 'BOOLEAN', _bool_true):
+            db.session.execute(text(
+                f"UPDATE dividends SET qualified = {_bool_false} WHERE income_type != 'dividend'"))
+            db.session.commit()
+            logger.info("✓ Added qualified to dividends table")
+
         # Migrate: add new user columns if missing
         inspector = inspect(db.engine)
         bool_false = 'FALSE' if is_pg else '0'
