@@ -23,8 +23,10 @@ logger = logging.getLogger(__name__)
 class TradeJournal:
     """Analyzes trade history and generates AI-powered insights"""
     
-    def __init__(self, llm_analyzer: LLMAnalyzer):
+    def __init__(self, llm_analyzer: LLMAnalyzer, claude_analyzer=None, gemini_analyzer=None):
         self.llm_analyzer = llm_analyzer
+        self.claude_analyzer = claude_analyzer
+        self.gemini_analyzer = gemini_analyzer
         logger.info("✓ Trade Journal initialized")
     
     def get_trade_history(self, user_id: int, days: int = 90) -> Dict:
@@ -319,13 +321,27 @@ Performance Metrics:
 
 Provide 3-4 key insights about their trading patterns and 3-4 actionable recommendations for improvement. Be specific and constructive."""
 
-            # Get AI analysis using text-only path
-            ai_response = self.llm_analyzer._analyze_text_only(
-                symbol="PORTFOLIO",
-                indicators={},
-                patterns=[],
-                context=context
+            # AI narrative: Claude (primary) → Gemini. We deliberately SKIP the
+            # local RKLLM here — it's the vision model and blocks this endpoint
+            # for up to ~120s (this was the "AI insights stuck loading" bug). If
+            # neither cloud model is available, the deterministic fallback below
+            # fills in, so the endpoint always returns fast.
+            system = (
+                "You are a sharp, plain-spoken trading coach. Given the trader's performance "
+                "metrics, write 3-4 key insights about their trading patterns, then 3-4 "
+                "actionable recommendations. Put them under an 'Insights:' heading and a "
+                "'Recommendations:' heading, one per line starting with '- '. Be specific and "
+                "constructive, no preamble, no buy/sell advice on specific tickers."
             )
+            ai_response = None
+            try:
+                if self.claude_analyzer is not None and self.claude_analyzer.available():
+                    ai_response = self.claude_analyzer.read(system, context, max_tokens=600)
+                if not ai_response and self.gemini_analyzer is not None and self.gemini_analyzer.available():
+                    ai_response = self.gemini_analyzer.read(system, context)
+            except Exception as e:
+                logger.warning(f"Journal AI insight (cloud) failed: {e}")
+                ai_response = None
             
             # Parse response into insights and recommendations
             insights = []

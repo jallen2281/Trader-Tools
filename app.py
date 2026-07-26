@@ -234,7 +234,7 @@ except Exception as e:
 # Initialize Trade Journal after LLM Analyzer (Feature #5)
 if PHASE4_ENABLED and PHASE2_ENABLED:
     try:
-        trade_journal = TradeJournal(llm_analyzer)
+        trade_journal = TradeJournal(llm_analyzer, claude_analyzer, gemini_analyzer)
         logger.info("✓ Trade Journal initialized")
     except Exception as e:
         logger.error(f"✗ Failed to initialize Trade Journal: {e}")
