@@ -97,7 +97,7 @@ class TradeJournal:
             logger.error(f"Error fetching trade history: {e}")
             return {'error': str(e)}
     
-    def analyze_performance(self, user_id: int, days: int = 90) -> Dict:
+    def analyze_performance(self, user_id: int, days: int = 90, include_open_prices: bool = True) -> Dict:
         """
         Analyze trading performance with realized gains/losses
         
@@ -181,7 +181,7 @@ class TradeJournal:
             unrealized_total = 0
             open_positions = []
             for symbol, pos in positions.items():
-                if pos['quantity'] > 0:
+                if include_open_prices and pos['quantity'] > 0:
                     try:
                         import yfinance as yf
                         ticker = yf.Ticker(symbol)
@@ -270,9 +270,11 @@ class TradeJournal:
             Dict with AI-generated insights and recommendations
         """
         try:
-            # Get performance data
-            performance = self.analyze_performance(user_id, days)
-            
+            # Get performance data. Skip open-position price fetches — the
+            # insight narrative uses only realized-trade metrics, so pricing 28
+            # open positions here just made this endpoint slow.
+            performance = self.analyze_performance(user_id, days, include_open_prices=False)
+
             if 'error' in performance:
                 return performance
             
