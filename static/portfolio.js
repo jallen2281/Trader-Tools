@@ -1027,7 +1027,7 @@ window.deleteAlert = deleteAlert;
  * Portfolio Value Chart
  */
 let portfolioChart = null;
-let currentChartPeriod = '1m';
+let currentChartPeriod = '1y';
 
 function initPortfolioChart() {
     const buttons = document.querySelectorAll('.period-btn');

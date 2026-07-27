@@ -3736,99 +3736,119 @@ def get_portfolio_history():
         return jsonify({'error': str(e)}), 500
 
 def _build_portfolio_history(user_id, days):
-    """Build portfolio value history from transactions when no snapshots exist"""
+    """Portfolio value history reconstructed from the transaction ledger.
+
+    Walks actual position state over time (buys add, sells remove — avg-cost
+    basis), valued with historical prices, so every period is accurate rather
+    than applying today's positions to old prices. Holdings with no recorded
+    transaction (e.g. a directly-added crypto position) get a synthesized
+    opening lot at their purchase_date.
+    """
     from datetime import datetime, timedelta
+    from collections import defaultdict
     import yfinance as yf
+    import pandas as pd
     from data_fetcher import normalize_crypto_symbol
-    
-    # Build position state over time
+
+    def _yf(sym, atype):
+        sym = (sym or '').upper()
+        return sym if '-' in sym else normalize_crypto_symbol(sym, atype)
+
     holdings = Portfolio.query.filter_by(user_id=user_id).all()
     if not holdings:
         return []
-    
-    # Normalize symbols (e.g., crypto AVAX -> AVAX-USD)
-    symbol_map = {}
-    for h in holdings:
-        yf_sym = normalize_crypto_symbol(h.symbol, h.asset_type)
-        symbol_map[h.symbol] = yf_sym
-    symbols = list(set(symbol_map.values()))
-    
+
     end = datetime.now()
-    period_start = end - timedelta(days=days)
-    
-    # Find earliest purchase date across all holdings
-    earliest = None
+    period_start = (end - timedelta(days=days)).date()
+
+    # Position-change events from the ledger: (date, yf_symbol, qty_delta, price)
+    txns = Transaction.query.filter_by(user_id=user_id).order_by(Transaction.transaction_date.asc()).all()
+    events = []
+    seen = set()
+    for t in txns:
+        if (t.asset_type or 'stock') == 'option':
+            continue
+        d = t.transaction_date.date() if isinstance(t.transaction_date, datetime) else t.transaction_date
+        if not d:
+            continue
+        ysym = _yf(t.symbol, t.asset_type or 'stock')
+        q = float(t.quantity or 0)
+        events.append((d, ysym, q if t.transaction_type == 'buy' else -q, float(t.price or 0)))
+        seen.add((t.symbol or '').upper())
+
+    # Holdings without any transaction → synthesize an opening lot at purchase_date
     for h in holdings:
-        if h.purchase_date:
-            pd_date = h.purchase_date if isinstance(h.purchase_date, datetime) else datetime.combine(h.purchase_date, datetime.min.time())
-            if earliest is None or pd_date < earliest:
-                earliest = pd_date
-    
-    # For 'max' (9999 days), use earliest purchase date; otherwise respect the period
-    if days >= 9999 and earliest:
+        if (h.symbol or '').upper() not in seen:
+            d = h.purchase_date.date() if isinstance(h.purchase_date, datetime) else (h.purchase_date or end.date())
+            events.append((d, _yf(h.symbol, h.asset_type or 'stock'), float(h.quantity or 0), float(h.average_cost or 0)))
+
+    if not events:
+        return []
+    events.sort(key=lambda e: e[0])
+    earliest = events[0][0]
+    start = earliest if days >= 9999 else max(period_start, earliest)
+    if start > end.date():
         start = earliest
-    else:
-        start = period_start
-    
-    # Fetch historical prices for all symbols
+
+    # Historical prices for every symbol that ever appeared
     price_data = {}
-    for symbol in symbols:
+    for ysym in sorted({e[1] for e in events}):
         try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(start=start, end=end)
+            hist = yf.Ticker(ysym).history(start=start, end=end + timedelta(days=1))
             if not hist.empty:
-                price_data[symbol] = hist['Close']
+                s = hist['Close']
+                s.index = [d.date() if hasattr(d, 'date') else d for d in s.index]
+                price_data[ysym] = s[~pd.Index(s.index).duplicated(keep='last')]
         except Exception:
             continue
-    
     if not price_data:
         return []
-    
-    # Get common dates
-    import pandas as pd
-    all_dates = set()
-    for series in price_data.values():
-        all_dates.update(series.index.date)
-    dates = sorted(all_dates)
-    
-    # Build cost basis per symbol from transactions
-    positions = {}
-    for h in holdings:
-        yf_sym = symbol_map[h.symbol]
-        if yf_sym in positions:
-            positions[yf_sym]['quantity'] += float(h.quantity)
-            positions[yf_sym]['cost_basis'] += float(h.quantity) * float(h.average_cost)
-        else:
-            positions[yf_sym] = {
-                'quantity': float(h.quantity),
-                'cost_basis': float(h.quantity) * float(h.average_cost)
-            }
-    
-    # Calculate portfolio value for each date
+
+    all_dates = sorted({d for s in price_data.values() for d in s.index if d >= start})
+    if not all_dates:
+        return []
+    date_index = pd.Index(all_dates)
+    price_re = {ys: pd.Series(s.values, index=pd.Index(s.index)).sort_index().reindex(date_index, method='ffill')
+                for ys, s in price_data.items()}
+
+    # Walk dates, applying events, tracking (qty, cost) per symbol with avg cost
+    state = defaultdict(lambda: [0.0, 0.0])
+    ei, n = 0, len(events)
     history = []
-    for date in dates:
-        total_value = 0
-        total_cost = sum(p['cost_basis'] for p in positions.values())
-        for symbol, pos in positions.items():
-            if symbol in price_data:
-                series = price_data[symbol]
-                # Find closest price on or before this date
-                mask = series.index.date <= date
-                if mask.any():
-                    price = float(series[mask].iloc[-1])
-                    total_value += price * pos['quantity']
-        
+    for i, date in enumerate(all_dates):
+        while ei < n and events[ei][0] <= date:
+            _, ysym, dq, px = events[ei]
+            st = state[ysym]
+            if dq >= 0:
+                st[0] += dq
+                st[1] += dq * px
+            else:
+                if st[0] > 0:
+                    st[1] -= (min(-dq, st[0]) / st[0]) * st[1]
+                st[0] += dq
+                if st[0] < 1e-9:
+                    st[0], st[1] = 0.0, 0.0
+            ei += 1
+        total_value = total_cost = 0.0
+        for ysym, st in state.items():
+            if st[0] <= 0:
+                continue
+            pr = price_re.get(ysym)
+            if pr is None:
+                continue
+            price = pr.iloc[i]
+            if price is not None and not pd.isna(price):
+                total_value += st[0] * float(price)
+                total_cost += st[1]
         if total_value > 0:
             pnl = total_value - total_cost
-            pnl_pct = (pnl / total_cost * 100) if total_cost > 0 else 0
             history.append({
                 'timestamp': datetime.combine(date, datetime.min.time()).isoformat(),
                 'total_value': round(total_value, 2),
                 'total_cost_basis': round(total_cost, 2),
                 'total_pnl': round(pnl, 2),
-                'total_pnl_pct': round(pnl_pct, 4)
+                'total_pnl_pct': round((pnl / total_cost * 100) if total_cost > 0 else 0, 4),
             })
-    
     return history
 
 @app.route('/api/alerts', methods=['GET'])
