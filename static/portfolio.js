@@ -1068,9 +1068,12 @@ function renderPortfolioChart(canvas, history) {
     const ctx = canvas.getContext('2d');
     const isDark = document.body.classList.contains('dark-mode');
     
+    const currentYear = new Date().getFullYear();
     const labels = history.map(h => {
         const d = new Date(h.timestamp);
-        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const md = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        // Show the year for any date outside the current year (e.g. "Feb 3 '25")
+        return d.getFullYear() === currentYear ? md : `${md} '${String(d.getFullYear()).slice(-2)}`;
     });
     const values = history.map(h => h.total_value);
     const costBasis = history.map(h => h.total_cost_basis);
