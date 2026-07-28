@@ -26,7 +26,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -360,6 +360,342 @@ def paper_trading():
     if not PHASE4_ENABLED:
         return "Not available", 503
     return render_template('paper.html')
+
+
+@app.route('/profile')
+@login_required
+def profile_page():
+    """Profile & Settings hub — profile, preferences, and the Trading SOP."""
+    return render_template('profile.html')
+
+
+# ===================== TRADING SOP (Standard Operating Procedure) =====================
+
+# Canonical, engine-readable SOP knobs. Phase 1 stores/edits/displays these; a later
+# phase wires them into the recommendation + alerts engine. Every field is optional —
+# a blank means "no rule". Keep keys stable; the UI and AI-generate both reference them.
+SOP_RULE_FIELDS = {
+    'risk_tolerance': "conservative | moderate | aggressive",
+    'max_position_pct': "max % of portfolio in a single position",
+    'min_price': "minimum share price ($) to consider",
+    'min_market_cap_b': "minimum market cap ($ billions)",
+    'max_chase_pct': "skip if already up more than this % from signal/entry",
+    'earnings_blackout_days': "no new entry within this many trading days of earnings",
+    'stop_loss_pct': "default stop-loss (% below entry)",
+    'take_profit_pct': "default take-profit (% above entry)",
+    'allowed_assets': "list: equity, option, crypto",
+    'allowed_directions': "list: long, short",
+    'sectors_avoid': "list of sectors to avoid",
+    'max_positions': "max number of concurrent open positions",
+}
+
+
+def _sop_defaults():
+    return {
+        'risk_tolerance': 'moderate',
+        'max_position_pct': None, 'min_price': None, 'min_market_cap_b': None,
+        'max_chase_pct': None, 'earnings_blackout_days': None,
+        'stop_loss_pct': None, 'take_profit_pct': None,
+        'allowed_assets': ['equity'], 'allowed_directions': ['long'],
+        'sectors_avoid': [], 'max_positions': None,
+    }
+
+
+def _clean_sop_rules(raw):
+    """Coerce an incoming rules dict to the known schema; drop unknown keys."""
+    raw = raw or {}
+    out = {}
+    for k in SOP_RULE_FIELDS:
+        if k not in raw:
+            continue
+        v = raw[k]
+        if v in ('', None):
+            out[k] = None
+        elif k in ('allowed_assets', 'allowed_directions', 'sectors_avoid'):
+            out[k] = [str(x).strip().lower() for x in v] if isinstance(v, list) else [s.strip().lower() for s in str(v).split(',') if s.strip()]
+        elif k == 'risk_tolerance':
+            out[k] = str(v).strip().lower()
+        elif k in ('earnings_blackout_days', 'max_positions'):
+            try:
+                out[k] = int(float(v))
+            except (TypeError, ValueError):
+                out[k] = None
+        else:
+            try:
+                out[k] = float(v)
+            except (TypeError, ValueError):
+                out[k] = None
+    return out
+
+
+def _next_sop_version(user_id):
+    latest = db.session.query(db.func.max(TradingSOP.version)).filter_by(user_id=user_id).scalar()
+    return (latest or 0) + 1
+
+
+@app.route('/api/sop', methods=['GET'])
+@require_api_auth
+def get_sop():
+    """Return the user's active SOP plus their latest draft (if any) and the rule schema."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        active = TradingSOP.query.filter_by(user_id=user_id, status='active').order_by(TradingSOP.version.desc()).first()
+        draft = TradingSOP.query.filter_by(user_id=user_id, status='draft').order_by(TradingSOP.updated_at.desc()).first()
+        return jsonify({
+            'active': active.to_dict() if active else None,
+            'draft': draft.to_dict() if draft else None,
+            'schema': SOP_RULE_FIELDS,
+            'defaults': _sop_defaults(),
+        })
+    except Exception as e:
+        logger.error(f"Error getting SOP: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sop/history', methods=['GET'])
+@require_api_auth
+def get_sop_history():
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        rows = TradingSOP.query.filter_by(user_id=user_id).order_by(TradingSOP.version.desc()).all()
+        return jsonify({'versions': [r.to_dict() for r in rows]})
+    except Exception as e:
+        logger.error(f"Error getting SOP history: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sop', methods=['POST'])
+@require_api_auth
+def create_sop_draft():
+    """Save a new SOP draft (from the editor or an accepted AI generation). Not applied until approved."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        data = request.get_json() or {}
+        draft = TradingSOP(
+            user_id=user_id,
+            version=_next_sop_version(user_id),
+            status='draft',
+            name=(data.get('name') or 'My Trading SOP').strip()[:120],
+            rules=_clean_sop_rules(data.get('rules')),
+            style=data.get('style') or {},
+            doc=(data.get('doc') or '').strip() or None,
+            source=data.get('source') if data.get('source') in ('manual', 'ai_generated') else 'manual',
+        )
+        db.session.add(draft)
+        db.session.commit()
+        return jsonify(draft.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error creating SOP draft: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sop/<int:sid>', methods=['PUT'])
+@require_api_auth
+def update_sop_draft(sid):
+    """Edit a draft in place. Active/archived versions are immutable — edit produces a new draft via POST."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        sop = TradingSOP.query.filter_by(id=sid, user_id=user_id).first()
+        if not sop:
+            return jsonify({'error': 'Not found'}), 404
+        if sop.status != 'draft':
+            return jsonify({'error': 'Only drafts can be edited; approve creates an immutable version'}), 400
+        data = request.get_json() or {}
+        if 'name' in data:
+            sop.name = (data.get('name') or 'My Trading SOP').strip()[:120]
+        if 'rules' in data:
+            sop.rules = _clean_sop_rules(data.get('rules'))
+        if 'doc' in data:
+            sop.doc = (data.get('doc') or '').strip() or None
+        if 'style' in data:
+            sop.style = data.get('style') or {}
+        db.session.commit()
+        return jsonify(sop.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error updating SOP draft: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sop/<int:sid>', methods=['DELETE'])
+@require_api_auth
+def delete_sop(sid):
+    """Delete a draft or an archived version. The active SOP cannot be deleted (approve another first)."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        sop = TradingSOP.query.filter_by(id=sid, user_id=user_id).first()
+        if not sop:
+            return jsonify({'error': 'Not found'}), 404
+        if sop.status == 'active':
+            return jsonify({'error': 'Cannot delete the active SOP'}), 400
+        db.session.delete(sop)
+        db.session.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error deleting SOP: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sop/<int:sid>/approve', methods=['POST'])
+@require_api_auth
+def approve_sop(sid):
+    """Activate a draft or re-activate an archived version. Archives the prior active one."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        sop = TradingSOP.query.filter_by(id=sid, user_id=user_id).first()
+        if not sop:
+            return jsonify({'error': 'Not found'}), 404
+        if sop.status == 'active':
+            return jsonify(sop.to_dict())  # already active, no-op
+        # Archive any currently-active SOP for this user.
+        TradingSOP.query.filter_by(user_id=user_id, status='active').update({'status': 'archived'})
+        sop.status = 'active'
+        sop.activated_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify(sop.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error approving SOP: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+def _format_sop_for_ai(sop_dict):
+    """Render an SOP dict as compact facts for an AI prompt."""
+    r = sop_dict.get('rules') or {}
+    lines = [f"Name: {sop_dict.get('name')}"]
+    label = {
+        'risk_tolerance': 'Risk tolerance', 'max_position_pct': 'Max position %',
+        'min_price': 'Min share price $', 'min_market_cap_b': 'Min market cap $B',
+        'max_chase_pct': 'Max chase %', 'earnings_blackout_days': 'Earnings blackout (td)',
+        'stop_loss_pct': 'Default stop-loss %', 'take_profit_pct': 'Default take-profit %',
+        'allowed_assets': 'Allowed assets', 'allowed_directions': 'Allowed directions',
+        'sectors_avoid': 'Sectors avoided', 'max_positions': 'Max concurrent positions',
+    }
+    for k in SOP_RULE_FIELDS:
+        v = r.get(k)
+        if v in (None, '', [], {}):
+            continue
+        lines.append(f"{label.get(k, k)}: {', '.join(map(str, v)) if isinstance(v, list) else v}")
+    if sop_dict.get('doc'):
+        lines.append(f"Notes/free-form policy:\n{sop_dict['doc']}")
+    return "\n".join(lines)
+
+
+@app.route('/api/sop/ai-review', methods=['POST'])
+@require_api_auth
+def sop_ai_review():
+    """AI critique of an SOP (the active one, or a posted draft). Returns recommendations; no mutation."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        data = request.get_json() or {}
+        if data.get('rules') is not None or data.get('doc') is not None:
+            sop_dict = {'name': data.get('name') or 'My Trading SOP',
+                        'rules': _clean_sop_rules(data.get('rules')), 'doc': data.get('doc') or ''}
+        else:
+            active = TradingSOP.query.filter_by(user_id=user_id, status='active').order_by(TradingSOP.version.desc()).first()
+            if not active:
+                return jsonify({'empty': True, 'message': 'No active SOP to review yet.'}), 200
+            sop_dict = active.to_dict()
+        facts = _format_sop_for_ai(sop_dict)
+        system = (
+            "You are a seasoned trading coach and risk manager reviewing a trader's written Standard Operating "
+            "Procedure (SOP) — their personal rulebook. Give a candid, specific 5-8 sentence review: what's solid, "
+            "what's missing or risky (e.g. no position-size cap, no stop discipline, no earnings-blackout, vague "
+            "entry/exit criteria, over-concentration), and 2-3 concrete improvements phrased as rules they could add. "
+            "Respect their stated risk tolerance and style — don't push them toward more risk. If the SOP is strong, "
+            "say so plainly rather than inventing problems. End with one sentence: this is process feedback, not "
+            "individualized investment advice."
+        )
+        read = claude_analyzer.read(system, facts, max_tokens=650)
+        engine = 'claude' if read else None
+        if not read:
+            read = gemini_analyzer.read(system, facts)
+            engine = 'gemini' if read else None
+        if not read:
+            return jsonify({'empty': True, 'message': 'AI review is unavailable right now.'}), 200
+        return jsonify({'review': read.strip(), 'engine': engine}), 200
+    except Exception as e:
+        logger.error(f"Error in SOP ai-review: {e}", exc_info=True)
+        return jsonify({'error': str(e), 'empty': True, 'message': 'AI review temporarily unavailable'}), 200
+
+
+@app.route('/api/sop/generate', methods=['POST'])
+@require_api_auth
+def generate_sop():
+    """AI-generate an SOP DRAFT from a short questionnaire. Returns the draft — NOT applied until approved."""
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        answers = (request.get_json() or {}).get('answers') or {}
+        # Render the questionnaire answers as facts.
+        q_facts = "\n".join(f"- {k.replace('_', ' ')}: {v}" for k, v in answers.items() if v not in ('', None, []))
+        schema_desc = "\n".join(f"  {k}: {desc}" for k, desc in SOP_RULE_FIELDS.items())
+        system = (
+            "You are a trading coach turning a trader's answers into a concrete Standard Operating Procedure (SOP). "
+            "Return ONLY a JSON object (no prose, no markdown fences) with exactly two top-level keys: \"rules\" and "
+            "\"doc\". \"rules\" is an object using ONLY these keys (omit any you can't infer; use null for unknown "
+            "numeric fields, and lists for the list fields):\n" + schema_desc + "\n"
+            "\"doc\" is a clear, human-readable SOP in markdown (3-7 short sections: objective, universe/filters, "
+            "entry criteria, position sizing, risk management/stops, exit rules, and what to avoid) that is consistent "
+            "with the rules and the trader's stated style and risk tolerance. Be specific and disciplined; prefer "
+            "conservative defaults when the trader is unsure. Do not recommend specific securities."
+        )
+        facts = f"Trader's answers:\n{q_facts}\n\nProduce the SOP now as JSON."
+        raw = claude_analyzer.read(system, facts, max_tokens=1400)
+        engine = 'claude' if raw else None
+        if not raw:
+            raw = gemini_analyzer.read(system, facts)
+            engine = 'gemini' if raw else None
+        if not raw:
+            return jsonify({'empty': True, 'message': 'AI SOP generation is unavailable right now.'}), 200
+
+        rules, doc = {}, None
+        try:
+            txt = raw.strip()
+            if txt.startswith('```'):
+                txt = txt.split('```', 2)[1]
+                if txt.lstrip().lower().startswith('json'):
+                    txt = txt.lstrip()[4:]
+            start, end = txt.find('{'), txt.rfind('}')
+            parsed = json.loads(txt[start:end + 1]) if start != -1 and end != -1 else {}
+            rules = _clean_sop_rules(parsed.get('rules'))
+            doc = (parsed.get('doc') or '').strip() or None
+        except Exception as pe:
+            logger.warning(f"SOP generate: JSON parse failed ({pe}); returning raw as doc")
+            doc = raw.strip()
+
+        # Persist as a draft so the user can review, tweak, then approve.
+        draft = TradingSOP(
+            user_id=user_id, version=_next_sop_version(user_id), status='draft',
+            name=(answers.get('name') or 'AI-Generated SOP')[:120],
+            rules=rules, style=answers, doc=doc, source='ai_generated',
+        )
+        db.session.add(draft)
+        db.session.commit()
+        result = draft.to_dict()
+        result['engine'] = engine
+        return jsonify(result), 201
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error generating SOP: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 def _paper_strategy_list(user_id):
@@ -1137,6 +1473,29 @@ def save_preferences():
     current_user.preferences = {**(current_user.preferences or {}), **prefs}
     db.session.commit()
     return jsonify({'success': True, 'preferences': current_user.preferences})
+
+
+@app.route('/api/user/profile', methods=['GET'])
+@require_api_auth
+def get_user_profile():
+    """Current user's profile (self)."""
+    return jsonify({'user': current_user.to_dict()})
+
+
+@app.route('/api/user/profile', methods=['PUT'])
+@require_api_auth
+def update_user_profile():
+    """Update the current user's own editable profile fields (name, bio)."""
+    data = request.get_json() or {}
+    if 'name' in data:
+        name = (data.get('name') or '').strip()
+        if name:
+            current_user.name = name[:255]
+    if 'bio' in data:
+        bio = (data.get('bio') or '').strip()
+        current_user.bio = bio[:2000] or None
+    db.session.commit()
+    return jsonify({'success': True, 'user': current_user.to_dict()})
 
 
 @app.route('/api/auth/token', methods=['POST'])

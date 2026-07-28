@@ -60,7 +60,8 @@
         </div>
         <div class="app-navactions">
             {% block navactions %}{% endblock %}
-            <button id="settingsBtn" class="app-iconbtn" title="Settings">⚙️</button>
+            <a href="/profile" class="app-iconbtn" title="Profile & Settings" style="text-decoration:none;">👤</a>
+            <button id="settingsBtn" class="app-iconbtn" title="Quick settings">⚙️</button>
             <button id="appThemeToggle" class="app-iconbtn" title="Toggle light / dark" aria-label="Toggle theme">🌙</button>
             {% if current_user.is_authenticated %}
             <a href="/logout" class="app-iconbtn" title="Sign out" style="text-decoration:none;color:#ef4444;">⎋</a>

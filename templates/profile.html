@@ -1,0 +1,510 @@
+{% extends "base.html" %}
+{% block title %}Profile & Settings - Trader Tools{% endblock %}
+
+{% block head %}
+<style>
+    .pf-card { background: var(--card-bg); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:20px 22px; margin-bottom:20px; }
+    .pf-tabs { display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:22px; }
+    .pf-tab { padding:10px 18px; cursor:pointer; border:none; background:none; color:var(--text-secondary); font-size:0.95em; font-weight:600; border-bottom:2px solid transparent; margin-bottom:-1px; }
+    .pf-tab.active { color:var(--text-primary); border-bottom-color:var(--accent, #667eea); }
+    .pf-panel { display:none; }
+    .pf-panel.active { display:block; }
+    .pf-row { display:flex; gap:16px; flex-wrap:wrap; }
+    .pf-field { margin-bottom:16px; }
+    .pf-field label { display:block; font-size:0.8em; color:var(--text-secondary); margin-bottom:5px; font-weight:600; }
+    .pf-field input, .pf-field select, .pf-field textarea { width:100%; padding:9px 12px; border-radius:7px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); box-sizing:border-box; font-size:0.92em; font-family:inherit; }
+    .pf-field textarea { resize:vertical; min-height:70px; }
+    .pf-muted { color:var(--text-secondary); }
+    .pf-avatar { width:72px; height:72px; border-radius:50%; object-fit:cover; border:2px solid var(--border); }
+    .pf-avatar-fallback { width:72px; height:72px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:1.8em; font-weight:700; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; }
+    .toggle-row { display:flex; align-items:center; justify-content:space-between; padding:14px 0; border-bottom:1px solid var(--border); }
+    .toggle-row:last-child { border-bottom:none; }
+    .toggle-row .t-label { font-weight:600; }
+    .toggle-row .t-sub { font-size:0.82em; color:var(--text-secondary); margin-top:2px; }
+    .badge { font-size:0.7em; font-weight:700; padding:3px 9px; border-radius:999px; text-transform:uppercase; letter-spacing:0.03em; }
+    .b-active { background:rgba(34,197,94,0.16); color:#16a34a; }
+    .b-draft { background:rgba(245,158,11,0.16); color:#d97706; }
+    .b-archived { background:rgba(127,127,127,0.15); color:var(--text-secondary); }
+    .rule-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:14px; }
+    .rule-view { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; }
+    .rule-chip { background:var(--bg-tertiary); border-radius:9px; padding:11px 13px; }
+    .rule-chip .rk { font-size:0.72em; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.02em; }
+    .rule-chip .rv { font-size:1.05em; font-weight:700; margin-top:3px; }
+    .checkset { display:flex; gap:14px; flex-wrap:wrap; }
+    .checkset label { display:flex; align-items:center; gap:6px; font-size:0.9em; color:var(--text-primary); font-weight:500; }
+    .btn2 { padding:9px 16px; border-radius:8px; border:1px solid var(--border); background:var(--bg-tertiary); color:var(--text-primary); font-size:0.9em; font-weight:600; cursor:pointer; }
+    .btn2.primary { background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; border:none; }
+    .btn2.danger { color:#ef4444; border-color:rgba(239,68,68,0.4); }
+    .btn2:disabled { opacity:0.55; cursor:not-allowed; }
+    .sop-doc { background:var(--bg-tertiary); border-radius:9px; padding:16px 18px; line-height:1.6; font-size:0.92em; }
+    .sop-doc h3 { margin:14px 0 6px; font-size:1.02em; }
+    .sop-doc h2 { margin:16px 0 8px; font-size:1.1em; }
+    .sop-doc ul { margin:6px 0 10px; padding-left:22px; }
+    .sop-doc li { margin:3px 0; }
+    .sop-doc p { margin:8px 0; }
+    .ai-box { background:rgba(102,126,234,0.08); border:1px solid rgba(102,126,234,0.25); border-radius:9px; padding:14px 16px; line-height:1.6; font-size:0.92em; white-space:pre-wrap; margin-top:12px; }
+    .draft-banner { background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.35); border-radius:10px; padding:14px 16px; margin-bottom:18px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+    .modal-back { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:9000; padding:20px; }
+    .modal-box { background:var(--card-bg); color:var(--text-primary); border-radius:12px; padding:24px; max-width:600px; width:100%; max-height:88vh; overflow-y:auto; box-shadow:0 10px 40px rgba(0,0,0,0.4); }
+    .hist-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0; border-bottom:1px solid var(--border); flex-wrap:wrap; }
+    .hist-row:last-child { border-bottom:none; }
+</style>
+{% endblock %}
+
+{% block content %}
+    <h1 style="margin:0 0 4px;">👤 Profile &amp; Settings</h1>
+    <p class="pf-muted" style="margin-top:0;font-size:0.9em;">Your profile, app preferences, and your Trading SOP — your personal rulebook.</p>
+
+    <div class="pf-tabs">
+        <button class="pf-tab active" data-tab="profile" onclick="showTab('profile')">Profile</button>
+        <button class="pf-tab" data-tab="prefs" onclick="showTab('prefs')">Preferences</button>
+        <button class="pf-tab" data-tab="sop" onclick="showTab('sop')">📋 Trading SOP</button>
+    </div>
+
+    <!-- ===== PROFILE ===== -->
+    <div class="pf-panel active" id="panel-profile">
+        <div class="pf-card">
+            <div style="display:flex;gap:18px;align-items:center;margin-bottom:20px;">
+                <div id="pfAvatar"></div>
+                <div>
+                    <div id="pfName" style="font-size:1.3em;font-weight:700;">—</div>
+                    <div class="pf-muted" id="pfEmail" style="font-size:0.9em;">—</div>
+                    <div style="margin-top:5px;"><span class="badge b-archived" id="pfRole">user</span> <span class="pf-muted" id="pfSince" style="font-size:0.8em;"></span></div>
+                </div>
+            </div>
+            <div class="pf-field">
+                <label>Display Name</label>
+                <input id="pfNameInput" maxlength="255">
+            </div>
+            <div class="pf-field">
+                <label>Bio</label>
+                <textarea id="pfBioInput" maxlength="2000" placeholder="A short note about your trading focus…"></textarea>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;">
+                <button class="btn2 primary" onclick="saveProfile()" id="pfSaveBtn">Save Profile</button>
+                <span id="pfMsg" class="pf-muted" style="font-size:0.85em;"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== PREFERENCES ===== -->
+    <div class="pf-panel" id="panel-prefs">
+        <div class="pf-card">
+            <p class="pf-muted" style="margin-top:0;font-size:0.85em;">Saved to your account and synced across devices.</p>
+            <div class="toggle-row">
+                <div><div class="t-label">Dark Mode</div><div class="t-sub">Use a dark color scheme</div></div>
+                <input type="checkbox" id="prefDark" style="width:18px;height:18px;cursor:pointer;">
+            </div>
+            <div class="toggle-row">
+                <div><div class="t-label">Auto-refresh Watchlist</div><div class="t-sub">Keep watchlist prices updating automatically</div></div>
+                <input type="checkbox" id="prefAutoRefresh" style="width:18px;height:18px;cursor:pointer;">
+            </div>
+            <div class="toggle-row">
+                <div><div class="t-label">Browser Notifications</div><div class="t-sub">Show a notification when a price alert triggers</div></div>
+                <input type="checkbox" id="prefNotify" style="width:18px;height:18px;cursor:pointer;">
+            </div>
+            <div class="pf-row" style="margin-top:18px;">
+                <div class="pf-field" style="flex:1;min-width:180px;">
+                    <label>Default Chart Period</label>
+                    <select id="prefPeriod">
+                        <option value="1d">1 Day</option><option value="5d">5 Days</option>
+                        <option value="1mo">1 Month</option><option value="3mo">3 Months</option>
+                        <option value="6mo">6 Months</option><option value="1y">1 Year</option>
+                        <option value="2y">2 Years</option><option value="5y">5 Years</option>
+                    </select>
+                </div>
+                <div class="pf-field" style="flex:1;min-width:180px;">
+                    <label>Default Chart Type</label>
+                    <select id="prefChart">
+                        <option value="candlestick">Candlestick</option>
+                        <option value="line">Line</option><option value="volume">Volume</option>
+                    </select>
+                </div>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:6px;">
+                <button class="btn2 primary" onclick="savePrefs()" id="prefSaveBtn">Save Preferences</button>
+                <span id="prefMsg" class="pf-muted" style="font-size:0.85em;"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== TRADING SOP ===== -->
+    <div class="pf-panel" id="panel-sop">
+        <div id="sopBody"><p class="pf-muted" style="text-align:center;padding:30px;">Loading your SOP…</p></div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script>
+    const esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    let SOP_SCHEMA = {}, SOP_DEFAULTS = {}, ACTIVE_SOP = null, DRAFT_SOP = null;
+
+    function showTab(name) {
+        document.querySelectorAll('.pf-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+        document.querySelectorAll('.pf-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
+        if (name === 'sop' && !ACTIVE_SOP && !DRAFT_SOP) loadSop();
+    }
+
+    /* ---------- Profile ---------- */
+    async function loadProfile() {
+        try {
+            const r = await fetch('/api/user/profile', { credentials: 'same-origin' });
+            const { user } = await r.json();
+            document.getElementById('pfName').textContent = user.name || 'Trader';
+            document.getElementById('pfEmail').textContent = user.email || '';
+            document.getElementById('pfRole').textContent = user.role || 'user';
+            document.getElementById('pfSince').textContent = user.created_at ? ' · joined ' + new Date(user.created_at).toLocaleDateString() : '';
+            document.getElementById('pfNameInput').value = user.name || '';
+            document.getElementById('pfBioInput').value = user.bio || '';
+            const av = document.getElementById('pfAvatar');
+            if (user.picture_url) {
+                av.innerHTML = `<img class="pf-avatar" src="${esc(user.picture_url)}" alt="">`;
+            } else {
+                const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase();
+                av.innerHTML = `<div class="pf-avatar-fallback">${esc(initial)}</div>`;
+            }
+        } catch (e) { console.error('loadProfile', e); }
+    }
+    async function saveProfile() {
+        const btn = document.getElementById('pfSaveBtn'), msg = document.getElementById('pfMsg');
+        btn.disabled = true; msg.textContent = 'Saving…'; msg.style.color = '';
+        try {
+            const r = await fetch('/api/user/profile', {
+                method: 'PUT', headers: {'Content-Type':'application/json'}, credentials: 'same-origin',
+                body: JSON.stringify({ name: document.getElementById('pfNameInput').value, bio: document.getElementById('pfBioInput').value })
+            });
+            if (!r.ok) throw new Error('save failed');
+            msg.textContent = '✓ Saved'; msg.style.color = 'var(--success)';
+            loadProfile();
+        } catch (e) { msg.textContent = 'Could not save'; msg.style.color = '#ef4444'; }
+        finally { btn.disabled = false; }
+    }
+
+    /* ---------- Preferences ---------- */
+    async function loadPrefs() {
+        const p = {
+            darkMode: localStorage.getItem('darkMode') === 'true',
+            autoRefreshWatchlist: localStorage.getItem('autoRefreshWatchlist') !== 'false',
+            notificationsEnabled: localStorage.getItem('notificationsEnabled') !== 'false',
+            defaultPeriod: localStorage.getItem('defaultPeriod') || '6mo',
+            defaultChartType: localStorage.getItem('defaultChartType') || 'candlestick',
+        };
+        try {
+            const r = await fetch('/api/user/preferences', { credentials: 'same-origin' });
+            if (r.ok) Object.assign(p, (await r.json()).preferences || {});
+        } catch (e) {}
+        document.getElementById('prefDark').checked = !!p.darkMode;
+        document.getElementById('prefAutoRefresh').checked = p.autoRefreshWatchlist !== false;
+        document.getElementById('prefNotify').checked = p.notificationsEnabled !== false;
+        document.getElementById('prefPeriod').value = p.defaultPeriod || '6mo';
+        document.getElementById('prefChart').value = p.defaultChartType || 'candlestick';
+    }
+    async function savePrefs() {
+        const btn = document.getElementById('prefSaveBtn'), msg = document.getElementById('prefMsg');
+        const prefs = {
+            darkMode: document.getElementById('prefDark').checked,
+            autoRefreshWatchlist: document.getElementById('prefAutoRefresh').checked,
+            notificationsEnabled: document.getElementById('prefNotify').checked,
+            defaultPeriod: document.getElementById('prefPeriod').value,
+            defaultChartType: document.getElementById('prefChart').value,
+        };
+        Object.entries(prefs).forEach(([k, v]) => localStorage.setItem(k, v));
+        // Apply dark mode immediately (same mechanism app.js uses)
+        document.documentElement.classList.toggle('dark-mode', prefs.darkMode);
+        document.body.classList.toggle('dark-mode', prefs.darkMode);
+        btn.disabled = true; msg.textContent = 'Saving…'; msg.style.color = '';
+        try {
+            const r = await fetch('/api/user/preferences', {
+                method: 'PUT', headers: {'Content-Type':'application/json'}, credentials: 'same-origin',
+                body: JSON.stringify(prefs)
+            });
+            if (!r.ok) throw new Error('save failed');
+            msg.textContent = '✓ Saved'; msg.style.color = 'var(--success)';
+        } catch (e) { msg.textContent = 'Could not save'; msg.style.color = '#ef4444'; }
+        finally { btn.disabled = false; }
+    }
+
+    /* ---------- SOP: tiny markdown renderer (escaped-safe) ---------- */
+    function mdRender(src) {
+        if (!src) return '<p class="pf-muted">No written policy text.</p>';
+        const lines = String(src).split('\n');
+        let html = '', inList = false;
+        const inline = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>');
+        for (let raw of lines) {
+            const line = raw.trimEnd();
+            if (/^#{2,3}\s+/.test(line)) {
+                if (inList) { html += '</ul>'; inList = false; }
+                const lvl = line.startsWith('###') ? 3 : 2;
+                html += `<h${lvl}>${inline(line.replace(/^#{2,3}\s+/, ''))}</h${lvl}>`;
+            } else if (/^#\s+/.test(line)) {
+                if (inList) { html += '</ul>'; inList = false; }
+                html += `<h2>${inline(line.replace(/^#\s+/, ''))}</h2>`;
+            } else if (/^\s*[-*]\s+/.test(line)) {
+                if (!inList) { html += '<ul>'; inList = true; }
+                html += `<li>${inline(line.replace(/^\s*[-*]\s+/, ''))}</li>`;
+            } else if (line.trim() === '') {
+                if (inList) { html += '</ul>'; inList = false; }
+            } else {
+                if (inList) { html += '</ul>'; inList = false; }
+                html += `<p>${inline(line)}</p>`;
+            }
+        }
+        if (inList) html += '</ul>';
+        return html;
+    }
+
+    const RULE_LABELS = {
+        risk_tolerance:'Risk tolerance', max_position_pct:'Max position %', min_price:'Min price $',
+        min_market_cap_b:'Min mkt cap $B', max_chase_pct:'Max chase %', earnings_blackout_days:'Earnings blackout (td)',
+        stop_loss_pct:'Stop-loss %', take_profit_pct:'Take-profit %', allowed_assets:'Allowed assets',
+        allowed_directions:'Directions', sectors_avoid:'Sectors avoided', max_positions:'Max positions'
+    };
+    function ruleDisplay(k, v) {
+        if (v == null || v === '' || (Array.isArray(v) && !v.length)) return '—';
+        if (Array.isArray(v)) return v.join(', ');
+        return v;
+    }
+
+    /* ---------- SOP: load + render ---------- */
+    async function loadSop() {
+        const body = document.getElementById('sopBody');
+        body.innerHTML = '<p class="pf-muted" style="text-align:center;padding:30px;">Loading your SOP…</p>';
+        try {
+            const r = await fetch('/api/sop', { credentials: 'same-origin' });
+            const data = await r.json();
+            SOP_SCHEMA = data.schema || {}; SOP_DEFAULTS = data.defaults || {};
+            ACTIVE_SOP = data.active; DRAFT_SOP = data.draft;
+            renderSop();
+        } catch (e) {
+            body.innerHTML = '<p style="color:#ef4444;text-align:center;padding:30px;">Could not load your SOP.</p>';
+            console.error(e);
+        }
+    }
+
+    function renderSop() {
+        const body = document.getElementById('sopBody');
+        let html = '';
+        // Draft awaiting approval
+        if (DRAFT_SOP) {
+            html += `<div class="draft-banner">
+                <div><strong>📝 Draft pending your approval</strong> — v${DRAFT_SOP.version}, ${DRAFT_SOP.source === 'ai_generated' ? 'AI-generated' : 'manual'}. Review it below, edit if needed, then approve to make it your active SOP.</div>
+                <div style="display:flex;gap:8px;">
+                    <button class="btn2 primary" onclick="approveSop(${DRAFT_SOP.id})">✓ Approve &amp; Apply</button>
+                    <button class="btn2" onclick="openEditor(${DRAFT_SOP.id})">✏️ Edit</button>
+                    <button class="btn2 danger" onclick="discardSop(${DRAFT_SOP.id})">Discard</button>
+                </div></div>`;
+            html += sopCard(DRAFT_SOP, true);
+        }
+        // Active SOP
+        if (ACTIVE_SOP) {
+            html += sopCard(ACTIVE_SOP, false);
+        } else if (!DRAFT_SOP) {
+            html += `<div class="pf-card" style="text-align:center;padding:34px;">
+                <div style="font-size:2.4em;">📋</div>
+                <h2 style="margin:8px 0 4px;">You don't have a Trading SOP yet</h2>
+                <p class="pf-muted" style="max-width:520px;margin:0 auto 18px;">An SOP is your personal rulebook — position sizing, entry/exit criteria, what you'll trade and what you'll avoid. It keeps decisions consistent when emotions run high. Write one, or let AI draft it from a few questions.</p>
+                <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+                    <button class="btn2 primary" onclick="openGenerator()">✨ Generate with AI</button>
+                    <button class="btn2" onclick="openEditor(null)">✍️ Write it myself</button>
+                </div></div>`;
+        }
+        // Toolbar
+        html += `<div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
+            ${(ACTIVE_SOP || DRAFT_SOP) ? '' : ''}
+            ${ACTIVE_SOP ? `<button class="btn2" onclick="reviewSop()">🤖 AI Review</button>` : ''}
+            ${(ACTIVE_SOP && !DRAFT_SOP) ? `<button class="btn2" onclick="openEditor(null)">✏️ New Draft</button>` : ''}
+            ${(ACTIVE_SOP || DRAFT_SOP) ? `<button class="btn2" onclick="openGenerator()">✨ Regenerate with AI</button>` : ''}
+            <button class="btn2" onclick="loadHistory()">🕑 Version History</button>
+        </div>
+        <div id="sopReviewBox"></div>
+        <div id="sopHistoryBox"></div>`;
+        body.innerHTML = html;
+    }
+
+    function sopCard(sop, isDraft) {
+        const rules = sop.rules || {};
+        const chips = Object.keys(RULE_LABELS).filter(k => {
+            const v = rules[k]; return !(v == null || v === '' || (Array.isArray(v) && !v.length));
+        }).map(k => `<div class="rule-chip"><div class="rk">${RULE_LABELS[k]}</div><div class="rv">${esc(ruleDisplay(k, rules[k]))}</div></div>`).join('');
+        return `<div class="pf-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+                <div><span style="font-size:1.15em;font-weight:700;">${esc(sop.name)}</span>
+                    <span class="badge ${isDraft ? 'b-draft' : 'b-active'}" style="margin-left:8px;">${isDraft ? 'draft' : 'active'}</span>
+                    <span class="pf-muted" style="font-size:0.8em;margin-left:6px;">v${sop.version}${sop.activated_at ? ' · active since ' + new Date(sop.activated_at).toLocaleDateString() : ''}</span></div>
+            </div>
+            ${chips ? `<div class="rule-view" style="margin-bottom:16px;">${chips}</div>` : '<p class="pf-muted" style="font-size:0.85em;">No structured rules set — see the written policy below.</p>'}
+            <div class="sop-doc">${mdRender(sop.doc)}</div>
+        </div>`;
+    }
+
+    /* ---------- SOP: approve / discard ---------- */
+    async function approveSop(id) {
+        if (!confirm('Make this your active Trading SOP? Your current active SOP (if any) will be archived.')) return;
+        try {
+            const r = await fetch(`/api/sop/${id}/approve`, { method:'POST', credentials:'same-origin' });
+            if (!r.ok) throw new Error((await r.json()).error || 'approve failed');
+            await loadSop();
+        } catch (e) { alert(e.message); }
+    }
+    async function discardSop(id) {
+        if (!confirm('Discard this draft?')) return;
+        try {
+            const r = await fetch(`/api/sop/${id}`, { method:'DELETE', credentials:'same-origin' });
+            if (!r.ok) throw new Error((await r.json()).error || 'delete failed');
+            await loadSop();
+        } catch (e) { alert(e.message); }
+    }
+
+    /* ---------- SOP: AI review ---------- */
+    async function reviewSop() {
+        const box = document.getElementById('sopReviewBox');
+        box.innerHTML = '<div class="ai-box">🤖 Reviewing your SOP…</div>';
+        try {
+            const r = await fetch('/api/sop/ai-review', { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body:'{}' });
+            const d = await r.json();
+            if (d.empty || !d.review) { box.innerHTML = `<div class="ai-box pf-muted">${esc(d.message || 'No review available.')}</div>`; return; }
+            box.innerHTML = `<div class="ai-box"><strong>🤖 AI Review${d.engine ? ' · ' + d.engine : ''}</strong>\n\n${esc(d.review)}\n\n<span class="pf-muted">Process feedback, not individualized investment advice.</span></div>`;
+        } catch (e) { box.innerHTML = '<div class="ai-box" style="color:#ef4444;">Review failed.</div>'; }
+    }
+
+    /* ---------- SOP: editor modal ---------- */
+    function ruleEditorFields(rules) {
+        const num = (k, step, ph) => `<div class="pf-field"><label>${RULE_LABELS[k]}</label><input type="number" step="${step}" id="ed_${k}" value="${rules[k] ?? ''}" placeholder="${ph || 'optional'}"></div>`;
+        const assets = rules.allowed_assets || [], dirs = rules.allowed_directions || [];
+        const chk = (name, val, list) => `<label><input type="checkbox" class="ed_${name}" value="${val}" ${list.includes(val) ? 'checked' : ''}> ${val}</label>`;
+        return `
+            <div class="pf-field"><label>Risk tolerance</label><select id="ed_risk_tolerance">
+                ${['conservative','moderate','aggressive'].map(o => `<option value="${o}" ${(rules.risk_tolerance||'moderate')===o?'selected':''}>${o}</option>`).join('')}
+            </select></div>
+            <div class="rule-grid">
+                ${num('max_position_pct','0.5','% of portfolio')}
+                ${num('min_price','0.5','$')}
+                ${num('min_market_cap_b','0.1','$ billions')}
+                ${num('max_chase_pct','0.5','%')}
+                ${num('earnings_blackout_days','1','trading days')}
+                ${num('stop_loss_pct','0.5','%')}
+                ${num('take_profit_pct','0.5','%')}
+                ${num('max_positions','1','count')}
+            </div>
+            <div class="pf-field" style="margin-top:14px;"><label>Allowed assets</label><div class="checkset">
+                ${['equity','option','crypto'].map(a => chk('asset', a, assets)).join('')}</div></div>
+            <div class="pf-field"><label>Allowed directions</label><div class="checkset">
+                ${['long','short'].map(a => chk('dir', a, dirs)).join('')}</div></div>
+            <div class="pf-field"><label>Sectors to avoid (comma-separated)</label><input id="ed_sectors_avoid" value="${esc((rules.sectors_avoid||[]).join(', '))}" placeholder="e.g. biotech, penny stocks"></div>`;
+    }
+    function collectRules() {
+        const r = {};
+        r.risk_tolerance = document.getElementById('ed_risk_tolerance').value;
+        ['max_position_pct','min_price','min_market_cap_b','max_chase_pct','earnings_blackout_days','stop_loss_pct','take_profit_pct','max_positions'].forEach(k => {
+            const v = document.getElementById('ed_' + k).value;
+            r[k] = v === '' ? null : v;
+        });
+        r.allowed_assets = [...document.querySelectorAll('.ed_asset:checked')].map(c => c.value);
+        r.allowed_directions = [...document.querySelectorAll('.ed_dir:checked')].map(c => c.value);
+        r.sectors_avoid = document.getElementById('ed_sectors_avoid').value;
+        return r;
+    }
+    function openEditor(editId) {
+        // editId: a draft id to edit in place, or null for a fresh draft (seeded from active or defaults)
+        const seed = editId && DRAFT_SOP && DRAFT_SOP.id === editId ? DRAFT_SOP : (ACTIVE_SOP || { name:'My Trading SOP', rules:SOP_DEFAULTS, doc:'' });
+        const isEditingDraft = !!(editId && DRAFT_SOP && DRAFT_SOP.id === editId);
+        const m = document.createElement('div'); m.className = 'modal-back'; m.id = 'sopEditor';
+        m.innerHTML = `<div class="modal-box">
+            <h2 style="margin:0 0 4px;">${isEditingDraft ? 'Edit Draft' : 'New SOP Draft'}</h2>
+            <p class="pf-muted" style="font-size:0.85em;margin-top:0;">Saved as a draft — nothing changes until you approve it.</p>
+            <div class="pf-field"><label>Name</label><input id="ed_name" value="${esc(seed.name || 'My Trading SOP')}"></div>
+            ${ruleEditorFields(seed.rules || {})}
+            <div class="pf-field" style="margin-top:14px;"><label>Written policy (markdown)</label>
+                <textarea id="ed_doc" style="min-height:180px;" placeholder="# Objective&#10;...&#10;## Entry criteria&#10;- ...">${esc(seed.doc || '')}</textarea></div>
+            <div style="display:flex;gap:10px;margin-top:8px;">
+                <button class="btn2 primary" id="edSave" onclick="saveDraft(${isEditingDraft ? editId : 'null'})">Save Draft</button>
+                <button class="btn2" onclick="document.getElementById('sopEditor').remove()">Cancel</button>
+                <span id="edMsg" class="pf-muted" style="align-self:center;font-size:0.85em;"></span>
+            </div></div>`;
+        document.body.appendChild(m);
+        m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+    }
+    async function saveDraft(editId) {
+        const btn = document.getElementById('edSave'), msg = document.getElementById('edMsg');
+        const payload = { name: document.getElementById('ed_name').value, rules: collectRules(), doc: document.getElementById('ed_doc').value };
+        btn.disabled = true; msg.textContent = 'Saving…';
+        try {
+            let r;
+            if (editId) r = await fetch('/api/sop/' + editId, { method:'PUT', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body:JSON.stringify(payload) });
+            else r = await fetch('/api/sop', { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body:JSON.stringify(payload) });
+            if (!r.ok) throw new Error((await r.json()).error || 'save failed');
+            document.getElementById('sopEditor').remove();
+            await loadSop();
+        } catch (e) { msg.textContent = e.message; msg.style.color = '#ef4444'; btn.disabled = false; }
+    }
+
+    /* ---------- SOP: AI generator questionnaire ---------- */
+    const GEN_Q = [
+        ['experience', 'Experience level', 'select', ['beginner','intermediate','advanced']],
+        ['trading_style', 'Trading style', 'text', 'e.g. swing trading, momentum, options income, long-term investing'],
+        ['risk_tolerance', 'Risk tolerance', 'select', ['conservative','moderate','aggressive']],
+        ['instruments', 'What do you trade?', 'text', 'e.g. stocks, options, ETFs, crypto'],
+        ['time_horizon', 'Typical holding period', 'select', ['intraday','a few days','weeks','months','years']],
+        ['account_size', 'Account size (optional)', 'text', 'e.g. $25,000'],
+        ['primary_goal', 'Primary goal', 'select', ['income','steady growth','aggressive growth','capital preservation','learning']],
+        ['risk_per_trade', 'Max you\'ll risk per trade', 'text', 'e.g. 1-2% of account'],
+        ['edge', 'Your edge / signals used', 'text', 'e.g. insider clusters, technicals, earnings plays'],
+        ['avoid', 'What will you NOT trade?', 'text', 'e.g. penny stocks, meme names, no shorting'],
+    ];
+    function openGenerator() {
+        const m = document.createElement('div'); m.className = 'modal-back'; m.id = 'sopGen';
+        const fields = GEN_Q.map(([k, label, type, opt]) => {
+            if (type === 'select') return `<div class="pf-field"><label>${label}</label><select id="gq_${k}">${['',...opt].map(o => `<option value="${o}">${o || '— select —'}</option>`).join('')}</select></div>`;
+            return `<div class="pf-field"><label>${label}</label><input id="gq_${k}" placeholder="${opt}"></div>`;
+        }).join('');
+        m.innerHTML = `<div class="modal-box">
+            <h2 style="margin:0 0 4px;">✨ Generate SOP with AI</h2>
+            <p class="pf-muted" style="font-size:0.85em;margin-top:0;">Answer what you can — AI drafts a structured SOP you review and approve before it applies.</p>
+            ${fields}
+            <div style="display:flex;gap:10px;margin-top:8px;">
+                <button class="btn2 primary" id="genBtn" onclick="runGenerate()">Generate Draft</button>
+                <button class="btn2" onclick="document.getElementById('sopGen').remove()">Cancel</button>
+                <span id="genMsg" class="pf-muted" style="align-self:center;font-size:0.85em;"></span>
+            </div></div>`;
+        document.body.appendChild(m);
+        m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+    }
+    async function runGenerate() {
+        const btn = document.getElementById('genBtn'), msg = document.getElementById('genMsg');
+        const answers = {};
+        GEN_Q.forEach(([k]) => { const v = document.getElementById('gq_' + k).value.trim(); if (v) answers[k] = v; });
+        if (!Object.keys(answers).length) { msg.textContent = 'Answer at least one question.'; msg.style.color = '#ef4444'; return; }
+        btn.disabled = true; msg.style.color = ''; msg.textContent = '🤖 Drafting your SOP… (this takes a few seconds)';
+        try {
+            const r = await fetch('/api/sop/generate', { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body:JSON.stringify({ answers }) });
+            const d = await r.json();
+            if (d.empty) { msg.textContent = d.message || 'Generation unavailable.'; msg.style.color = '#ef4444'; btn.disabled = false; return; }
+            if (!r.ok) throw new Error(d.error || 'generation failed');
+            document.getElementById('sopGen').remove();
+            await loadSop();  // draft now appears in the pending-approval banner
+        } catch (e) { msg.textContent = e.message; msg.style.color = '#ef4444'; btn.disabled = false; }
+    }
+
+    /* ---------- SOP: version history ---------- */
+    async function loadHistory() {
+        const box = document.getElementById('sopHistoryBox');
+        box.innerHTML = '<div class="pf-card"><p class="pf-muted">Loading history…</p></div>';
+        try {
+            const r = await fetch('/api/sop/history', { credentials:'same-origin' });
+            const versions = (await r.json()).versions || [];
+            if (!versions.length) { box.innerHTML = ''; return; }
+            box.innerHTML = `<div class="pf-card"><h3 style="margin:0 0 10px;">🕑 Version History</h3>` +
+                versions.map(v => `<div class="hist-row">
+                    <div><strong>v${v.version}</strong> <span class="badge b-${v.status}">${v.status}</span>
+                        <span class="pf-muted" style="font-size:0.82em;">${esc(v.name)} · ${v.source === 'ai_generated' ? 'AI' : 'manual'} · ${v.updated_at ? new Date(v.updated_at).toLocaleDateString() : ''}</span></div>
+                    <div style="display:flex;gap:6px;">
+                        ${v.status !== 'active' ? `<button class="btn2" onclick="approveSop(${v.id})">Make active</button>` : ''}
+                        ${v.status !== 'active' ? `<button class="btn2 danger" onclick="discardSop(${v.id})">Delete</button>` : ''}
+                    </div></div>`).join('') + '</div>';
+        } catch (e) { box.innerHTML = ''; }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => { loadProfile(); loadPrefs(); loadSop(); });
+</script>
+{% endblock %}

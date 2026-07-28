@@ -702,6 +702,46 @@ class PaperTrade(db.Model):
         }
 
 
+class TradingSOP(db.Model):
+    """A user's Standard Operating Procedure — their codified trading policy.
+
+    Versioned: each save is a row. Exactly one row per user is `active`; approving a
+    draft archives the prior active one and bumps the version. `rules` is an
+    engine-readable JSON of structured knobs (position sizing, filters, blackout);
+    `style` holds the questionnaire answers an AI draft was generated from; `doc` is
+    the freeform human-readable policy text.
+    """
+    __tablename__ = 'trading_sops'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    version = db.Column(db.Integer, default=1)
+    status = db.Column(db.String(10), default='draft', index=True)  # draft | active | archived
+    name = db.Column(db.String(120), default='My Trading SOP')
+    rules = db.Column(JSON, default={})    # structured, engine-readable knobs
+    style = db.Column(JSON, default={})    # questionnaire answers (if AI-generated)
+    doc = db.Column(db.Text)               # freeform policy text (markdown)
+    source = db.Column(db.String(20), default='manual')  # manual | ai_generated
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    activated_at = db.Column(db.DateTime)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'version': self.version,
+            'status': self.status,
+            'name': self.name,
+            'rules': self.rules or {},
+            'style': self.style or {},
+            'doc': self.doc or '',
+            'source': self.source,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'activated_at': self.activated_at.isoformat() if self.activated_at else None,
+        }
+
+
 class DiscussionThread(db.Model):
     """Community discussion threads"""
     __tablename__ = 'discussion_threads'
