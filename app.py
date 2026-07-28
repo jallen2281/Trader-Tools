@@ -699,6 +699,109 @@ def generate_sop():
         return jsonify({'error': str(e)}), 500
 
 
+# ---- Phase 4: the SOP drives the app — audit holdings against the active SOP ----
+
+def _sop_asset_class(asset_type, symbol):
+    at = (asset_type or '').lower()
+    if at == 'crypto' or (symbol or '').upper().endswith('-USD'):
+        return 'crypto'
+    if at == 'option':
+        return 'option'
+    return 'equity'  # stock / etf
+
+
+def _sop_compliance(user_id, account_id=None):
+    """Audit the user's holdings against their ACTIVE SOP. Uses stored holding data
+    (position size, price floor, asset type, stop-loss/take-profit, position count).
+    Cap/sector/earnings/chase are entry-time or need live data — not audited here."""
+    sop = TradingSOP.query.filter_by(user_id=user_id, status='active').order_by(TradingSOP.version.desc()).first()
+    if not sop:
+        return {'has_sop': False}
+    rules = sop.rules or {}
+    q = Portfolio.query.filter_by(user_id=user_id)
+    if account_id:
+        q = q.filter_by(account_id=account_id)
+    holdings = q.all()
+
+    def hval(h):
+        px = float(h.current_price) if h.current_price else float(h.average_cost or 0)
+        return px * float(h.quantity or 0)
+    total = sum(hval(h) for h in holdings) or 0.0
+
+    allowed_assets = set(rules.get('allowed_assets') or [])
+    max_pos_pct = rules.get('max_position_pct')
+    min_price = rules.get('min_price')
+    stop_pct = rules.get('stop_loss_pct')
+    tp_pct = rules.get('take_profit_pct')
+
+    flagged = []
+    for h in holdings:
+        px = float(h.current_price) if h.current_price else float(h.average_cost or 0)
+        cost = float(h.average_cost or 0)
+        val = hval(h)
+        weight = (val / total * 100) if total else 0
+        pnl_pct = ((px - cost) / cost * 100) if cost else 0
+        aclass = _sop_asset_class(h.asset_type, h.symbol)
+        breaches = []
+        if allowed_assets and aclass not in allowed_assets:
+            breaches.append({'rule': 'allowed_assets', 'severity': 'high',
+                             'detail': f'{aclass} not permitted (SOP allows {", ".join(sorted(allowed_assets))})'})
+        if max_pos_pct and weight > float(max_pos_pct) + 1e-9:
+            breaches.append({'rule': 'max_position_pct', 'severity': 'high',
+                             'detail': f'{weight:.1f}% of portfolio exceeds your {max_pos_pct}% cap'})
+        if min_price and px and px < float(min_price):
+            breaches.append({'rule': 'min_price', 'severity': 'medium',
+                             'detail': f'${px:.2f} is below your ${min_price} price floor'})
+        if stop_pct and cost and pnl_pct <= -float(stop_pct):
+            breaches.append({'rule': 'stop_loss', 'severity': 'high',
+                             'detail': f'down {pnl_pct:.1f}% — past your {stop_pct}% stop; SOP says exit full'})
+        if tp_pct and cost and pnl_pct >= float(tp_pct):
+            breaches.append({'rule': 'take_profit', 'severity': 'medium',
+                             'detail': f'up {pnl_pct:.1f}% — at/above your {tp_pct}% take-profit target'})
+        if breaches:
+            flagged.append({'symbol': h.symbol, 'account_id': h.account_id,
+                            'weight': round(weight, 1), 'pnl_pct': round(pnl_pct, 1),
+                            'value': round(val, 2), 'asset_class': aclass, 'breaches': breaches})
+
+    portfolio_breaches = []
+    maxp = rules.get('max_positions')
+    if maxp and len(holdings) > int(maxp):
+        portfolio_breaches.append({'rule': 'max_positions', 'severity': 'medium',
+                                   'detail': f'{len(holdings)} open positions exceeds your {maxp}-position cap'})
+
+    total_breaches = sum(len(f['breaches']) for f in flagged) + len(portfolio_breaches)
+    return {
+        'has_sop': True,
+        'sop_name': sop.name,
+        'sop_version': sop.version,
+        'summary': {
+            'positions': len(holdings),
+            'flagged_positions': len(flagged),
+            'total_breaches': total_breaches,
+            'compliant': total_breaches == 0,
+        },
+        'holdings': sorted(flagged, key=lambda f: (-max((1 if b['severity'] == 'high' else 0) for b in f['breaches']), -len(f['breaches']))),
+        'portfolio_breaches': portfolio_breaches,
+        'audited_rules': ['allowed_assets', 'max_position_pct', 'min_price', 'stop_loss', 'take_profit', 'max_positions'],
+        'note': 'Audited against stored holding prices — open the Portfolio first to refresh them. Market-cap, sector, earnings-blackout and chase are entry-time rules and are not audited on existing holdings.',
+    }
+
+
+@app.route('/api/sop/compliance', methods=['GET'])
+@require_api_auth
+def sop_compliance():
+    """Live audit of holdings vs the active SOP. Optional ?account_id= to scope it."""
+    try:
+        uid = _get_current_user_id()
+        if not uid:
+            return jsonify({'error': 'Authentication required'}), 401
+        account_id = request.args.get('account_id', type=int)
+        return jsonify(_sop_compliance(uid, account_id))
+    except Exception as e:
+        logger.error(f"Error in SOP compliance: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 def _paper_strategy_list(user_id):
     rows = db.session.query(PaperTrade.strategy).filter_by(user_id=user_id).distinct().all()
     return sorted({(r[0] or 'default') for r in rows})
@@ -1164,6 +1267,7 @@ PERMISSIONS = {
     'premium_intervals': 'Unlock faster refresh/alert intervals',
     'unlimited_watchlist': 'Remove watchlist size limits',
     'data_export': 'Export portfolio / tax data',
+    'api_tokens': 'Create Personal Access Tokens (API / AI access)',
 }
 
 
@@ -1796,10 +1900,13 @@ def admin_purge_user(user_id):
 def create_api_token():
     """Mint a Personal Access Token for programmatic API access (automation/agent).
 
-    Requires an interactive logged-in session (cannot be created from another token).
-    Returns the token ONCE. Send it as `Authorization: Bearer <token>` on API requests.
-    Tokens expire in 30 days and can be revoked via DELETE /api/auth/token.
+    Requires an interactive logged-in session (cannot be created from another token)
+    AND the 'api_tokens' permission (admins bypass). Returns the token ONCE. Send it
+    as `Authorization: Bearer <token>` on API requests. Tokens expire in 30 days and
+    can be revoked via DELETE /api/auth/token.
     """
+    if not user_has_permission(current_user, 'api_tokens'):
+        return jsonify({'error': 'You do not have permission to create API tokens. Ask an admin to grant the "api_tokens" permission.'}), 403
     try:
         from models import UserSession
         import secrets as _secrets

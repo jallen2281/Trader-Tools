@@ -141,6 +141,13 @@
             <p class="pf-muted" style="font-size:0.85em;margin-top:0;">Access is granted by the groups an admin assigns you.</p>
             <div id="permBody" class="pf-muted" style="font-size:0.9em;">Loading…</div>
         </div>
+
+        <div class="pf-card" id="apiCard" style="display:none;">
+            <h2 style="margin:0 0 6px;">🔑 API Access</h2>
+            <p style="font-size:0.9em;margin-top:0;">Create a Personal Access Token to connect an AI agent or script to your dashboard. Send it as <code>Authorization: Bearer &lt;token&gt;</code>. Tokens expire in 30 days.</p>
+            <button class="btn2 primary" id="genTokBtn" onclick="generateToken()">Generate API Token</button>
+            <div id="tokenBox" style="margin-top:12px;"></div>
+        </div>
         <div class="pf-card" style="border-color:rgba(239,68,68,0.4);">
             <h2 style="margin:0 0 6px;color:#ef4444;">⚠️ Danger Zone</h2>
             <p style="font-size:0.9em;margin-top:0;">Delete your account. Your login is disabled and your personal info (name, email, picture) is scrubbed immediately. Your data is retained but anonymized, and an admin can permanently purge it. <strong>Signing back in with the same Google account within the retention window restores it.</strong></p>
@@ -173,6 +180,9 @@
         try {
             const r = await fetch('/api/user/permissions', { credentials: 'same-origin' });
             const d = await r.json();
+            // Show the API-token card if the user may create tokens (admins always can).
+            const canToken = d.is_admin || (d.permissions || []).includes('api_tokens');
+            document.getElementById('apiCard').style.display = canToken ? 'block' : 'none';
             if (d.is_admin) { el.innerHTML = '<span class="badge b-active">admin</span> — full access to every feature.'; return; }
             const reg = d.registry || {};
             const perms = d.permissions || [];
@@ -181,6 +191,30 @@
             el.innerHTML = `Groups: <strong>${groups}</strong><ul style="margin:8px 0 0;padding-left:20px;">` +
                 perms.map(p => `<li>${esc(reg[p] || p)}</li>`).join('') + '</ul>';
         } catch (e) { el.innerHTML = 'Could not load permissions.'; }
+    }
+    async function generateToken() {
+        const btn = document.getElementById('genTokBtn'), box = document.getElementById('tokenBox');
+        btn.disabled = true; box.innerHTML = '<span class="pf-muted">Generating…</span>';
+        try {
+            const r = await fetch('/api/auth/token', { method: 'POST', credentials: 'same-origin' });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || 'Failed to create token');
+            box.innerHTML = `
+                <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);border-radius:8px;padding:12px 14px;">
+                    <div style="font-size:0.82em;color:#d97706;font-weight:600;margin-bottom:6px;">⚠️ Copy this now — it is shown only once.</div>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input id="tokVal" readonly value="${esc(d.token)}" style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-family:monospace;font-size:0.85em;">
+                        <button class="btn2" onclick="copyToken()">Copy</button>
+                    </div>
+                    <div class="pf-muted" style="font-size:0.78em;margin-top:6px;">Expires in ${d.expires_in_days} days · revoke via DELETE /api/auth/token</div>
+                </div>`;
+        } catch (e) { box.innerHTML = `<span style="color:#ef4444;">${esc(e.message)}</span>`; }
+        finally { btn.disabled = false; }
+    }
+    function copyToken() {
+        const inp = document.getElementById('tokVal');
+        inp.select(); inp.setSelectionRange(0, 99999);
+        navigator.clipboard.writeText(inp.value).catch(() => {});
     }
     async function deleteAccount() {
         const btn = document.getElementById('delBtn'), msg = document.getElementById('delMsg');
@@ -360,12 +394,13 @@
         }
         // Toolbar
         html += `<div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
-            ${(ACTIVE_SOP || DRAFT_SOP) ? '' : ''}
+            ${ACTIVE_SOP ? `<button class="btn2 primary" onclick="checkCompliance()">📋 Compliance Check</button>` : ''}
             ${ACTIVE_SOP ? `<button class="btn2" onclick="reviewSop()">🤖 AI Review</button>` : ''}
             ${(ACTIVE_SOP && !DRAFT_SOP) ? `<button class="btn2" onclick="openEditor(null)">✏️ New Draft</button>` : ''}
             ${(ACTIVE_SOP || DRAFT_SOP) ? `<button class="btn2" onclick="openGenerator()">✨ Regenerate with AI</button>` : ''}
             <button class="btn2" onclick="loadHistory()">🕑 Version History</button>
         </div>
+        <div id="sopComplianceBox"></div>
         <div id="sopReviewBox"></div>
         <div id="sopHistoryBox"></div>`;
         body.innerHTML = html;
@@ -403,6 +438,43 @@
             if (!r.ok) throw new Error((await r.json()).error || 'delete failed');
             await loadSop();
         } catch (e) { alert(e.message); }
+    }
+
+    /* ---------- SOP: compliance check (Phase 4) ---------- */
+    async function checkCompliance() {
+        const box = document.getElementById('sopComplianceBox');
+        box.innerHTML = '<div class="pf-card"><p class="pf-muted">📋 Auditing your holdings against your SOP…</p></div>';
+        try {
+            const r = await fetch('/api/sop/compliance', { credentials: 'same-origin' });
+            const d = await r.json();
+            if (!d.has_sop) { box.innerHTML = '<div class="pf-card pf-muted">No active SOP to audit.</div>'; return; }
+            renderCompliance(d);
+        } catch (e) { box.innerHTML = '<div class="pf-card" style="color:#ef4444;">Compliance check failed.</div>'; }
+    }
+    function sevColor(s) { return s === 'high' ? '#ef4444' : (s === 'medium' ? '#d97706' : 'var(--text-secondary)'); }
+    function renderCompliance(d) {
+        const s = d.summary || {};
+        const box = document.getElementById('sopComplianceBox');
+        const head = s.compliant
+            ? `<div style="color:var(--success);font-weight:700;font-size:1.05em;">✓ Compliant — all ${s.positions} positions pass your SOP.</div>`
+            : `<div style="color:#ef4444;font-weight:700;font-size:1.05em;">⚠️ ${s.total_breaches} breach${s.total_breaches===1?'':'es'} across ${s.flagged_positions} of ${s.positions} positions.</div>`;
+        let rows = '';
+        (d.portfolio_breaches || []).forEach(b => {
+            rows += `<div style="padding:8px 0;border-bottom:1px solid var(--border);"><strong>Portfolio</strong> — <span style="color:${sevColor(b.severity)};">${esc(b.detail)}</span></div>`;
+        });
+        (d.holdings || []).forEach(h => {
+            const chips = h.breaches.map(b => `<div style="font-size:0.86em;color:${sevColor(b.severity)};margin-top:2px;">• ${esc(b.detail)}</div>`).join('');
+            rows += `<div style="padding:10px 0;border-bottom:1px solid var(--border);">
+                <div><strong>${esc(h.symbol)}</strong> <span class="pf-muted" style="font-size:0.82em;">${h.weight}% · ${h.pnl_pct >= 0 ? '+' : ''}${h.pnl_pct}% · ${esc(h.asset_class)}</span></div>
+                ${chips}</div>`;
+        });
+        box.innerHTML = `<div class="pf-card">
+            <h2 style="margin:0 0 4px;">📋 SOP Compliance</h2>
+            <p class="pf-muted" style="font-size:0.8em;margin-top:0;">${esc(d.sop_name)} v${d.sop_version}</p>
+            ${head}
+            ${rows ? `<div style="margin-top:12px;">${rows}</div>` : ''}
+            <p class="pf-muted" style="font-size:0.76em;margin-top:12px;">${esc(d.note)}</p>
+        </div>`;
     }
 
     /* ---------- SOP: AI review ---------- */
