@@ -245,6 +245,15 @@ def init_database(app):
         _add_column_if_missing(db, inspector, 'users', 'deleted_at', timestamp_type)
         inspector = inspect(db.engine)
         _add_column_if_missing(db, inspector, 'users', 'deleted_by', 'INTEGER')
+        # Paper pending-limit-order columns
+        try:
+            inspector = inspect(db.engine)
+            if 'paper_trades' in inspector.get_table_names():
+                _add_column_if_missing(db, inspector, 'paper_trades', 'limit_price', 'NUMERIC(15,4)')
+                inspector = inspect(db.engine)
+                _add_column_if_missing(db, inspector, 'paper_trades', 'trigger_side', 'VARCHAR(6)')
+        except Exception as _pe:
+            logger.warning(f"paper_trades migration skipped: {_pe}")
 
         logger.info("✓ Database tables created successfully")
         

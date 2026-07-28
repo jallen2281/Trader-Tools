@@ -678,9 +678,26 @@ class PaperTrade(db.Model):
     exit_price = db.Column(db.Numeric(15, 4, asdecimal=False))
     exit_at = db.Column(db.DateTime)
     fees = db.Column(db.Numeric(15, 2, asdecimal=False), default=0)
-    status = db.Column(db.String(10), default='open', index=True)  # open | closed
+    status = db.Column(db.String(10), default='open', index=True)  # pending | open | closed
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Pending limit order: fills into an open position when the symbol's price crosses
+    # limit_price in the trigger direction (set at creation from limit vs. market price).
+    limit_price = db.Column(db.Numeric(15, 4, asdecimal=False))
+    trigger_side = db.Column(db.String(6))  # 'above' | 'below'
+
+    def fills_at(self, market_price):
+        """True if a pending order should fill at the given market price."""
+        if self.status != 'pending' or self.limit_price is None or market_price is None:
+            return False
+        lp = float(self.limit_price)
+        return market_price <= lp if self.trigger_side == 'below' else market_price >= lp
+
+    def fill(self):
+        """Convert a pending order into an open position at the limit price."""
+        self.entry_price = self.limit_price
+        self.entry_at = datetime.utcnow()
+        self.status = 'open'
 
     def _mult(self):
         return 100 if (self.kind or 'option') == 'option' else 1
@@ -717,6 +734,8 @@ class PaperTrade(db.Model):
             'fees': float(self.fees or 0),
             'status': self.status,
             'notes': self.notes,
+            'limit_price': float(self.limit_price) if self.limit_price is not None else None,
+            'trigger_side': self.trigger_side,
             'pnl': self.pnl(),
             'pnl_pct': self.pnl_pct(),
             'hold_minutes': self.hold_minutes(),

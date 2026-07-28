@@ -807,6 +807,42 @@ def _paper_strategy_list(user_id):
     return sorted({(r[0] or 'default') for r in rows})
 
 
+def _paper_price(symbol):
+    """Latest market price for a symbol (last daily close). None if unavailable."""
+    try:
+        data = data_fetcher.fetch_stock_data(symbol, period='1d')
+        if data is not None and not data.empty:
+            return float(data.iloc[-1]['Close'])
+    except Exception as e:
+        logger.debug(f"_paper_price({symbol}) failed: {e}")
+    return None
+
+
+def _lazy_fill_pending(user_id):
+    """Fill any of the user's pending paper orders whose limit has been crossed.
+    Runs opportunistically when the user views the page; the background monitor
+    also fills them so it works while the page is closed. Returns count filled."""
+    try:
+        pend = PaperTrade.query.filter_by(user_id=user_id, status='pending').all()
+        if not pend:
+            return 0
+        prices, filled = {}, 0
+        for o in pend:
+            if o.symbol not in prices:
+                prices[o.symbol] = _paper_price(o.symbol)
+            px = prices[o.symbol]
+            if px is not None and o.fills_at(px):
+                o.fill()
+                filled += 1
+        if filled:
+            db.session.commit()
+        return filled
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"lazy pending-fill failed for user {user_id}: {e}")
+        return 0
+
+
 @app.route('/api/paper/trades', methods=['GET'])
 @require_api_auth
 def get_paper_trades():
@@ -816,9 +852,10 @@ def get_paper_trades():
         user_id = _get_current_user_id()
         if not user_id:
             return jsonify({'error': 'Authentication required'}), 401
+        _lazy_fill_pending(user_id)  # process any crossed limit orders first
         q = PaperTrade.query.filter_by(user_id=user_id)
         status = request.args.get('status')
-        if status in ('open', 'closed'):
+        if status in ('open', 'closed', 'pending'):
             q = q.filter_by(status=status)
         strategy = request.args.get('strategy')
         if strategy:
@@ -827,6 +864,58 @@ def get_paper_trades():
         return jsonify({'trades': [t.to_dict() for t in trades]})
     except Exception as e:
         logger.error(f"Error listing paper trades: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/paper/pending', methods=['POST'])
+@require_api_auth
+def create_pending_order():
+    """Create a pending limit order. It fills into an open position when the symbol's
+    price crosses limit_price. trigger_side is derived from limit vs. current price:
+    a limit below market waits for a drop ('below'); a limit above waits for a rise ('above')."""
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        data = request.get_json() or {}
+        symbol = (data.get('symbol') or '').upper().strip()
+        if not symbol or data.get('limit_price') in (None, ''):
+            return jsonify({'error': 'symbol and limit_price are required'}), 400
+        limit_price = float(data['limit_price'])
+        market = _paper_price(symbol)
+        if market is None:
+            return jsonify({'error': f'Could not get a market price for {symbol} to place the order'}), 400
+        trigger_side = 'below' if limit_price <= market else 'above'
+        direction = (data.get('direction') or 'long').lower()
+        kind = (data.get('kind') or 'stock').lower()
+        o = PaperTrade(
+            user_id=user_id, symbol=symbol,
+            strategy=(data.get('strategy') or 'default').strip()[:60] or 'default',
+            kind=kind if kind in ('option', 'stock') else 'stock',
+            direction=direction if direction in ('call', 'put', 'long', 'short') else 'long',
+            contracts=float(data.get('contracts') or 1),
+            entry_price=limit_price,          # placeholder; fill() re-stamps entry_at
+            limit_price=limit_price, trigger_side=trigger_side,
+            target_price=float(data['target_price']) if data.get('target_price') not in (None, '') else None,
+            stop_price=float(data['stop_price']) if data.get('stop_price') not in (None, '') else None,
+            fees=float(data.get('fees') or 0),
+            notes=data.get('notes'),
+            status='pending',
+        )
+        db.session.add(o)
+        db.session.commit()
+        # If the price is already at/through the limit, fill immediately.
+        if o.fills_at(market):
+            o.fill()
+            db.session.commit()
+        result = o.to_dict()
+        result['market_price'] = round(market, 4)
+        return jsonify(result), 201
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error creating pending order: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
@@ -935,6 +1024,7 @@ def get_paper_stats():
         user_id = _get_current_user_id()
         if not user_id:
             return jsonify({'error': 'Authentication required'}), 401
+        _lazy_fill_pending(user_id)
         strategy = request.args.get('strategy')
         q = PaperTrade.query.filter_by(user_id=user_id, status='closed')
         if strategy:
@@ -942,10 +1032,11 @@ def get_paper_stats():
         trades = q.order_by(PaperTrade.exit_at.asc()).all()
         pnls = [t.pnl() for t in trades if t.pnl() is not None]
         open_count = PaperTrade.query.filter_by(user_id=user_id, status='open').count()
+        pending_count = PaperTrade.query.filter_by(user_id=user_id, status='pending').count()
         strategies = _paper_strategy_list(user_id)
         n = len(pnls)
         if n == 0:
-            return jsonify({'summary': {'count': 0}, 'strategies': strategies, 'open_count': open_count})
+            return jsonify({'summary': {'count': 0}, 'strategies': strategies, 'open_count': open_count, 'pending_count': pending_count})
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p < 0]
         gross_win = sum(wins)
@@ -971,7 +1062,7 @@ def get_paper_stats():
             'avg_hold_min': round(sum(holds) / len(holds), 1) if holds else None,
             'total_fees': round(sum(float(t.fees or 0) for t in trades), 2),
         }
-        return jsonify({'summary': summary, 'strategies': strategies, 'open_count': open_count})
+        return jsonify({'summary': summary, 'strategies': strategies, 'open_count': open_count, 'pending_count': pending_count})
     except Exception as e:
         logger.error(f"Error computing paper stats: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500

@@ -77,6 +77,7 @@
                 <span id="alMsg" class="muted" style="font-size:0.82em;"></span>
             </div>
             <div id="alertList" style="margin-top:10px;"></div>
+            <div id="pendingList" style="margin-top:8px;"></div>
         </div>
     </div>
 
@@ -228,13 +229,27 @@
     async function loadTrades() {
         const histStrat = document.getElementById('histStrategy').value;
         try {
-            const [openRes, closedRes] = await Promise.all([
+            const [openRes, closedRes, pendRes] = await Promise.all([
                 fetch('/api/paper/trades?status=open', { credentials: 'same-origin' }),
-                fetch('/api/paper/trades?status=closed' + (histStrat ? '&strategy=' + encodeURIComponent(histStrat) : ''), { credentials: 'same-origin' })
+                fetch('/api/paper/trades?status=closed' + (histStrat ? '&strategy=' + encodeURIComponent(histStrat) : ''), { credentials: 'same-origin' }),
+                fetch('/api/paper/trades?status=pending', { credentials: 'same-origin' })
             ]);
             renderOpen((await openRes.json()).trades || []);
             renderClosed((await closedRes.json()).trades || []);
+            window._PENDING = (await pendRes.json()).trades || [];
+            renderPending(window._PENDING);
+            if (typeof drawChart === 'function' && chartSymbols.length === 1) drawChart();
         } catch (e) { console.error('loadTrades', e); }
+    }
+    function renderPending(orders) {
+        const el = document.getElementById('pendingList');
+        if (!el) return;
+        if (!orders.length) { el.innerHTML = ''; return; }
+        el.innerHTML = '<span class="muted" style="font-size:0.78em;margin-right:4px;">Pending limit orders:</span>' + orders.map(o =>
+            `<span class="alert-chip" style="background:rgba(59,130,246,0.12);border-color:rgba(59,130,246,0.3);">${esc(o.symbol)} ${esc(o.direction)} ${o.contracts} @ $${o.limit_price} (${o.trigger_side === 'below' ? '↓' : '↑'}) <span class="x" onclick="cancelPending(${o.id})">✕</span></span>`).join('');
+    }
+    async function cancelPending(id) {
+        try { await fetch('/api/paper/trades/' + id, { method: 'DELETE', credentials: 'same-origin' }); loadTrades(); } catch (e) {}
     }
 
     function renderOpen(trades) {
@@ -386,8 +401,8 @@
         document.getElementById('chartLegend').innerHTML = chartSymbols.map((s, i) =>
             `<span class="legend-chip"><b style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></b><span style="cursor:pointer;" title="Use in log form" onclick="prefillLog('${s}')">${esc(s)}</span> <span class="x" onclick="removeChartSymbol('${s}')">✕</span></span>`).join('');
         document.getElementById('chartHint').textContent = chartSymbols.length > 1
-            ? 'Comparing % change from the start of the range.'
-            : (chartSymbols.length ? 'Price with your open paper-trade entry/target/stop lines overlaid.' : '');
+            ? 'Comparing % change from the start of the range. Remove extra symbols to enable click-to-trade.'
+            : (chartSymbols.length ? '💡 Click the chart to place a buy/sell limit order or an alert at that price. Lines show your orders, alerts, and trades.' : '');
     }
     async function loadChart() {
         if (!chartSymbols.length) {
@@ -406,12 +421,22 @@
         drawChart(); renderLegend();
         document.getElementById('chartLive').textContent = '● live';
     }
+    let _chartGeo = null;  // stored geometry so a chart click maps pixel -> price
+    function fmtTime(ts) {
+        const d = new Date(ts);
+        if (isNaN(d)) return '';
+        if (chartRange === '1d') return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        if (chartRange === '1w') return d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' });
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + (chartRange === '1y' ? " '" + String(d.getFullYear()).slice(-2) : '');
+    }
     function drawChart() {
         const wrap = document.getElementById('chartWrap');
-        const W = Math.max(wrap.clientWidth || 700, 320), H = 300, padL = 52, padR = 14, padT = 12, padB = 26;
+        const W = Math.max(wrap.clientWidth || 700, 320), H = 320, padL = 54, padR = 64, padT = 12, padB = 34;
         const syms = chartSymbols.filter(s => (chartSeries[s] || []).length > 1);
-        if (!syms.length) { wrap.innerHTML = '<p class="muted" style="text-align:center;padding:30px;">No price data for the selected symbol(s)/range.</p>'; return; }
+        if (!syms.length) { wrap.innerHTML = '<p class="muted" style="text-align:center;padding:30px;">No price data for the selected symbol(s)/range.</p>'; _chartGeo = null; return; }
         const multi = syms.length > 1;
+        const primary = syms[0];
+        const primaryPts = chartSeries[primary];
         const seriesVals = {}; let ymin = Infinity, ymax = -Infinity, maxLen = 0;
         syms.forEach(s => {
             const pts = chartSeries[s], base = pts[0].c || 1;
@@ -419,34 +444,54 @@
             seriesVals[s] = vals; maxLen = Math.max(maxLen, vals.length);
             vals.forEach(v => { if (v < ymin) ymin = v; if (v > ymax) ymax = v; });
         });
-        let tradeLines = [];
+        const curPrice = primaryPts[primaryPts.length - 1].c;
+        // Horizontal reference lines (single-symbol only): trades, pending orders, alerts
+        let hlines = [];
         if (!multi) {
-            const s = syms[0];
-            (window._OPEN_TRADES || []).filter(t => t.symbol === s && t.kind === 'stock').forEach(t => {
-                if (t.entry_price != null) tradeLines.push(['entry', t.entry_price, '#9ca3af']);
-                if (t.target_price != null) tradeLines.push(['target', t.target_price, '#10b981']);
-                if (t.stop_price != null) tradeLines.push(['stop', t.stop_price, '#ef4444']);
+            (window._OPEN_TRADES || []).filter(t => t.symbol === primary && t.kind === 'stock').forEach(t => {
+                if (t.entry_price != null) hlines.push(['entry', +t.entry_price, '#9ca3af']);
+                if (t.target_price != null) hlines.push(['target', +t.target_price, '#10b981']);
+                if (t.stop_price != null) hlines.push(['stop', +t.stop_price, '#ef4444']);
             });
-            tradeLines.forEach(([, v]) => { if (v < ymin) ymin = v; if (v > ymax) ymax = v; });
+            (window._PENDING || []).filter(o => o.symbol === primary).forEach(o => {
+                hlines.push([(o.direction === 'short' ? 'sell' : 'buy') + ' limit', +o.limit_price, '#3b82f6']);
+            });
+            (window._ALERTS || []).filter(a => a.symbol === primary && a.target_price != null).forEach(a => {
+                hlines.push(['alert', +a.target_price, '#f59e0b']);
+            });
+            hlines.forEach(([, v]) => { if (v < ymin) ymin = v; if (v > ymax) ymax = v; });
         }
         if (!isFinite(ymin) || ymin === ymax) { ymin = (ymin || 0) - 1; ymax = (ymax || 0) + 1; }
         const p = (ymax - ymin) * 0.06; ymin -= p; ymax += p;
+        const plotH = H - padT - padB;
         const X = i => padL + (W - padL - padR) * (i / (maxLen - 1 || 1));
-        const Y = v => padT + (H - padT - padB) * (1 - (v - ymin) / (ymax - ymin));
+        const Y = v => padT + plotH * (1 - (v - ymin) / (ymax - ymin));
         const fmtY = v => multi ? (v >= 0 ? '+' : '') + v.toFixed(1) + '%' : '$' + v.toFixed(2);
-        let svg = `<svg width="${W}" height="${H}" style="display:block;">`;
-        // grid + y labels
+        _chartGeo = { padT, plotH, ymin, ymax, symbol: primary, multi, curPrice };
+
+        const cur = multi ? 'default' : 'crosshair';
+        let svg = `<svg width="${W}" height="${H}" style="display:block;cursor:${cur};" onclick="chartClick(event)">`;
+        // y grid + labels
         for (let g = 0; g <= 4; g++) {
             const v = ymin + (ymax - ymin) * g / 4, yy = Y(v);
             svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="var(--border)" stroke-width="1" opacity="0.5"/>`;
             svg += `<text x="${padL - 6}" y="${yy + 3}" text-anchor="end" font-size="10" fill="var(--text-secondary)">${fmtY(v)}</text>`;
         }
+        // x time labels
+        const nlab = Math.min(6, maxLen);
+        for (let k = 0; k < nlab; k++) {
+            const idx = Math.round((maxLen - 1) * k / (nlab - 1 || 1));
+            const pt = primaryPts[Math.min(idx, primaryPts.length - 1)];
+            if (!pt) continue;
+            const xx = X(idx);
+            svg += `<text x="${xx}" y="${H - padB + 14}" text-anchor="middle" font-size="9.5" fill="var(--text-secondary)">${esc(fmtTime(pt.t))}</text>`;
+        }
         if (multi) { const z = Y(0); svg += `<line x1="${padL}" y1="${z}" x2="${W - padR}" y2="${z}" stroke="var(--text-secondary)" stroke-dasharray="3 3" opacity="0.6"/>`; }
-        // trade lines (single-symbol)
-        tradeLines.forEach(([label, v, color]) => {
+        // reference lines
+        hlines.forEach(([label, v, color]) => {
             const yy = Y(v);
             svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${color}" stroke-dasharray="5 3" stroke-width="1.2" opacity="0.9"/>`;
-            svg += `<text x="${W - padR - 2}" y="${yy - 3}" text-anchor="end" font-size="9" fill="${color}">${label} $${(+v).toFixed(2)}</text>`;
+            svg += `<text x="${W - padR + 3}" y="${yy + 3}" font-size="8.5" fill="${color}">${label} ${(+v).toFixed(2)}</text>`;
         });
         // series
         syms.forEach((s, i) => {
@@ -454,11 +499,65 @@
             let d = '';
             vals.forEach((v, idx) => { d += (idx ? 'L' : 'M') + X(idx).toFixed(1) + ',' + Y(v).toFixed(1) + ' '; });
             svg += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.6"/>`;
-            const last = vals[vals.length - 1];
-            svg += `<circle cx="${X(vals.length - 1).toFixed(1)}" cy="${Y(last).toFixed(1)}" r="3" fill="${color}"/>`;
+            svg += `<circle cx="${X(vals.length - 1).toFixed(1)}" cy="${Y(vals[vals.length - 1]).toFixed(1)}" r="3" fill="${color}"/>`;
         });
+        // current price tag (single symbol)
+        if (!multi) {
+            const yy = Y(curPrice);
+            svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="var(--text-primary)" stroke-width="0.8" opacity="0.35"/>`;
+            svg += `<rect x="${W - padR}" y="${yy - 8}" width="${padR}" height="16" fill="var(--text-primary)" opacity="0.85" rx="2"/>`;
+            svg += `<text x="${W - padR + 4}" y="${yy + 3.5}" font-size="9.5" fill="var(--card-bg)" font-weight="700">${curPrice.toFixed(2)}</text>`;
+        }
         svg += '</svg>';
         wrap.innerHTML = svg;
+    }
+
+    /* ===== Interactive click → limit order / alert (single-symbol only) ===== */
+    function chartClick(evt) {
+        closeChartMenu();
+        if (!_chartGeo || _chartGeo.multi) return;  // ordering only in single-symbol mode
+        const rect = evt.currentTarget.getBoundingClientRect();
+        const y = evt.clientY - rect.top;
+        const frac = 1 - (y - _chartGeo.padT) / _chartGeo.plotH;
+        if (frac < -0.02 || frac > 1.02) return;
+        const price = _chartGeo.ymin + frac * (_chartGeo.ymax - _chartGeo.ymin);
+        showChartMenu(evt.clientX, evt.clientY, _chartGeo.symbol, price);
+    }
+    function closeChartMenu() { const m = document.getElementById('chartMenu'); if (m) m.remove(); }
+    function showChartMenu(px, py, symbol, price) {
+        const p = price.toFixed(2);
+        const above = price > (_chartGeo.curPrice || price);
+        const m = document.createElement('div');
+        m.id = 'chartMenu';
+        m.style.cssText = `position:fixed;left:${Math.min(px, window.innerWidth - 240)}px;top:${py}px;z-index:9500;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,0.35);padding:6px;min-width:210px;font-size:0.86em;`;
+        const item = (html, fn) => { const b = document.createElement('div'); b.style.cssText = 'padding:8px 10px;border-radius:6px;cursor:pointer;'; b.innerHTML = html; b.onmouseover = () => b.style.background = 'var(--bg-tertiary)'; b.onmouseout = () => b.style.background = ''; b.onclick = (e) => { e.stopPropagation(); closeChartMenu(); fn(); }; m.appendChild(b); };
+        item(`<span style="color:#10b981;">▲ Buy limit</span> ${symbol} @ <b>$${p}</b>`, () => placeLimit(symbol, 'long', price));
+        item(`<span style="color:#ef4444;">▼ Sell/Short limit</span> ${symbol} @ <b>$${p}</b>`, () => placeLimit(symbol, 'short', price));
+        item(`<span style="color:#f59e0b;">🔔 Alert</span> when ${symbol} ${above ? '≥' : '≤'} <b>$${p}</b>`, () => placeChartAlert(symbol, price, above ? 'sell' : 'buy'));
+        item(`<span class="muted">✕ Cancel</span>`, () => {});
+        document.body.appendChild(m);
+        setTimeout(() => document.addEventListener('click', closeChartMenu, { once: true }), 0);
+    }
+    async function placeLimit(symbol, direction, price) {
+        try {
+            const r = await fetch('/api/paper/pending', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+                body: JSON.stringify({ symbol, direction, kind: 'stock', contracts: 1, limit_price: +price.toFixed(2) })
+            });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || 'order failed');
+            loadTrades();
+        } catch (e) { alert(e.message); }
+    }
+    async function placeChartAlert(symbol, price, side) {
+        try {
+            const r = await fetch('/api/alerts/limit', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+                body: JSON.stringify({ symbol, side, price: +price.toFixed(2) })
+            });
+            if (!r.ok) throw new Error((await r.json()).error || 'alert failed');
+            loadAlerts();
+        } catch (e) { alert(e.message); }
     }
 
     /* ===== Limit alerts ===== */
@@ -485,6 +584,8 @@
             const r = await fetch('/api/alerts', { credentials: 'same-origin' });
             const d = await r.json();
             const priceAlerts = (d.alerts || []).filter(a => a.alert_type === 'price');
+            window._ALERTS = priceAlerts;
+            if (typeof drawChart === 'function' && chartSymbols.length === 1) drawChart();
             const el = document.getElementById('alertList');
             if (!priceAlerts.length) { el.innerHTML = ''; return; }
             el.innerHTML = '<span class="muted" style="font-size:0.78em;margin-right:4px;">Active limit alerts:</span>' + priceAlerts.map(a => {

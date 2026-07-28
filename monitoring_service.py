@@ -110,11 +110,56 @@ class MonitoringService:
                     if total_fired:
                         print(f"🚨 {total_fired} alert(s) fired this cycle")
 
+                    # Fill any pending paper limit orders whose price has been crossed
+                    try:
+                        self._fill_pending_paper_orders(db, Notification)
+                    except Exception as e:
+                        print(f"⚠️ Error filling pending paper orders: {e}")
+                        db.session.rollback()
+
             except Exception as e:
                 print(f"⚠️ Error in monitoring loop: {e}")
 
             # Base tick — per-user intervals gate actual checks above
             time.sleep(self.check_interval)
+
+    def _latest_price(self, symbol):
+        try:
+            data = self.data_fetcher.fetch_stock_data(symbol, '1d')
+            if data is not None and not data.empty:
+                return float(data.iloc[-1]['Close'])
+        except Exception:
+            pass
+        return None
+
+    def _fill_pending_paper_orders(self, db, Notification):
+        """Fill pending paper limit orders across all users when price crosses.
+        One price fetch per distinct symbol; records a notification per fill."""
+        from models import PaperTrade
+        pending = PaperTrade.query.filter_by(status='pending').all()
+        if not pending:
+            return
+        by_symbol = {}
+        for o in pending:
+            by_symbol.setdefault(o.symbol, []).append(o)
+        filled = 0
+        for symbol, orders in by_symbol.items():
+            px = self._latest_price(symbol)
+            if px is None:
+                continue
+            for o in orders:
+                if o.fills_at(px):
+                    o.fill()
+                    filled += 1
+                    db.session.add(Notification(
+                        user_id=o.user_id, category='alert', symbol=symbol,
+                        title=f"{symbol} paper order filled",
+                        message=f"{o.direction} {o.contracts} {symbol} filled at ${o.limit_price}",
+                        priority='medium',
+                    ))
+        if filled:
+            db.session.commit()
+            print(f"📝 {filled} pending paper order(s) filled this cycle")
 
     def _record_notification(self, db, Notification, user_id, trigger):
         """Create a Notification row for a freshly-triggered alert, respecting a
