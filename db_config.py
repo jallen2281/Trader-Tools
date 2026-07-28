@@ -240,7 +240,12 @@ def init_database(app):
         _add_column_if_missing(db, inspector, 'users', 'alert_check_interval', 'INTEGER', '900')
         inspector = inspect(db.engine)
         _add_column_if_missing(db, inspector, 'users', 'watchlist_refresh_interval', 'INTEGER', '60')
-        
+        inspector = inspect(db.engine)
+        # Soft-delete columns (account lifecycle)
+        _add_column_if_missing(db, inspector, 'users', 'deleted_at', timestamp_type)
+        inspector = inspect(db.engine)
+        _add_column_if_missing(db, inspector, 'users', 'deleted_by', 'INTEGER')
+
         logger.info("✓ Database tables created successfully")
         
         # Ensure at least one admin exists - promote the first user
@@ -303,7 +308,16 @@ def get_or_create_user(google_id, email, name, picture_url):
         # Update user info
         user.name = name
         user.picture_url = picture_url
-    
+        # Reversibility: if this account was soft-deleted, logging back in with the
+        # same Google identity within the retention window restores it (and re-hydrates
+        # the PII that was scrubbed at delete time). Once an admin hard-purges, the row
+        # is gone and this branch never runs — a fresh account is created instead.
+        if getattr(user, 'deleted_at', None) is not None:
+            user.deleted_at = None
+            user.deleted_by = None
+            user.is_active = True
+            user.email = email
+
     user.last_login = datetime.utcnow()
     db.session.commit()
     

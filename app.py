@@ -9,7 +9,8 @@ if sys.stderr.encoding != 'utf-8':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-from flask_login import login_required, current_user
+from flask_login import login_required, current_user, logout_user
+from functools import wraps
 from data_fetcher import FinancialDataFetcher, normalize_crypto_symbol
 from chart_generator import ChartGenerator
 from pattern_recognizer import PatternRecognizer
@@ -26,7 +27,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -1148,6 +1149,179 @@ def admin_stats():
     })
 
 
+# ===================== GROUPS & PERMISSIONS (RBAC) =====================
+
+# Canonical permission registry. A user's effective permissions = the union across
+# their groups; admins bypass and implicitly hold every permission. Add a key here
+# and it becomes assignable in the admin Groups UI; gate a feature with
+# @require_permission('key') or user_has_permission(user, 'key').
+PERMISSIONS = {
+    'ai_analysis': 'Use AI analysis (holding/tax/SOP reads)',
+    'paper_trading': 'Access the Paper Trading module',
+    'copy_trading': 'Use copy trading / follow traders',
+    'community_post': 'Post and reply in the Community',
+    'tax_center': 'Access the Tax Center',
+    'premium_intervals': 'Unlock faster refresh/alert intervals',
+    'unlimited_watchlist': 'Remove watchlist size limits',
+    'data_export': 'Export portfolio / tax data',
+}
+
+
+def _effective_permissions(user):
+    """Set of permission keys a user effectively has. Admins get everything."""
+    if user is None:
+        return set()
+    if user.is_admin():
+        return set(PERMISSIONS.keys())
+    return {p for p in user.group_permissions() if p in PERMISSIONS}
+
+
+def user_has_permission(user, perm):
+    return perm in _effective_permissions(user)
+
+
+def require_permission(perm):
+    """Decorator to gate an endpoint on a permission (admins always pass)."""
+    def wrapper(f):
+        @wraps(f)
+        def inner(*args, **kwargs):
+            uid = _get_current_user_id()
+            user = User.query.get(uid) if uid else None
+            if not user:
+                return jsonify({'error': 'Authentication required'}), 401
+            if not user_has_permission(user, perm):
+                return jsonify({'error': 'Permission denied', 'missing_permission': perm}), 403
+            return f(*args, **kwargs)
+        return inner
+    return wrapper
+
+
+def _seed_default_groups():
+    """Create built-in groups once, so the RBAC system is usable out of the box."""
+    try:
+        if Group.query.count() > 0:
+            return
+        defaults = [
+            ('Members', 'Baseline access for all standard members.',
+             ['ai_analysis', 'paper_trading', 'community_post', 'tax_center', 'data_export'], True),
+            ('Premium', 'Paid tier — everything, including faster intervals and no limits.',
+             list(PERMISSIONS.keys()), True),
+        ]
+        for name, desc, perms, is_sys in defaults:
+            db.session.add(Group(name=name, description=desc, permissions=perms, is_system=is_sys))
+        db.session.commit()
+        logger.info("✓ Seeded default permission groups")
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"Could not seed default groups: {e}")
+
+
+@app.route('/api/user/permissions', methods=['GET'])
+@require_api_auth
+def get_my_permissions():
+    """The current user's effective permissions + the full registry (for UI gating)."""
+    uid = _get_current_user_id()
+    user = User.query.get(uid) if uid else None
+    if not user:
+        return jsonify({'error': 'Authentication required'}), 401
+    return jsonify({
+        'permissions': sorted(_effective_permissions(user)),
+        'is_admin': user.is_admin(),
+        'registry': PERMISSIONS,
+        'groups': [{'id': g.id, 'name': g.name} for g in (user.groups or [])],
+    })
+
+
+@app.route('/api/admin/permissions', methods=['GET'])
+@require_api_auth
+def admin_list_permissions():
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    return jsonify({'permissions': PERMISSIONS})
+
+
+@app.route('/api/admin/groups', methods=['GET'])
+@require_api_auth
+def admin_list_groups():
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    groups = Group.query.order_by(Group.name.asc()).all()
+    return jsonify({'groups': [g.to_dict(member_count=len(g.members)) for g in groups],
+                    'registry': PERMISSIONS})
+
+
+@app.route('/api/admin/groups', methods=['POST'])
+@require_api_auth
+def admin_create_group():
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+    if Group.query.filter(db.func.lower(Group.name) == name.lower()).first():
+        return jsonify({'error': 'A group with that name already exists'}), 400
+    perms = [p for p in (data.get('permissions') or []) if p in PERMISSIONS]
+    g = Group(name=name[:60], description=(data.get('description') or '').strip() or None,
+              permissions=perms, is_system=False)
+    db.session.add(g)
+    db.session.commit()
+    return jsonify(g.to_dict(member_count=0)), 201
+
+
+@app.route('/api/admin/groups/<int:group_id>', methods=['PUT'])
+@require_api_auth
+def admin_update_group(group_id):
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    g = Group.query.get_or_404(group_id)
+    data = request.get_json() or {}
+    if 'name' in data and g.is_system:
+        return jsonify({'error': 'Cannot rename a system group'}), 400
+    if 'name' in data:
+        name = (data.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': 'Name cannot be empty'}), 400
+        clash = Group.query.filter(db.func.lower(Group.name) == name.lower(), Group.id != group_id).first()
+        if clash:
+            return jsonify({'error': 'A group with that name already exists'}), 400
+        g.name = name[:60]
+    if 'description' in data:
+        g.description = (data.get('description') or '').strip() or None
+    if 'permissions' in data:
+        g.permissions = [p for p in (data.get('permissions') or []) if p in PERMISSIONS]
+    db.session.commit()
+    return jsonify(g.to_dict(member_count=len(g.members)))
+
+
+@app.route('/api/admin/groups/<int:group_id>', methods=['DELETE'])
+@require_api_auth
+def admin_delete_group(group_id):
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    g = Group.query.get_or_404(group_id)
+    if g.is_system:
+        return jsonify({'error': 'Cannot delete a built-in system group'}), 400
+    g.members = []  # drop association rows
+    db.session.delete(g)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/admin/users/<int:user_id>/groups', methods=['PUT'])
+@require_api_auth
+def admin_set_user_groups(user_id):
+    """Replace a user's group memberships with the provided list of group ids."""
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    user = User.query.get_or_404(user_id)
+    ids = (request.get_json() or {}).get('group_ids') or []
+    groups = Group.query.filter(Group.id.in_(ids)).all() if ids else []
+    user.groups = groups
+    db.session.commit()
+    return jsonify({'success': True, 'user': user.to_dict()})
+
+
 # ===================== COMMUNITY API =====================
 
 @app.route('/api/community/threads', methods=['GET'])
@@ -1496,6 +1670,125 @@ def update_user_profile():
         current_user.bio = bio[:2000] or None
     db.session.commit()
     return jsonify({'success': True, 'user': current_user.to_dict()})
+
+
+# ===================== ACCOUNT LIFECYCLE (soft-delete) =====================
+
+def _soft_delete_user(user, by_id):
+    """Mark an account deleted: scrub display PII, disable login, kill sessions.
+    google_id is KEPT so re-login can restore it within the retention window; rows
+    are retained (anonymized) until an admin hard-purges."""
+    user.deleted_at = datetime.utcnow()
+    user.deleted_by = by_id
+    user.is_active = False
+    user.email = f'deleted+{user.id}@deleted.invalid'  # unique per id, frees the real address
+    user.name = 'Deleted User'
+    user.picture_url = None
+    user.bio = None
+    # Invalidate every session/PAT so existing tokens stop working immediately.
+    try:
+        from models import UserSession
+        UserSession.query.filter_by(user_id=user.id).delete()
+    except Exception as e:
+        logger.warning(f"Could not clear sessions for deleted user {user.id}: {e}")
+
+
+@app.route('/api/user/account', methods=['DELETE'])
+@require_api_auth
+def delete_own_account():
+    """Self-serve soft-delete of the current user's own account."""
+    try:
+        uid = _get_current_user_id()
+        if not uid:
+            return jsonify({'error': 'Authentication required'}), 401
+        user = User.query.get(uid)
+        if not user or user.is_deleted():
+            return jsonify({'error': 'Not found'}), 404
+        _soft_delete_user(user, by_id=uid)
+        db.session.commit()
+        try:
+            logout_user()
+            session.clear()
+        except Exception:
+            pass
+        return jsonify({'success': True, 'message': 'Account deleted. Signing you out. Logging back in with the same Google account within the retention window will restore it.'})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error deleting own account: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/users/<int:user_id>/delete', methods=['PUT'])
+@require_api_auth
+def admin_soft_delete_user(user_id):
+    """Admin soft-delete of a member (reversible)."""
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    if user_id == current_user.id:
+        return jsonify({'error': 'Use the account page to delete your own account'}), 400
+    user = User.query.get_or_404(user_id)
+    if user.is_deleted():
+        return jsonify({'error': 'Already deleted'}), 400
+    _soft_delete_user(user, by_id=current_user.id)
+    db.session.commit()
+    return jsonify({'success': True, 'user': user.to_dict()})
+
+
+@app.route('/api/admin/users/<int:user_id>/restore', methods=['PUT'])
+@require_api_auth
+def admin_restore_user(user_id):
+    """Admin restore of a soft-deleted member. PII stays scrubbed until the user next
+    logs in (which re-hydrates it from Google)."""
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    user = User.query.get_or_404(user_id)
+    if not user.is_deleted():
+        return jsonify({'error': 'Account is not deleted'}), 400
+    user.deleted_at = None
+    user.deleted_by = None
+    user.is_active = True
+    db.session.commit()
+    return jsonify({'success': True, 'user': user.to_dict()})
+
+
+@app.route('/api/admin/users/<int:user_id>/purge', methods=['DELETE'])
+@require_api_auth
+def admin_purge_user(user_id):
+    """Admin HARD-purge: permanently delete a user and ALL their data. Irreversible.
+    Requires the user to be soft-deleted first (two-step safety)."""
+    if not current_user.is_admin():
+        return jsonify({'error': 'Unauthorized'}), 403
+    if user_id == current_user.id:
+        return jsonify({'error': 'Cannot purge your own account'}), 400
+    user = User.query.get_or_404(user_id)
+    if not user.is_deleted():
+        return jsonify({'error': 'Soft-delete the account before purging'}), 400
+    try:
+        uid = user.id
+        from models import UserSession
+        # Drop group memberships (association rows) then user-owned rows not covered
+        # by the User model's delete-orphan cascades.
+        user.groups = []
+        for model, col in ((PaperTrade, 'user_id'), (TradingSOP, 'user_id'),
+                           (Notification, 'user_id'), (ThreadVote, 'user_id'),
+                           (ThreadReply, 'user_id'), (DiscussionThread, 'user_id')):
+            try:
+                model.query.filter(getattr(model, col) == uid).delete(synchronize_session=False)
+            except Exception as e:
+                logger.warning(f"purge: {model.__name__} cleanup skipped: {e}")
+        try:
+            CopyTradingFollow.query.filter(
+                (CopyTradingFollow.follower_id == uid) | (CopyTradingFollow.leader_id == uid)
+            ).delete(synchronize_session=False)
+        except Exception as e:
+            logger.warning(f"purge: CopyTradingFollow cleanup skipped: {e}")
+        db.session.delete(user)  # cascades watchlist/alerts/portfolio/txns/etc.
+        db.session.commit()
+        return jsonify({'success': True, 'purged_user_id': uid})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error purging user {user_id}: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/auth/token', methods=['POST'])
@@ -5548,6 +5841,16 @@ def handle_unhandled_exception(e):
     if isinstance(e, HTTPException):
         return e
     return redirect(url_for('login') if PHASE2_ENABLED else url_for('index'))
+
+
+# Seed built-in permission groups at import time (runs under gunicorn too, not just
+# __main__). Idempotent — skips if any group already exists.
+if PHASE2_ENABLED:
+    try:
+        with app.app_context():
+            _seed_default_groups()
+    except Exception as _seed_err:
+        logger.warning(f"Default-group seed skipped: {_seed_err}")
 
 
 if __name__ == '__main__':

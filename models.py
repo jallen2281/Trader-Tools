@@ -32,8 +32,13 @@ class User(UserMixin, db.Model):
     last_login = db.Column(db.DateTime)
     last_active = db.Column(db.DateTime)
     preferences = db.Column(JSON, default={})
-    
+    # Soft-delete: when set, the account is deleted — login is blocked and PII is
+    # scrubbed, but rows are retained (anonymized) until an admin hard-purges.
+    deleted_at = db.Column(db.DateTime, index=True)
+    deleted_by = db.Column(db.Integer)  # admin user id, or the user's own id for self-serve
+
     # Relationships
+    groups = db.relationship('Group', secondary='user_groups', back_populates='members', lazy='selectin')
     watchlist = db.relationship('Watchlist', backref='user', lazy=True, cascade='all, delete-orphan')
     alerts = db.relationship('Alert', backref='user', lazy=True, cascade='all, delete-orphan')
     portfolio = db.relationship('Portfolio', backref='user', lazy=True, cascade='all, delete-orphan')
@@ -60,14 +65,26 @@ class User(UserMixin, db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_login': self.last_login.isoformat() if self.last_login else None,
             'last_active': self.last_active.isoformat() if self.last_active else None,
+            'deleted_at': self.deleted_at.isoformat() if self.deleted_at else None,
+            'groups': [{'id': g.id, 'name': g.name} for g in (self.groups or [])],
         }
-    
+
     def is_admin(self):
         return self.role == 'admin'
-    
+
     def is_moderator(self):
         return self.role in ('admin', 'moderator')
-    
+
+    def is_deleted(self):
+        return self.deleted_at is not None
+
+    def group_permissions(self):
+        """Union of permission keys granted by this user's groups (excludes admin bypass)."""
+        perms = set()
+        for g in (self.groups or []):
+            perms.update(g.permissions or [])
+        return perms
+
     def __repr__(self):
         return f'<User {self.email}>'
 
@@ -700,6 +717,44 @@ class PaperTrade(db.Model):
             'pnl_pct': self.pnl_pct(),
             'hold_minutes': self.hold_minutes(),
         }
+
+
+# Many-to-many: users <-> groups. Referenced by string name in both relationships
+# (secondary='user_groups') so class-definition order doesn't matter.
+user_groups = db.Table(
+    'user_groups',
+    db.Column('user_id', db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
+    db.Column('group_id', db.Integer, db.ForeignKey('groups.id', ondelete='CASCADE'), primary_key=True),
+)
+
+
+class Group(db.Model):
+    """A permission group (RBAC). Admins define groups, grant each a set of permission
+    keys, and assign users. A user's effective permissions = the union across their
+    groups (admins bypass and have every permission)."""
+    __tablename__ = 'groups'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(60), unique=True, nullable=False, index=True)
+    description = db.Column(db.Text)
+    permissions = db.Column(JSON, default=list)   # list of permission-key strings
+    is_system = db.Column(db.Boolean, default=False)  # seeded/built-in groups can't be deleted
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    members = db.relationship('User', secondary='user_groups', back_populates='groups', lazy='selectin')
+
+    def to_dict(self, member_count=None):
+        d = {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description or '',
+            'permissions': self.permissions or [],
+            'is_system': bool(self.is_system),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+        if member_count is not None:
+            d['member_count'] = member_count
+        return d
 
 
 class TradingSOP(db.Model):

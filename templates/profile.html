@@ -59,6 +59,7 @@
         <button class="pf-tab active" data-tab="profile" onclick="showTab('profile')">Profile</button>
         <button class="pf-tab" data-tab="prefs" onclick="showTab('prefs')">Preferences</button>
         <button class="pf-tab" data-tab="sop" onclick="showTab('sop')">📋 Trading SOP</button>
+        <button class="pf-tab" data-tab="account" onclick="showTab('account')">Account</button>
     </div>
 
     <!-- ===== PROFILE ===== -->
@@ -132,6 +133,25 @@
     <div class="pf-panel" id="panel-sop">
         <div id="sopBody"><p class="pf-muted" style="text-align:center;padding:30px;">Loading your SOP…</p></div>
     </div>
+
+    <!-- ===== ACCOUNT ===== -->
+    <div class="pf-panel" id="panel-account">
+        <div class="pf-card">
+            <h2 style="margin:0 0 6px;">Your Permissions</h2>
+            <p class="pf-muted" style="font-size:0.85em;margin-top:0;">Access is granted by the groups an admin assigns you.</p>
+            <div id="permBody" class="pf-muted" style="font-size:0.9em;">Loading…</div>
+        </div>
+        <div class="pf-card" style="border-color:rgba(239,68,68,0.4);">
+            <h2 style="margin:0 0 6px;color:#ef4444;">⚠️ Danger Zone</h2>
+            <p style="font-size:0.9em;margin-top:0;">Delete your account. Your login is disabled and your personal info (name, email, picture) is scrubbed immediately. Your data is retained but anonymized, and an admin can permanently purge it. <strong>Signing back in with the same Google account within the retention window restores it.</strong></p>
+            <div class="pf-field" style="max-width:340px;">
+                <label>Type <code>DELETE</code> to confirm</label>
+                <input id="delConfirm" placeholder="DELETE" oninput="document.getElementById('delBtn').disabled = this.value.trim() !== 'DELETE';">
+            </div>
+            <button class="btn2 danger" id="delBtn" disabled onclick="deleteAccount()">Delete My Account</button>
+            <span id="delMsg" class="pf-muted" style="font-size:0.85em;margin-left:10px;"></span>
+        </div>
+    </div>
 {% endblock %}
 
 {% block scripts %}
@@ -144,6 +164,35 @@
         document.querySelectorAll('.pf-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
         document.querySelectorAll('.pf-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
         if (name === 'sop' && !ACTIVE_SOP && !DRAFT_SOP) loadSop();
+        if (name === 'account') loadPermissions();
+    }
+
+    /* ---------- Account ---------- */
+    async function loadPermissions() {
+        const el = document.getElementById('permBody');
+        try {
+            const r = await fetch('/api/user/permissions', { credentials: 'same-origin' });
+            const d = await r.json();
+            if (d.is_admin) { el.innerHTML = '<span class="badge b-active">admin</span> — full access to every feature.'; return; }
+            const reg = d.registry || {};
+            const perms = d.permissions || [];
+            const groups = (d.groups || []).map(g => esc(g.name)).join(', ') || 'none';
+            if (!perms.length) { el.innerHTML = `Groups: <strong>${groups}</strong>. No feature permissions granted yet — ask an admin.`; return; }
+            el.innerHTML = `Groups: <strong>${groups}</strong><ul style="margin:8px 0 0;padding-left:20px;">` +
+                perms.map(p => `<li>${esc(reg[p] || p)}</li>`).join('') + '</ul>';
+        } catch (e) { el.innerHTML = 'Could not load permissions.'; }
+    }
+    async function deleteAccount() {
+        const btn = document.getElementById('delBtn'), msg = document.getElementById('delMsg');
+        if (!confirm('Delete your account? You will be signed out immediately.')) return;
+        btn.disabled = true; msg.textContent = 'Deleting…'; msg.style.color = '';
+        try {
+            const r = await fetch('/api/user/account', { method: 'DELETE', credentials: 'same-origin' });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || 'delete failed');
+            msg.textContent = '✓ Deleted — signing out…'; msg.style.color = 'var(--success)';
+            setTimeout(() => { window.location.href = '/logout'; }, 1500);
+        } catch (e) { msg.textContent = e.message; msg.style.color = '#ef4444'; btn.disabled = false; }
     }
 
     /* ---------- Profile ---------- */

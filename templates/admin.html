@@ -8,19 +8,33 @@
     .stat-card .stat-value { font-size: 2em; font-weight: 700; color: var(--accent); }
     .stat-card .stat-label { color: var(--text-secondary); margin-top: 4px; font-size: 0.9em; }
     .users-table { width: 100%; border-collapse: collapse; background: var(--card-bg); border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
-    .users-table th, .users-table td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
-    .users-table th { background: var(--bg-tertiary); font-weight: 600; color: var(--text-primary); font-size: 0.85em; text-transform: uppercase; }
+    .users-table th, .users-table td { padding: 11px 14px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9em; }
+    .users-table th { background: var(--bg-tertiary); font-weight: 600; color: var(--text-primary); font-size: 0.8em; text-transform: uppercase; }
     .users-table tr:hover { background: var(--bg-tertiary); }
+    .users-table tr.deleted { opacity: 0.55; }
     .role-badge { padding: 4px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 600; }
-    .role-admin { background: rgba(239,68,68,0.15); color: #ef4444; }
-    .role-moderator { background: rgba(168,85,247,0.15); color: #a855f7; }
-    .role-user { background: rgba(59,130,246,0.15); color: #3b82f6; }
     .status-active { color: #10b981; }
     .status-disabled { color: #ef4444; }
     .user-avatar { width: 32px; height: 32px; border-radius: 50%; vertical-align: middle; margin-right: 8px; }
     .action-select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 0.85em; }
-    .toggle-btn { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 0.85em; background: var(--bg-primary); color: var(--text-primary); }
+    .toggle-btn { padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 0.82em; background: var(--bg-primary); color: var(--text-primary); }
     .toggle-btn:hover { background: var(--bg-tertiary); }
+    .toggle-btn.danger { color: #ef4444; border-color: rgba(239,68,68,0.4); }
+    .grp-chip { display:inline-block; font-size:0.72em; padding:2px 8px; border-radius:999px; background:rgba(102,126,234,0.15); color:#667eea; margin:1px 2px; }
+    .groups-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px; }
+    .group-card { background:var(--card-bg); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+    .group-card h3 { margin:0 0 4px; display:flex; align-items:center; gap:8px; }
+    .perm-tag { display:inline-block; font-size:0.72em; padding:3px 9px; border-radius:999px; background:var(--bg-tertiary); color:var(--text-secondary); margin:2px; }
+    .sys-badge { font-size:0.65em; font-weight:700; padding:2px 7px; border-radius:999px; background:rgba(168,85,247,0.15); color:#a855f7; text-transform:uppercase; }
+    .modal-back { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:9000; padding:20px; }
+    .modal-box { background:var(--card-bg); color:var(--text-primary); border-radius:12px; padding:24px; max-width:520px; width:100%; max-height:88vh; overflow-y:auto; box-shadow:0 10px 40px rgba(0,0,0,0.4); }
+    .modal-box label.fld { display:block; font-size:0.8em; color:var(--text-secondary); margin:12px 0 4px; font-weight:600; }
+    .modal-box input[type=text], .modal-box textarea { width:100%; padding:9px 11px; border-radius:7px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); box-sizing:border-box; }
+    .perm-check { display:flex; align-items:flex-start; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); font-size:0.9em; }
+    .perm-check:last-child { border-bottom:none; }
+    .btn2 { padding:9px 16px; border-radius:8px; border:1px solid var(--border); background:var(--bg-tertiary); color:var(--text-primary); font-size:0.9em; font-weight:600; cursor:pointer; }
+    .btn2.primary { background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; border:none; }
+    .btn2.danger { color:#ef4444; border-color:rgba(239,68,68,0.4); }
 </style>
 {% endblock %}
 
@@ -40,20 +54,27 @@
             <thead>
                 <tr>
                     <th>User</th>
-                    <th>Email</th>
                     <th>Role</th>
                     <th>Status</th>
-                    <th>Copy Trading</th>
+                    <th>Groups</th>
                     <th>Joined</th>
-                    <th>Last Login</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="usersTableBody">
-                <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-secondary);">Loading users...</td></tr>
+                <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-secondary);">Loading users...</td></tr>
             </tbody>
         </table>
     </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:30px 0 16px;flex-wrap:wrap;gap:10px;">
+        <h2 style="margin:0;color:var(--text-primary);">Groups &amp; Permissions</h2>
+        <button class="btn2 primary" onclick="openGroupEditor(null)">+ New Group</button>
+    </div>
+    <p style="color:var(--text-secondary);font-size:0.88em;margin-top:0;">Groups grant feature permissions. A user's effective access is the union of their groups. Admins bypass and hold every permission.</p>
+    <div id="groupsGrid" class="groups-grid"><p style="color:var(--text-secondary);">Loading groups…</p></div>
+
+    <div id="modalRoot"></div>
 {% endblock %}
 
 {% block scripts %}

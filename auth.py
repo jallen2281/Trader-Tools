@@ -28,7 +28,11 @@ def init_auth(app):
     @login_manager.user_loader
     def load_user(user_id):
         try:
-            return User.query.get(int(user_id))
+            user = User.query.get(int(user_id))
+            # A soft-deleted account must not resolve to a logged-in session.
+            if user is not None and getattr(user, 'deleted_at', None) is not None:
+                return None
+            return user
         except Exception:
             return None
 
