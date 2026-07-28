@@ -1905,28 +1905,6 @@ def version():
     return jsonify({'commit': os.environ.get('GIT_COMMIT', 'unknown')})
 
 
-@app.route('/api/debug/dbping', methods=['GET'])
-def db_ping():
-    """Read-only per-worker DB diagnostic (no secrets). Reveals whether every
-    worker/replica is talking to the SAME live Postgres and can see the auth rows —
-    used to distinguish a transaction-state 401 (all workers OK, same counts) from a
-    misconfigured replica/worker on an empty/fallback DB (some report sqlite/0 rows).
-    """
-    info = {'pid': os.getpid(), 'commit': os.environ.get('GIT_COMMIT', 'unknown')[:12]}
-    try:
-        info['backend'] = db.engine.url.get_backend_name()
-    except Exception as e:
-        info['backend'] = f'err:{type(e).__name__}'
-    try:
-        info['users'] = User.query.count()
-        info['ok'] = True
-    except Exception as e:
-        db.session.rollback()
-        info['ok'] = False
-        info['err'] = f"{type(e).__name__}: {e}"[:160]
-    return jsonify(info)
-
-
 @app.route('/api/status', methods=['GET'])
 def check_status():
     """Check system status."""
