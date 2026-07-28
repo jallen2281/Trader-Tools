@@ -85,25 +85,33 @@ def create_session_token(user_id):
 def verify_session_token(token):
     """Verify a Personal Access Token and return the matching user.
 
-    Auth must survive a transient DB blip: a stale pooled connection, or a session
-    left in a rolled-back state by a *prior* request on this pod, would make the
-    lookup throw — and returning None turns that into a spurious 401 (then the next
-    request self-heals, which is exactly the intermittent flakiness we saw). So on
-    any exception we roll the session back (clearing a PendingRollbackError) and
-    retry the lookup ONCE against a clean transaction before giving up. A genuinely
-    invalid/expired token returns None without an exception, so it never retries.
+    Auth must survive two distinct DB-pool hazards that both surfaced as spurious
+    401s on ~1-in-4 Bearer requests (never in the browser, which uses the session
+    cookie):
+
+      1. A pooled connection left with a *poisoned* transaction (PendingRollbackError)
+         by a prior request throws on the lookup. -> caught below, rolled back, retried.
+      2. A pooled connection stuck on a *stale MVCC snapshot* (a long-lived / leaked
+         transaction) runs the lookup fine but simply doesn't see a row committed
+         after its snapshot began -> returns None with NO exception. A plain rollback
+         reuses the same snapshot, so this needs db.session.remove() to drop the
+         connection back to the pool and start a fresh transaction on retry.
+
+    So: on a "not found" we can't tell a genuinely-revoked token from a stale-snapshot
+    miss, so we remove() the session and retry once with a fresh connection. A token
+    found-but-EXPIRED is a real reject and never retries.
     """
     import logging
     _log = logging.getLogger(__name__)
 
     def _lookup():
+        """Returns (user_or_None, definitive) — definitive=True means don't retry."""
         session_obj = UserSession.query.filter_by(session_token=token).first()
-
-        if not session_obj or session_obj.is_expired():
-            return None
-
+        if session_obj is None:
+            return None, False          # not found: maybe stale snapshot -> allow one retry
+        if session_obj.is_expired():
+            return None, True           # genuinely expired -> definitive reject
         user = User.query.get(session_obj.user_id)
-
         # Best-effort: refresh last activity, but NEVER reject a valid token just
         # because this bookkeeping write fails (e.g. read-only replica / transient DB error).
         try:
@@ -112,14 +120,22 @@ def verify_session_token(token):
         except Exception as e:
             db.session.rollback()
             _log.warning(f"last_activity update failed (token still honored): {type(e).__name__}: {e}")
-
-        return user
+        return user, True
 
     for attempt in (1, 2):
         try:
-            return _lookup()
+            user, definitive = _lookup()
+            if user is not None or definitive:
+                return user
+            # not found on attempt 1 — could be a stale-snapshot miss; drop the
+            # connection and retry once with a fresh transaction before giving up.
+            if attempt == 1:
+                db.session.remove()
+                continue
+            return None
         except Exception as e:
-            db.session.rollback()  # clear a poisoned/stale session before retrying
+            db.session.rollback()
+            db.session.remove()  # force a fresh connection/snapshot on retry
             if attempt == 1:
                 _log.warning(f"verify_session_token retrying after {type(e).__name__}: {e}")
                 continue
