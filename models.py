@@ -38,7 +38,11 @@ class User(UserMixin, db.Model):
     deleted_by = db.Column(db.Integer)  # admin user id, or the user's own id for self-serve
 
     # Relationships
-    groups = db.relationship('Group', secondary='user_groups', back_populates='members', lazy='selectin')
+    # NOTE: lazy='select' (not selectin) is deliberate — verify_session_token loads a
+    # User on every authed request and does NOT need groups; eager-loading them here
+    # added an extra query to the hot auth path and measurably raised transient 401s.
+    # Groups load lazily only when actually accessed (to_dict / permission checks).
+    groups = db.relationship('Group', secondary='user_groups', back_populates='members', lazy='select')
     watchlist = db.relationship('Watchlist', backref='user', lazy=True, cascade='all, delete-orphan')
     alerts = db.relationship('Alert', backref='user', lazy=True, cascade='all, delete-orphan')
     portfolio = db.relationship('Portfolio', backref='user', lazy=True, cascade='all, delete-orphan')
