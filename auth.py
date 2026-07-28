@@ -83,10 +83,20 @@ def create_session_token(user_id):
 
 
 def verify_session_token(token):
-    """Verify session token and return user"""
+    """Verify a Personal Access Token and return the matching user.
+
+    Auth must survive a transient DB blip: a stale pooled connection, or a session
+    left in a rolled-back state by a *prior* request on this pod, would make the
+    lookup throw — and returning None turns that into a spurious 401 (then the next
+    request self-heals, which is exactly the intermittent flakiness we saw). So on
+    any exception we roll the session back (clearing a PendingRollbackError) and
+    retry the lookup ONCE against a clean transaction before giving up. A genuinely
+    invalid/expired token returns None without an exception, so it never retries.
+    """
     import logging
     _log = logging.getLogger(__name__)
-    try:
+
+    def _lookup():
         session_obj = UserSession.query.filter_by(session_token=token).first()
 
         if not session_obj or session_obj.is_expired():
@@ -104,10 +114,17 @@ def verify_session_token(token):
             _log.warning(f"last_activity update failed (token still honored): {type(e).__name__}: {e}")
 
         return user
-    except Exception as e:
-        db.session.rollback()
-        _log.warning(f"verify_session_token failed: {type(e).__name__}: {e}")
-        return None
+
+    for attempt in (1, 2):
+        try:
+            return _lookup()
+        except Exception as e:
+            db.session.rollback()  # clear a poisoned/stale session before retrying
+            if attempt == 1:
+                _log.warning(f"verify_session_token retrying after {type(e).__name__}: {e}")
+                continue
+            _log.warning(f"verify_session_token failed after retry: {type(e).__name__}: {e}")
+            return None
 
 
 def get_auth_routes(google):

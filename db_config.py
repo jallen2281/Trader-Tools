@@ -43,13 +43,18 @@ class DatabaseConfig:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ECHO = os.getenv('SQL_DEBUG', 'False').lower() == 'true'
     
-    # Pool settings only apply to non-SQLite engines
+    # Pool settings only apply to non-SQLite engines.
+    # NOTE: Flask-SQLAlchemy >= 3.0 IGNORES the individual SQLALCHEMY_POOL_SIZE /
+    # SQLALCHEMY_MAX_OVERFLOW / SQLALCHEMY_POOL_RECYCLE keys — every engine/pool
+    # setting must live inside SQLALCHEMY_ENGINE_OPTIONS or it is silently dropped
+    # (leaving the default pool size and, critically, NO time-based recycle so
+    # connections can go stale between Postgres's server-side timeout and use).
     if not SQLALCHEMY_DATABASE_URI.startswith('sqlite'):
-        SQLALCHEMY_POOL_SIZE = 10
-        SQLALCHEMY_MAX_OVERFLOW = 20
-        SQLALCHEMY_POOL_RECYCLE = 3600
         SQLALCHEMY_ENGINE_OPTIONS = {
-            'pool_pre_ping': True,  # Verify connections before use
+            'pool_pre_ping': True,   # test each connection before use (drops stale ones)
+            'pool_size': 10,
+            'max_overflow': 20,
+            'pool_recycle': 3600,    # recycle hourly to pre-empt server-side idle timeouts
         }
     
     # Session configuration
