@@ -26,7 +26,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -351,6 +351,190 @@ def tax_center():
     if not PHASE4_ENABLED:
         return "Tax features are not enabled", 503
     return render_template('tax.html')
+
+
+@app.route('/paper')
+@login_required
+def paper_trading():
+    """Render the Paper Trading module — simulate trades + expectancy stats."""
+    if not PHASE4_ENABLED:
+        return "Not available", 503
+    return render_template('paper.html')
+
+
+def _paper_strategy_list(user_id):
+    rows = db.session.query(PaperTrade.strategy).filter_by(user_id=user_id).distinct().all()
+    return sorted({(r[0] or 'default') for r in rows})
+
+
+@app.route('/api/paper/trades', methods=['GET'])
+@require_api_auth
+def get_paper_trades():
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        q = PaperTrade.query.filter_by(user_id=user_id)
+        status = request.args.get('status')
+        if status in ('open', 'closed'):
+            q = q.filter_by(status=status)
+        strategy = request.args.get('strategy')
+        if strategy:
+            q = q.filter_by(strategy=strategy)
+        trades = q.order_by(PaperTrade.entry_at.desc()).all()
+        return jsonify({'trades': [t.to_dict() for t in trades]})
+    except Exception as e:
+        logger.error(f"Error listing paper trades: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/paper/trades', methods=['POST'])
+@require_api_auth
+def create_paper_trade():
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        data = request.get_json() or {}
+        symbol = (data.get('symbol') or '').upper().strip()
+        if not symbol or data.get('entry_price') in (None, ''):
+            return jsonify({'error': 'symbol and entry_price are required'}), 400
+        kind = (data.get('kind') or 'option').lower()
+        direction = (data.get('direction') or 'call').lower()
+        t = PaperTrade(
+            user_id=user_id, symbol=symbol,
+            strategy=(data.get('strategy') or 'default').strip()[:60] or 'default',
+            kind=kind if kind in ('option', 'stock') else 'option',
+            direction=direction if direction in ('call', 'put', 'long', 'short') else 'call',
+            contracts=float(data.get('contracts') or 1),
+            entry_price=float(data.get('entry_price')),
+            entry_at=_parse_txn_date(data.get('entry_at')) or datetime.utcnow(),
+            target_price=float(data['target_price']) if data.get('target_price') not in (None, '') else None,
+            stop_price=float(data['stop_price']) if data.get('stop_price') not in (None, '') else None,
+            fees=float(data.get('fees') or 0),
+            notes=data.get('notes'),
+            status='open',
+        )
+        if data.get('exit_price') not in (None, ''):  # log a completed trade in one shot
+            t.exit_price = float(data['exit_price'])
+            t.exit_at = _parse_txn_date(data.get('exit_at')) or datetime.utcnow()
+            t.status = 'closed'
+        db.session.add(t)
+        db.session.commit()
+        return jsonify(t.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error creating paper trade: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/paper/trades/<int:tid>', methods=['PUT'])
+@require_api_auth
+def update_paper_trade(tid):
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        t = PaperTrade.query.filter_by(id=tid, user_id=user_id).first()
+        if not t:
+            return jsonify({'error': 'Not found'}), 404
+        data = request.get_json() or {}
+        if data.get('exit_price') not in (None, ''):  # close the trade
+            t.exit_price = float(data['exit_price'])
+            t.exit_at = _parse_txn_date(data.get('exit_at')) or datetime.utcnow()
+            t.status = 'closed'
+        for f in ('target_price', 'stop_price', 'fees'):
+            if f in data and data[f] not in (None, ''):
+                setattr(t, f, float(data[f]))
+        if 'notes' in data:
+            t.notes = data['notes']
+        if 'strategy' in data and data['strategy']:
+            t.strategy = str(data['strategy']).strip()[:60]
+        db.session.commit()
+        return jsonify(t.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error updating paper trade: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/paper/trades/<int:tid>', methods=['DELETE'])
+@require_api_auth
+def delete_paper_trade(tid):
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        t = PaperTrade.query.filter_by(id=tid, user_id=user_id).first()
+        if not t:
+            return jsonify({'error': 'Not found'}), 404
+        db.session.delete(t)
+        db.session.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error deleting paper trade: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/paper/stats', methods=['GET'])
+@require_api_auth
+def get_paper_stats():
+    """Expectancy stats over closed paper trades — the honest edge test."""
+    if not PHASE4_ENABLED:
+        return jsonify({'error': 'Not available'}), 503
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+        strategy = request.args.get('strategy')
+        q = PaperTrade.query.filter_by(user_id=user_id, status='closed')
+        if strategy:
+            q = q.filter_by(strategy=strategy)
+        trades = q.order_by(PaperTrade.exit_at.asc()).all()
+        pnls = [t.pnl() for t in trades if t.pnl() is not None]
+        open_count = PaperTrade.query.filter_by(user_id=user_id, status='open').count()
+        strategies = _paper_strategy_list(user_id)
+        n = len(pnls)
+        if n == 0:
+            return jsonify({'summary': {'count': 0}, 'strategies': strategies, 'open_count': open_count})
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        gross_win = sum(wins)
+        gross_loss = sum(losses)
+        net = round(sum(pnls), 2)
+        eq = peak = mdd = 0.0
+        for p in pnls:
+            eq += p
+            peak = max(peak, eq)
+            mdd = min(mdd, eq - peak)
+        holds = [t.hold_minutes() for t in trades if t.hold_minutes() is not None]
+        summary = {
+            'count': n,
+            'wins': len(wins), 'losses': len(losses),
+            'win_rate': round(len(wins) / n * 100, 1),
+            'avg_win': round(gross_win / len(wins), 2) if wins else 0,
+            'avg_loss': round(gross_loss / len(losses), 2) if losses else 0,
+            'expectancy': round(net / n, 2),
+            'profit_factor': round(gross_win / abs(gross_loss), 2) if gross_loss else None,
+            'net_pnl': net,
+            'max_drawdown': round(mdd, 2),
+            'best': round(max(pnls), 2), 'worst': round(min(pnls), 2),
+            'avg_hold_min': round(sum(holds) / len(holds), 1) if holds else None,
+            'total_fees': round(sum(float(t.fees or 0) for t in trades), 2),
+        }
+        return jsonify({'summary': summary, 'strategies': strategies, 'open_count': open_count})
+    except Exception as e:
+        logger.error(f"Error computing paper stats: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/tax/realized', methods=['GET'])

@@ -639,6 +639,69 @@ class Dividend(db.Model):
         }
 
 
+class PaperTrade(db.Model):
+    """Simulated (paper) trades for risk-free strategy testing + expectancy."""
+    __tablename__ = 'paper_trades'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    symbol = db.Column(db.String(20), nullable=False)
+    strategy = db.Column(db.String(60), default='default', index=True)  # tag for grouping
+    kind = db.Column(db.String(10), default='option')      # option | stock
+    direction = db.Column(db.String(10), default='call')   # call | put | long | short
+    contracts = db.Column(db.Numeric(15, 4, asdecimal=False), default=1)
+    entry_price = db.Column(db.Numeric(15, 4, asdecimal=False), nullable=False)
+    entry_at = db.Column(db.DateTime, default=datetime.utcnow)
+    target_price = db.Column(db.Numeric(15, 4, asdecimal=False))
+    stop_price = db.Column(db.Numeric(15, 4, asdecimal=False))
+    exit_price = db.Column(db.Numeric(15, 4, asdecimal=False))
+    exit_at = db.Column(db.DateTime)
+    fees = db.Column(db.Numeric(15, 2, asdecimal=False), default=0)
+    status = db.Column(db.String(10), default='open', index=True)  # open | closed
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def _mult(self):
+        return 100 if (self.kind or 'option') == 'option' else 1
+
+    def pnl(self):
+        if self.exit_price is None:
+            return None
+        sign = -1 if self.direction == 'short' else 1  # bought call/put/long profit if price rises
+        gross = sign * (float(self.exit_price) - float(self.entry_price)) * self._mult() * float(self.contracts or 0)
+        return round(gross - float(self.fees or 0), 2)
+
+    def pnl_pct(self):
+        if self.exit_price is None or not self.entry_price:
+            return None
+        sign = -1 if self.direction == 'short' else 1
+        return round(sign * (float(self.exit_price) - float(self.entry_price)) / float(self.entry_price) * 100, 2)
+
+    def hold_minutes(self):
+        if self.exit_at and self.entry_at:
+            return round((self.exit_at - self.entry_at).total_seconds() / 60, 1)
+        return None
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'symbol': self.symbol, 'strategy': self.strategy,
+            'kind': self.kind, 'direction': self.direction,
+            'contracts': float(self.contracts or 0),
+            'entry_price': float(self.entry_price) if self.entry_price is not None else None,
+            'entry_at': self.entry_at.isoformat() if self.entry_at else None,
+            'target_price': float(self.target_price) if self.target_price is not None else None,
+            'stop_price': float(self.stop_price) if self.stop_price is not None else None,
+            'exit_price': float(self.exit_price) if self.exit_price is not None else None,
+            'exit_at': self.exit_at.isoformat() if self.exit_at else None,
+            'fees': float(self.fees or 0),
+            'status': self.status,
+            'notes': self.notes,
+            'pnl': self.pnl(),
+            'pnl_pct': self.pnl_pct(),
+            'hold_minutes': self.hold_minutes(),
+        }
+
+
 class DiscussionThread(db.Model):
     """Community discussion threads"""
     __tablename__ = 'discussion_threads'

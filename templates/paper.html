@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}Paper Trading - Trader Tools{% endblock %}
+
+{% block head %}
+<style>
+    .pt-card { background: var(--card-bg); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:18px 20px; margin-bottom:20px; }
+    .pt-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; }
+    .pt-tile { background:var(--bg-tertiary); border-radius:10px; padding:16px; text-align:center; }
+    .pt-tile .lbl { font-size:0.76em; color:var(--text-secondary); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.03em; }
+    .pt-tile .val { font-size:1.5em; font-weight:700; }
+    .pt-tile .sub { font-size:0.72em; color:var(--text-secondary); margin-top:4px; }
+    .pos { color: var(--success); }
+    .neg { color:#ef4444; }
+    .pt-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; align-items:end; }
+    .pt-form label { display:block; font-size:0.76em; color:var(--text-secondary); margin-bottom:4px; }
+    .pt-form input, .pt-form select { width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); box-sizing:border-box; }
+    table.pt-table { width:100%; border-collapse:collapse; font-size:0.85em; }
+    table.pt-table th { text-align:left; padding:8px 10px; color:var(--text-secondary); border-bottom:1px solid var(--border); font-weight:600; white-space:nowrap; }
+    table.pt-table td { padding:8px 10px; border-bottom:1px solid var(--border); }
+    .badge { font-size:0.7em; font-weight:600; padding:2px 8px; border-radius:999px; }
+    .b-call, .b-long { background:rgba(34,197,94,0.14); color:#16a34a; }
+    .b-put, .b-short { background:rgba(239,68,68,0.14); color:#dc2626; }
+    .b-opt { background:rgba(59,130,246,0.14); color:#2563eb; }
+    .b-stk { background:rgba(127,127,127,0.14); color:var(--text-secondary); }
+    .muted { color:var(--text-secondary); }
+    .link-btn { background:none; border:none; color:var(--accent, #3b82f6); cursor:pointer; font-size:0.85em; padding:0; }
+    .link-btn.danger { color:#ef4444; }
+    .pt-filter { padding:7px 11px; border-radius:6px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); }
+    .why { font-size:0.85em; padding:10px 14px; border-radius:8px; background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.2); color:var(--text-primary); }
+</style>
+{% endblock %}
+
+{% block content %}
+    <h1 style="margin:0 0 4px;">🧪 Paper Trading</h1>
+    <p class="muted" style="margin-top:0;font-size:0.9em;">
+        Log simulated trades — no real money, no risk. The point is the <strong>expectancy</strong> panel below:
+        the honest math on whether a strategy actually has an edge before you ever risk a dollar.
+    </p>
+
+    <!-- Expectancy -->
+    <div class="pt-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+            <h2 style="margin:0;">📊 Expectancy</h2>
+            <select id="statStrategy" class="pt-filter" onchange="loadStats()">
+                <option value="">All strategies</option>
+            </select>
+        </div>
+        <div id="statsBody">
+            <p class="muted" style="text-align:center;padding:20px;">Loading…</p>
+        </div>
+        <p class="why" id="edgeVerdict" style="margin-top:14px;display:none;"></p>
+    </div>
+
+    <!-- Log a trade -->
+    <div class="pt-card">
+        <h2 style="margin:0 0 14px;">➕ Log a Trade</h2>
+        <div class="pt-form">
+            <div><label>Symbol</label><input id="fSymbol" placeholder="AAPL" oninput="this.value=this.value.toUpperCase()"></div>
+            <div><label>Strategy</label><input id="fStrategy" placeholder="default" list="stratList"><datalist id="stratList"></datalist></div>
+            <div><label>Type</label><select id="fKind" onchange="syncDirections()"><option value="option">Option</option><option value="stock">Stock</option></select></div>
+            <div><label>Direction</label><select id="fDirection"></select></div>
+            <div><label id="lContracts">Contracts</label><input id="fContracts" type="number" step="1" min="1" value="1"></div>
+            <div><label id="lEntry">Entry price</label><input id="fEntry" type="number" step="0.01" placeholder="1.25"></div>
+            <div><label>Target</label><input id="fTarget" type="number" step="0.01" placeholder="opt."></div>
+            <div><label>Stop</label><input id="fStop" type="number" step="0.01" placeholder="opt."></div>
+            <div><label>Fees</label><input id="fFees" type="number" step="0.01" value="0"></div>
+            <div><label>Exit price</label><input id="fExit" type="number" step="0.01" placeholder="if closed"></div>
+        </div>
+        <div style="margin-top:12px;"><label class="muted" style="font-size:0.76em;">Notes</label>
+            <input id="fNotes" placeholder="thesis / setup" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);box-sizing:border-box;"></div>
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
+            <button class="btn btn-primary" onclick="submitTrade()" id="logBtn">Log Trade</button>
+            <span id="formMsg" class="muted" style="font-size:0.85em;"></span>
+        </div>
+        <p class="muted" style="font-size:0.78em;margin-top:10px;">Fill <strong>Exit price</strong> to record a finished trade in one shot, or leave it blank to open a position you'll close later. Option P&amp;L uses ×100 per contract.</p>
+    </div>
+
+    <!-- Open trades -->
+    <div class="pt-card">
+        <h2 style="margin:0 0 14px;">Open Positions <span id="openCount" class="muted" style="font-size:0.7em;"></span></h2>
+        <div id="openBody"><p class="muted" style="text-align:center;padding:16px;">Loading…</p></div>
+    </div>
+
+    <!-- Closed trades -->
+    <div class="pt-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+            <h2 style="margin:0;">Closed Trades</h2>
+            <select id="histStrategy" class="pt-filter" onchange="loadTrades()">
+                <option value="">All strategies</option>
+            </select>
+        </div>
+        <div id="closedBody"><p class="muted" style="text-align:center;padding:16px;">Loading…</p></div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const fmt = (n) => (Number(n) < 0 ? '-$' : '$') + Math.abs(Number(n) || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const pnlClass = (n) => (Number(n) >= 0 ? 'pos' : 'neg');
+    const esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const OPT = ['call','put'], STK = ['long','short'];
+
+    function syncDirections() {
+        const kind = document.getElementById('fKind').value;
+        const dir = document.getElementById('fDirection');
+        const opts = kind === 'stock' ? STK : OPT;
+        dir.innerHTML = opts.map(o => `<option value="${o}">${o[0].toUpperCase()+o.slice(1)}</option>`).join('');
+        document.getElementById('lContracts').textContent = kind === 'stock' ? 'Shares' : 'Contracts';
+        document.getElementById('lEntry').textContent = kind === 'stock' ? 'Entry / share' : 'Entry premium';
+    }
+
+    async function submitTrade() {
+        const msg = document.getElementById('formMsg');
+        const btn = document.getElementById('logBtn');
+        const symbol = document.getElementById('fSymbol').value.trim().toUpperCase();
+        const entry = document.getElementById('fEntry').value;
+        if (!symbol || entry === '') { msg.textContent = 'Symbol and entry price are required.'; msg.className = 'neg'; return; }
+        const body = {
+            symbol,
+            strategy: document.getElementById('fStrategy').value.trim() || 'default',
+            kind: document.getElementById('fKind').value,
+            direction: document.getElementById('fDirection').value,
+            contracts: document.getElementById('fContracts').value || 1,
+            entry_price: entry,
+            target_price: document.getElementById('fTarget').value || null,
+            stop_price: document.getElementById('fStop').value || null,
+            fees: document.getElementById('fFees').value || 0,
+            exit_price: document.getElementById('fExit').value || null,
+            notes: document.getElementById('fNotes').value.trim() || null,
+        };
+        btn.disabled = true; msg.textContent = 'Saving…'; msg.className = 'muted';
+        try {
+            const res = await fetch('/api/paper/trades', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                credentials: 'same-origin', body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Save failed');
+            msg.textContent = '✓ Logged'; msg.className = 'pos';
+            ['fSymbol','fEntry','fTarget','fStop','fExit','fNotes'].forEach(id => document.getElementById(id).value = '');
+            document.getElementById('fContracts').value = 1;
+            document.getElementById('fFees').value = 0;
+            refreshAll();
+        } catch (e) {
+            msg.textContent = e.message; msg.className = 'neg';
+        } finally { btn.disabled = false; }
+    }
+
+    async function closeTrade(id, kind) {
+        const label = kind === 'stock' ? 'exit price per share' : 'exit premium';
+        const px = prompt('Enter ' + label + ' to close this trade:');
+        if (px === null || px.trim() === '') return;
+        try {
+            const res = await fetch('/api/paper/trades/' + id, {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                credentials: 'same-origin', body: JSON.stringify({exit_price: parseFloat(px)})
+            });
+            if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Close failed'); }
+            refreshAll();
+        } catch (e) { alert(e.message); }
+    }
+
+    async function deleteTrade(id) {
+        if (!confirm('Delete this paper trade permanently?')) return;
+        try {
+            const res = await fetch('/api/paper/trades/' + id, { method: 'DELETE', credentials: 'same-origin' });
+            if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Delete failed'); }
+            refreshAll();
+        } catch (e) { alert(e.message); }
+    }
+
+    function dirBadge(t) {
+        const cls = ({call:'b-call',put:'b-put',long:'b-long',short:'b-short'})[t.direction] || 'b-stk';
+        return `<span class="badge ${cls}">${esc(t.direction)}</span>`;
+    }
+    function kindBadge(t) {
+        return t.kind === 'stock' ? '<span class="badge b-stk">stock</span>' : '<span class="badge b-opt">option</span>';
+    }
+    function fmtDate(s) {
+        if (!s) return '—';
+        const d = new Date(s);
+        return isNaN(d) ? '—' : d.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+    }
+
+    async function loadTrades() {
+        const histStrat = document.getElementById('histStrategy').value;
+        try {
+            const [openRes, closedRes] = await Promise.all([
+                fetch('/api/paper/trades?status=open', { credentials: 'same-origin' }),
+                fetch('/api/paper/trades?status=closed' + (histStrat ? '&strategy=' + encodeURIComponent(histStrat) : ''), { credentials: 'same-origin' })
+            ]);
+            renderOpen((await openRes.json()).trades || []);
+            renderClosed((await closedRes.json()).trades || []);
+        } catch (e) { console.error('loadTrades', e); }
+    }
+
+    function renderOpen(trades) {
+        document.getElementById('openCount').textContent = trades.length ? `(${trades.length})` : '';
+        const el = document.getElementById('openBody');
+        if (!trades.length) { el.innerHTML = '<p class="muted" style="text-align:center;padding:16px;">No open positions. Log one above.</p>'; return; }
+        el.innerHTML = '<div style="overflow-x:auto;"><table class="pt-table"><thead><tr>' +
+            '<th>Symbol</th><th>Strategy</th><th>Type</th><th>Dir</th><th style="text-align:right;">Qty</th>' +
+            '<th style="text-align:right;">Entry</th><th style="text-align:right;">Target</th><th style="text-align:right;">Stop</th>' +
+            '<th>Opened</th><th></th></tr></thead><tbody>' +
+            trades.map(t => `<tr>
+                <td><strong>${esc(t.symbol)}</strong></td>
+                <td class="muted">${esc(t.strategy)}</td>
+                <td>${kindBadge(t)}</td>
+                <td>${dirBadge(t)}</td>
+                <td style="text-align:right;">${t.contracts}</td>
+                <td style="text-align:right;">${fmt(t.entry_price)}</td>
+                <td style="text-align:right;">${t.target_price != null ? fmt(t.target_price) : '—'}</td>
+                <td style="text-align:right;">${t.stop_price != null ? fmt(t.stop_price) : '—'}</td>
+                <td class="muted">${fmtDate(t.entry_at)}</td>
+                <td style="text-align:right;white-space:nowrap;">
+                    <button class="link-btn" onclick="closeTrade(${t.id},'${t.kind}')">Close</button>
+                    &nbsp;<button class="link-btn danger" onclick="deleteTrade(${t.id})">✕</button>
+                </td></tr>`).join('') + '</tbody></table></div>';
+    }
+
+    function renderClosed(trades) {
+        const el = document.getElementById('closedBody');
+        if (!trades.length) { el.innerHTML = '<p class="muted" style="text-align:center;padding:16px;">No closed trades yet.</p>'; return; }
+        el.innerHTML = '<div style="overflow-x:auto;"><table class="pt-table"><thead><tr>' +
+            '<th>Symbol</th><th>Strategy</th><th>Type</th><th>Dir</th><th style="text-align:right;">Qty</th>' +
+            '<th style="text-align:right;">Entry</th><th style="text-align:right;">Exit</th>' +
+            '<th style="text-align:right;">P&amp;L</th><th style="text-align:right;">%</th><th style="text-align:right;">Hold</th><th></th></tr></thead><tbody>' +
+            trades.map(t => {
+                const hold = t.hold_minutes == null ? '—' : (t.hold_minutes >= 1440 ? (t.hold_minutes/1440).toFixed(1)+'d' : t.hold_minutes >= 60 ? (t.hold_minutes/60).toFixed(1)+'h' : Math.round(t.hold_minutes)+'m');
+                return `<tr>
+                <td><strong>${esc(t.symbol)}</strong></td>
+                <td class="muted">${esc(t.strategy)}</td>
+                <td>${kindBadge(t)}</td>
+                <td>${dirBadge(t)}</td>
+                <td style="text-align:right;">${t.contracts}</td>
+                <td style="text-align:right;">${fmt(t.entry_price)}</td>
+                <td style="text-align:right;">${fmt(t.exit_price)}</td>
+                <td style="text-align:right;" class="${pnlClass(t.pnl)}"><strong>${fmt(t.pnl)}</strong></td>
+                <td style="text-align:right;" class="${pnlClass(t.pnl)}">${t.pnl_pct != null ? t.pnl_pct.toFixed(1)+'%' : '—'}</td>
+                <td style="text-align:right;" class="muted">${hold}</td>
+                <td style="text-align:right;"><button class="link-btn danger" onclick="deleteTrade(${t.id})">✕</button></td>
+                </tr>`; }).join('') + '</tbody></table></div>';
+    }
+
+    async function loadStats() {
+        const strat = document.getElementById('statStrategy').value;
+        const el = document.getElementById('statsBody');
+        const verdict = document.getElementById('edgeVerdict');
+        try {
+            const res = await fetch('/api/paper/stats' + (strat ? '?strategy=' + encodeURIComponent(strat) : ''), { credentials: 'same-origin' });
+            const data = await res.json();
+            syncStrategies(data.strategies || []);
+            const s = data.summary || {};
+            if (!s.count) {
+                el.innerHTML = `<p class="muted" style="text-align:center;padding:20px;">No closed trades yet${data.open_count ? ` — ${data.open_count} open` : ''}. Close some trades to build your expectancy.</p>`;
+                verdict.style.display = 'none';
+                return;
+            }
+            const tiles = [
+                ['Expectancy / trade', fmt(s.expectancy), pnlClass(s.expectancy), 'avg net per trade'],
+                ['Win rate', s.win_rate + '%', '', `${s.wins}W / ${s.losses}L`],
+                ['Profit factor', s.profit_factor == null ? '∞' : s.profit_factor.toFixed(2), s.profit_factor == null || s.profit_factor >= 1 ? 'pos' : 'neg', 'gross win ÷ loss'],
+                ['Net P&L', fmt(s.net_pnl), pnlClass(s.net_pnl), `${s.count} trades`],
+                ['Avg win', fmt(s.avg_win), 'pos', 'per winner'],
+                ['Avg loss', fmt(s.avg_loss), 'neg', 'per loser'],
+                ['Max drawdown', fmt(s.max_drawdown), 'neg', 'peak-to-trough'],
+                ['Avg hold', s.avg_hold_min == null ? '—' : (s.avg_hold_min >= 1440 ? (s.avg_hold_min/1440).toFixed(1)+'d' : s.avg_hold_min >= 60 ? (s.avg_hold_min/60).toFixed(1)+'h' : Math.round(s.avg_hold_min)+'m'), '', `best ${fmt(s.best)} · worst ${fmt(s.worst)}`],
+            ];
+            el.innerHTML = '<div class="pt-grid">' + tiles.map(t =>
+                `<div class="pt-tile"><div class="lbl">${t[0]}</div><div class="val ${t[2]}">${t[1]}</div><div class="sub">${t[3]}</div></div>`
+            ).join('') + '</div>';
+            renderVerdict(s, verdict);
+        } catch (e) {
+            el.innerHTML = '<p class="neg" style="text-align:center;padding:20px;">Could not load stats.</p>';
+            console.error(e);
+        }
+    }
+
+    function renderVerdict(s, el) {
+        el.style.display = 'block';
+        const exp = s.expectancy, pf = s.profit_factor;
+        let verdict, tone;
+        if (s.count < 20) {
+            verdict = `Only ${s.count} closed trade${s.count === 1 ? '' : 's'} — too few to trust. Aim for 20–30+ before reading anything into the edge; small samples lie.`;
+            tone = 'muted';
+        } else if (exp > 0 && (pf == null || pf >= 1.3)) {
+            verdict = `Positive edge: +${fmt(exp)} expected per trade over ${s.count} trades (profit factor ${pf == null ? '∞' : pf.toFixed(2)}). Statistically this strategy makes money — size it, don't gamble it. Watch the ${fmt(s.max_drawdown)} max drawdown for what the losing streaks feel like.`;
+            tone = 'pos';
+        } else if (exp > 0) {
+            verdict = `Marginally positive: +${fmt(exp)}/trade but profit factor is only ${pf.toFixed(2)}. Thin edge — fees, slippage, or one bad streak can flip it negative. Keep testing.`;
+            tone = '';
+        } else {
+            verdict = `Negative expectancy: ${fmt(exp)} per trade across ${s.count} trades. This strategy loses money as tested. No amount of position sizing fixes a negative edge — the setup itself needs to change before real capital touches it.`;
+            tone = 'neg';
+        }
+        el.innerHTML = `<strong class="${tone}">Edge check:</strong> ${verdict}`;
+    }
+
+    function syncStrategies(list) {
+        ['statStrategy','histStrategy'].forEach(id => {
+            const sel = document.getElementById(id);
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">All strategies</option>' + list.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+            if (list.includes(cur)) sel.value = cur;
+        });
+        document.getElementById('stratList').innerHTML = list.map(s => `<option value="${esc(s)}">`).join('');
+    }
+
+    function refreshAll() { loadStats(); loadTrades(); }
+
+    document.addEventListener('DOMContentLoaded', () => { syncDirections(); refreshAll(); });
+</script>
+{% endblock %}

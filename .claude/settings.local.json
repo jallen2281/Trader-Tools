@@ -8,7 +8,12 @@
       "Bash(kubectl delete pod *)",
       "Bash(kubectl describe *)",
       "Bash(kubectl logs *)",
-      "Bash(kubectl cordon *)"
+      "Bash(kubectl cordon *)",
+      "Bash(kubectl uncordon node1 *)",
+      "Bash(curl -sk --connect-timeout 5 https://69.16.214.141/health)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(curl -sk --connect-timeout 5 http://tradertools.kegbot.net/health)",
+      "Bash(curl -sk --connect-timeout 10 https://tradertools.kegbot.net/health)"
     ]
   }
 }
