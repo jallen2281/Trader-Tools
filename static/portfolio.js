@@ -205,10 +205,42 @@ async function loadHoldings() {
         _holdingsOptions = options;
         _holdingsTotalMV = stocks.reduce((s, h) => s + (h.market_value || 0), 0);
         renderHoldings();
-        
+        loadSopCompliance();  // proactive SOP-breach flags (re-renders when ready)
+
     } catch (error) {
         console.error('Error loading holdings:', error);
     }
+}
+
+// ---- SOP compliance flags (Phase 4: the SOP drives the portfolio view) ----
+let _sopBreachMap = {};
+function _sopEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+async function loadSopCompliance() {
+    const banner = document.getElementById('sopBanner');
+    try {
+        const res = await fetch('/api/sop/compliance', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const d = await res.json();
+        if (!d.has_sop) { _sopBreachMap = {}; if (banner) banner.style.display = 'none'; return; }
+        const map = {};
+        (d.holdings || []).forEach(h => { map[h.symbol] = h.breaches; });
+        _sopBreachMap = map;
+        renderHoldings();  // re-render so the ⚠️ flags appear
+        if (banner) renderSopBanner(banner, d);
+    } catch (e) { console.error('SOP compliance load failed', e); }
+}
+function renderSopBanner(banner, d) {
+    const s = d.summary || {};
+    const pbs = (d.portfolio_breaches || []).map(b => b.detail).join(' · ');
+    banner.style.display = 'block';
+    if (s.compliant && !(d.portfolio_breaches || []).length) {
+        banner.innerHTML = `<div style="padding:10px 14px;border-radius:8px;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);font-size:0.9em;">✓ All ${s.positions} holdings comply with your SOP (<strong>${_sopEsc(d.sop_name)}</strong>).</div>`;
+        return;
+    }
+    banner.innerHTML = `<div style="padding:10px 14px;border-radius:8px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);font-size:0.9em;">`
+        + `⚠️ <strong>${s.total_breaches}</strong> SOP breach${s.total_breaches === 1 ? '' : 'es'} across <strong>${s.flagged_positions}</strong> of ${s.positions} positions vs <strong>${_sopEsc(d.sop_name)}</strong>.`
+        + (pbs ? ` <span style="color:#d97706;">${_sopEsc(pbs)}</span>` : '')
+        + ` <a href="/profile" style="color:var(--accent,#667eea);font-weight:600;">Open SOP →</a></div>`;
 }
 
 // ---- Sortable holdings table (client-side; instant, no re-fetch) ----
@@ -282,6 +314,12 @@ function createHoldingRow(holding, type = 'stock', totalMV = 0) {
     const weightChip = totalMV > 0
         ? ` <span title="${weight.toFixed(1)}% of displayed holdings" style="font-size:0.72em;color:${wColor};font-weight:600;">${weight.toFixed(1)}%</span>`
         : '';
+
+    // SOP-breach flag next to the symbol (proactive; from /api/sop/compliance)
+    const _b = (_sopBreachMap || {})[holding.symbol];
+    const sopFlag = (_b && _b.length)
+        ? ` <span class="sop-flag" title="SOP: ${_b.map(x => x.detail.replace(/"/g, "'")).join(' | ')}" style="cursor:help;font-size:0.8em;color:${_b.some(x => x.severity === 'high') ? '#ef4444' : '#d97706'};">⚠️${_b.length > 1 ? _b.length : ''}</span>`
+        : '';
     
     // Generate recommendation badge
     let recommendation = 'HOLD';
@@ -299,7 +337,7 @@ function createHoldingRow(holding, type = 'stock', totalMV = 0) {
     }
     
     row.innerHTML = `
-        <td><strong>${holding.symbol}</strong></td>
+        <td><strong>${holding.symbol}</strong>${sopFlag}</td>
         <td>${holding.quantity.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 6})}</td>
         <td>$${holding.average_cost.toFixed(4)}</td>
         <td>$${holding.current_price.toFixed(2)}</td>

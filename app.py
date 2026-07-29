@@ -883,20 +883,28 @@ def create_pending_order():
         symbol = (data.get('symbol') or '').upper().strip()
         if not symbol or data.get('limit_price') in (None, ''):
             return jsonify({'error': 'symbol and limit_price are required'}), 400
-        limit_price = float(data['limit_price'])
+        limit_price = float(data['limit_price'])  # trigger level on the underlying
         market = _paper_price(symbol)
         if market is None:
             return jsonify({'error': f'Could not get a market price for {symbol} to place the order'}), 400
         trigger_side = 'below' if limit_price <= market else 'above'
         direction = (data.get('direction') or 'long').lower()
         kind = (data.get('kind') or 'stock').lower()
+        kind = kind if kind in ('option', 'stock') else 'stock'
+        # For options, the recorded entry is the PREMIUM (the underlying only triggers).
+        if kind == 'option':
+            if data.get('entry_premium') in (None, ''):
+                return jsonify({'error': 'entry_premium (the option price you would pay) is required for option orders'}), 400
+            entry = float(data['entry_premium'])
+        else:
+            entry = limit_price
         o = PaperTrade(
             user_id=user_id, symbol=symbol,
             strategy=(data.get('strategy') or 'default').strip()[:60] or 'default',
-            kind=kind if kind in ('option', 'stock') else 'stock',
+            kind=kind,
             direction=direction if direction in ('call', 'put', 'long', 'short') else 'long',
             contracts=float(data.get('contracts') or 1),
-            entry_price=limit_price,          # placeholder; fill() re-stamps entry_at
+            entry_price=entry,                # stock: = trigger; option: = premium (kept on fill)
             limit_price=limit_price, trigger_side=trigger_side,
             target_price=float(data['target_price']) if data.get('target_price') not in (None, '') else None,
             stop_price=float(data['stop_price']) if data.get('stop_price') not in (None, '') else None,

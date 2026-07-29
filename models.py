@@ -694,8 +694,11 @@ class PaperTrade(db.Model):
         return market_price <= lp if self.trigger_side == 'below' else market_price >= lp
 
     def fill(self):
-        """Convert a pending order into an open position at the limit price."""
-        self.entry_price = self.limit_price
+        """Convert a pending order into an open position. For stock, the fill price IS
+        the trigger level (limit_price). For options, limit_price is the UNDERLYING
+        trigger and entry_price already holds the premium set at creation — keep it."""
+        if (self.kind or 'stock') != 'option':
+            self.entry_price = self.limit_price
         self.entry_at = datetime.utcnow()
         self.status = 'open'
 
