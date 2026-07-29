@@ -618,7 +618,15 @@
         const price = _chartGeo.ymin + frac * (_chartGeo.ymax - _chartGeo.ymin);
         showChartMenu(evt.clientX, evt.clientY, _chartGeo.symbol, price);
     }
-    function closeChartMenu() { const m = document.getElementById('chartMenu'); if (m) m.remove(); }
+    function _menuOutsideClose(e) {
+        const m = document.getElementById('chartMenu');
+        if (m && !m.contains(e.target)) closeChartMenu();
+    }
+    function closeChartMenu() {
+        const m = document.getElementById('chartMenu');
+        if (m) m.remove();
+        document.removeEventListener('click', _menuOutsideClose, true);  // never leave a stale listener
+    }
     function showChartMenu(px, py, symbol, price) {
         const p = price.toFixed(2);
         const above = price > (_chartGeo.curPrice || price);  // clicked above current price?
@@ -643,7 +651,10 @@
         item(`<span style="color:#f59e0b;">🔔 Alert</span> when ${symbol} ${above ? '≥' : '≤'} <b>$${p}</b>`, () => placeChartAlert(symbol, price, above ? 'sell' : 'buy'));
         item(`<span class="muted">✕ Cancel</span>`, () => {});
         document.body.appendChild(m);
-        setTimeout(() => document.addEventListener('click', closeChartMenu, { once: true }), 0);
+        // Capture-phase + contains() check so it closes on an outside click, ignores
+        // clicks inside the menu (qty input / items), and is always removed on close —
+        // so a stale listener can't kill the next menu (the "only works once" bug).
+        setTimeout(() => document.addEventListener('click', _menuOutsideClose, true), 0);
     }
     async function placeLimit(symbol, direction, price, qty) {
         try {
