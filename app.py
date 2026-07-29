@@ -3201,16 +3201,17 @@ def list_portfolio_holdings():
             return sym, None
 
         fresh_prices = {}
+        stale_syms = {h.symbol for h in stale}
         if stale:
             ex = concurrent.futures.ThreadPoolExecutor(max_workers=8)
             try:
                 futs = [ex.submit(_fetch_price, h.symbol) for h in stale]
-                for fut in concurrent.futures.as_completed(futs, timeout=18):
+                for fut in concurrent.futures.as_completed(futs, timeout=12):
                     sym, px = fut.result()
                     if px is not None:
                         fresh_prices[sym] = px
             except concurrent.futures.TimeoutError:
-                logger.warning("portfolio/list price refresh hit 18s budget; using cached for the rest")
+                logger.warning("portfolio/list price refresh hit 12s budget; using cached for the rest")
             except Exception as pe:
                 logger.warning(f"portfolio/list parallel price refresh error: {pe}")
             finally:
@@ -3219,6 +3220,12 @@ def list_portfolio_holdings():
         for holding in holdings:
             if holding.symbol in fresh_prices:
                 holding.current_price = fresh_prices[holding.symbol]
+                holding.last_updated = now
+                prices_updated = True
+            elif holding.symbol in stale_syms and holding.current_price:
+                # Fetch failed or ran past the budget, but we have a cached price —
+                # mark it attempted (bump last_updated) so it isn't re-fetched on every
+                # call (which kept warm loads slow); it retries after PRICE_TTL.
                 holding.last_updated = now
                 prices_updated = True
         if prices_updated:
