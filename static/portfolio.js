@@ -215,15 +215,22 @@ async function loadHoldings() {
 // ---- SOP compliance flags (Phase 4: the SOP drives the portfolio view) ----
 let _sopBreachMap = {};
 function _sopEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function _sopKey(symbol, accountId) { return symbol + '|' + (accountId == null ? '' : accountId); }
 async function loadSopCompliance() {
     const banner = document.getElementById('sopBanner');
     try {
-        const res = await fetch('/api/sop/compliance', { credentials: 'same-origin' });
+        // Scope to the account the holdings table is showing so the flags, weights,
+        // and banner match the view (and the endpoint's per-account weight % is right).
+        const accountId = document.getElementById('accountSelector')?.value || 'all';
+        const q = accountId !== 'all' ? `?account_id=${accountId}` : '';
+        const res = await fetch('/api/sop/compliance' + q, { credentials: 'same-origin' });
         if (!res.ok) return;
         const d = await res.json();
         if (!d.has_sop) { _sopBreachMap = {}; if (banner) banner.style.display = 'none'; return; }
         const map = {};
-        (d.holdings || []).forEach(h => { map[h.symbol] = h.breaches; });
+        // Key by symbol + account_id so a breach in one account never flags the same
+        // symbol held in a DIFFERENT account (e.g. SoFi AMZN at +35% vs RH AMZN at +10%).
+        (d.holdings || []).forEach(h => { map[_sopKey(h.symbol, h.account_id)] = h.breaches; });
         _sopBreachMap = map;
         renderHoldings();  // re-render so the ⚠️ flags appear
         if (banner) renderSopBanner(banner, d);
@@ -315,8 +322,9 @@ function createHoldingRow(holding, type = 'stock', totalMV = 0) {
         ? ` <span title="${weight.toFixed(1)}% of displayed holdings" style="font-size:0.72em;color:${wColor};font-weight:600;">${weight.toFixed(1)}%</span>`
         : '';
 
-    // SOP-breach flag next to the symbol (proactive; from /api/sop/compliance)
-    const _b = (_sopBreachMap || {})[holding.symbol];
+    // SOP-breach flag next to the symbol (proactive; from /api/sop/compliance).
+    // Keyed by symbol+account so a breach on this symbol in another account doesn't leak here.
+    const _b = (_sopBreachMap || {})[_sopKey(holding.symbol, holding.account_id)];
     const sopFlag = (_b && _b.length)
         ? ` <span class="sop-flag" title="SOP: ${_b.map(x => x.detail.replace(/"/g, "'")).join(' | ')}" style="cursor:help;font-size:0.8em;color:${_b.some(x => x.severity === 'high') ? '#ef4444' : '#d97706'};">⚠️${_b.length > 1 ? _b.length : ''}</span>`
         : '';
