@@ -3144,6 +3144,13 @@ def get_dividend_summary():
         return jsonify({'error': str(e)}), 500
 
 # Phase 2: Portfolio endpoints
+# Symbols that are NOT real, quotable tickers — manual placeholder/total lines
+# (e.g. the Transamerica 401k aggregate). Never send these to the price provider;
+# yfinance retries ~20s trying to resolve them, which pushed cold-cache portfolio
+# loads past the request timeout. Their stored current_price (= cost) is kept.
+NONQUOTABLE_SYMBOLS = {'TA401K'}
+
+
 @app.route('/api/portfolio/list', methods=['GET'])
 def list_portfolio_holdings():
     """Get list of portfolio holdings (Phase 2)."""
@@ -3167,21 +3174,53 @@ def list_portfolio_holdings():
         # DB write must NEVER fail the whole request, or the watchlist renders empty.
         # Prices are cached for PRICE_TTL to avoid a live Yahoo fetch per holding on
         # every call (which is what was rate-limiting into 500s).
+        #
+        # Two things kept a cold-cache load slow enough to hit the worker/gateway
+        # timeout (→ 500): non-quotable placeholder tickers (the 401k TOTAL line
+        # 'TA401K' isn't a real symbol and made yfinance retry ~22s), and pricing
+        # every stale symbol SERIALLY. So: skip placeholders, and fetch the rest in
+        # parallel under a hard time budget — whatever doesn't finish keeps its
+        # cached price and refreshes next call.
+        import concurrent.futures
         now = datetime.utcnow()
         PRICE_TTL = timedelta(minutes=10)
         prices_updated = False
-        for holding in holdings:
-            # Skip refresh if we already have a recent price
-            if holding.current_price and holding.last_updated and (now - holding.last_updated) < PRICE_TTL:
-                continue
+        stale = [
+            h for h in holdings
+            if h.symbol not in NONQUOTABLE_SYMBOLS
+            and not (h.current_price and h.last_updated and (now - h.last_updated) < PRICE_TTL)
+        ]
+
+        def _fetch_price(sym):
             try:
-                stock_data = data_fetcher.fetch_stock_data(holding.symbol, '1d')
-                if stock_data is not None and not stock_data.empty:
-                    holding.current_price = float(stock_data.iloc[-1]['Close'])
-                    holding.last_updated = now
-                    prices_updated = True
+                sd = data_fetcher.fetch_stock_data(sym, '1d')
+                if sd is not None and not sd.empty:
+                    return sym, float(sd.iloc[-1]['Close'])
             except Exception as pe:
-                logger.warning(f"Price update failed for {holding.symbol}: {pe}")
+                logger.warning(f"Price update failed for {sym}: {pe}")
+            return sym, None
+
+        fresh_prices = {}
+        if stale:
+            ex = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+            try:
+                futs = [ex.submit(_fetch_price, h.symbol) for h in stale]
+                for fut in concurrent.futures.as_completed(futs, timeout=18):
+                    sym, px = fut.result()
+                    if px is not None:
+                        fresh_prices[sym] = px
+            except concurrent.futures.TimeoutError:
+                logger.warning("portfolio/list price refresh hit 18s budget; using cached for the rest")
+            except Exception as pe:
+                logger.warning(f"portfolio/list parallel price refresh error: {pe}")
+            finally:
+                ex.shutdown(wait=False)  # don't block the response on stragglers
+
+        for holding in holdings:
+            if holding.symbol in fresh_prices:
+                holding.current_price = fresh_prices[holding.symbol]
+                holding.last_updated = now
+                prices_updated = True
         if prices_updated:
             try:
                 db.session.commit()
