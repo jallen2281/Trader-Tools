@@ -458,7 +458,7 @@
         document.getElementById('chartLegend').innerHTML = chartSymbols.map((s, i) =>
             `<span class="legend-chip"><b style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></b><span style="cursor:pointer;" title="Use in log form" onclick="prefillLog('${s}')">${esc(s)}</span> <span class="x" onclick="removeChartSymbol('${s}')">✕</span></span>`).join('');
         document.getElementById('chartHint').textContent = chartSymbols.length > 1
-            ? 'Comparing % change from the start of the range. Remove extra symbols to enable click-to-trade.'
+            ? `📊 Comparing % change from range start. Crosshair + click-to-trade act on the primary symbol (${esc(chartSymbols[0])}).`
             : (chartSymbols.length ? '💡 Click the chart to place a buy/sell limit order or an alert at that price. Lines show your orders, alerts, and trades.' : '');
     }
     async function loadChart() {
@@ -502,22 +502,25 @@
             vals.forEach(v => { if (v < ymin) ymin = v; if (v > ymax) ymax = v; });
         });
         const curPrice = primaryPts[primaryPts.length - 1].c;
-        // Horizontal reference lines (single-symbol only): trades, pending orders, alerts
+        const primaryBase = primaryPts[0].c || 1;
+        // In compare mode the y-axis is % change, so a real price maps to a plotted value
+        // via toPlot(); single mode plots raw price. Reference lines + click-to-price both
+        // convert through this so ordering works for the PRIMARY symbol in either mode.
+        const toPlot = (price) => multi ? (price / primaryBase - 1) * 100 : price;
+        // Horizontal reference lines for the primary symbol (trades, pending orders, alerts)
         let hlines = [];
-        if (!multi) {
-            (window._OPEN_TRADES || []).filter(t => t.symbol === primary && t.kind === 'stock').forEach(t => {
-                if (t.entry_price != null) hlines.push(['entry', +t.entry_price, '#9ca3af']);
-                if (t.target_price != null) hlines.push(['target', +t.target_price, '#10b981']);
-                if (t.stop_price != null) hlines.push(['stop', +t.stop_price, '#ef4444']);
-            });
-            (window._PENDING || []).filter(o => o.symbol === primary).forEach(o => {
-                hlines.push([pendingLabel(o), +o.limit_price, '#3b82f6']);
-            });
-            (window._ALERTS || []).filter(a => a.symbol === primary && a.target_price != null).forEach(a => {
-                hlines.push(['alert', +a.target_price, '#f59e0b']);
-            });
-            hlines.forEach(([, v]) => { if (v < ymin) ymin = v; if (v > ymax) ymax = v; });
-        }
+        (window._OPEN_TRADES || []).filter(t => t.symbol === primary && t.kind === 'stock').forEach(t => {
+            if (t.entry_price != null) hlines.push(['entry', +t.entry_price, '#9ca3af']);
+            if (t.target_price != null) hlines.push(['target', +t.target_price, '#10b981']);
+            if (t.stop_price != null) hlines.push(['stop', +t.stop_price, '#ef4444']);
+        });
+        (window._PENDING || []).filter(o => o.symbol === primary).forEach(o => {
+            hlines.push([pendingLabel(o), +o.limit_price, '#3b82f6']);
+        });
+        (window._ALERTS || []).filter(a => a.symbol === primary && a.target_price != null).forEach(a => {
+            hlines.push(['alert', +a.target_price, '#f59e0b']);
+        });
+        hlines.forEach(([, v]) => { const pv = toPlot(v); if (pv < ymin) ymin = pv; if (pv > ymax) ymax = pv; });
         if (!isFinite(ymin) || ymin === ymax) { ymin = (ymin || 0) - 1; ymax = (ymax || 0) + 1; }
         const p = (ymax - ymin) * 0.06; ymin -= p; ymax += p;
         const plotH = H - padT - padB;
@@ -525,10 +528,10 @@
         const Y = v => padT + plotH * (1 - (v - ymin) / (ymax - ymin));
         const fmtY = v => multi ? (v >= 0 ? '+' : '') + v.toFixed(1) + '%' : '$' + v.toFixed(2);
         const plotW = W - padL - padR;
-        _chartGeo = { padT, padB, padL, padR, plotH, plotW, W, H, ymin, ymax, symbol: primary, multi, curPrice, maxLen, pts: primaryPts };
+        _chartGeo = { padT, padB, padL, padR, plotH, plotW, W, H, ymin, ymax, symbol: primary, multi, curPrice, primaryBase, maxLen, pts: primaryPts,
+            series: syms.map((s, i) => ({ sym: s, vals: seriesVals[s], color: CHART_COLORS[i % CHART_COLORS.length] })) };
 
-        const cur = multi ? 'default' : 'crosshair';
-        let svg = `<svg width="${W}" height="${H}" style="display:block;cursor:${cur};" onclick="chartClick(event)">`;
+        let svg = `<svg width="${W}" height="${H}" style="display:block;cursor:crosshair;" onclick="chartClick(event)">`;
         // y grid + labels
         for (let g = 0; g <= 4; g++) {
             const v = ymin + (ymax - ymin) * g / 4, yy = Y(v);
@@ -545,9 +548,9 @@
             svg += `<text x="${xx}" y="${H - padB + 14}" text-anchor="middle" font-size="9.5" fill="var(--text-secondary)">${esc(fmtTime(pt.t))}</text>`;
         }
         if (multi) { const z = Y(0); svg += `<line x1="${padL}" y1="${z}" x2="${W - padR}" y2="${z}" stroke="var(--text-secondary)" stroke-dasharray="3 3" opacity="0.6"/>`; }
-        // reference lines
+        // reference lines (positioned via toPlot so they render in either mode; label shows real $)
         hlines.forEach(([label, v, color]) => {
-            const yy = Y(v);
+            const yy = Y(toPlot(v));
             svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${color}" stroke-dasharray="5 3" stroke-width="1.2" opacity="0.9"/>`;
             svg += `<text x="${W - padR + 3}" y="${yy + 3}" font-size="8.5" fill="${color}">${label} ${(+v).toFixed(2)}</text>`;
         });
@@ -576,30 +579,34 @@
                 <div id="xhTime" style="position:absolute;bottom:2px;transform:translateX(-50%);background:var(--accent,#667eea);color:#fff;font-size:10px;padding:1px 4px;border-radius:3px;white-space:nowrap;"></div>
                 <div id="xhTip" style="position:absolute;left:${padL + 6}px;top:${padT + 4}px;background:var(--card-bg);border:1px solid var(--border);border-radius:5px;font-size:11px;padding:3px 8px;color:var(--text-primary);box-shadow:0 2px 8px rgba(0,0,0,0.2);white-space:nowrap;"></div>
             </div></div>`;
-        if (!multi) {
-            const inner = document.getElementById('chartInner');
-            inner.addEventListener('mousemove', chartHover);
-            inner.addEventListener('mouseleave', () => { const o = document.getElementById('xhair'); if (o) o.style.display = 'none'; });
-        }
+        const inner = document.getElementById('chartInner');
+        inner.addEventListener('mousemove', chartHover);
+        inner.addEventListener('mouseleave', () => { const o = document.getElementById('xhair'); if (o) o.style.display = 'none'; });
     }
 
     function chartHover(e) {
-        const g = _chartGeo; if (!g || g.multi) return;
+        const g = _chartGeo; if (!g) return;
         const rect = e.currentTarget.getBoundingClientRect();
         const mx = e.clientX - rect.left, my = e.clientY - rect.top;
         const ov = document.getElementById('xhair'); if (!ov) return;
         if (mx < g.padL || mx > g.padL + g.plotW || my < g.padT || my > g.padT + g.plotH) { ov.style.display = 'none'; return; }
         ov.style.display = 'block';
-        const price = g.ymin + (1 - (my - g.padT) / g.plotH) * (g.ymax - g.ymin);
+        const val = g.ymin + (1 - (my - g.padT) / g.plotH) * (g.ymax - g.ymin);  // % in compare, $ in single
         let idx = Math.round((mx - g.padL) / g.plotW * (g.maxLen - 1));
         idx = Math.max(0, Math.min(g.maxLen - 1, idx));
         const snapX = g.padL + g.plotW * (idx / (g.maxLen - 1 || 1));
         const pt = g.pts[Math.min(idx, g.pts.length - 1)];
         document.getElementById('xhV').style.left = snapX + 'px';
         document.getElementById('xhH').style.top = my + 'px';
-        const xhP = document.getElementById('xhPrice'); xhP.style.top = my + 'px'; xhP.textContent = '$' + price.toFixed(2);
+        const xhP = document.getElementById('xhPrice'); xhP.style.top = my + 'px';
+        xhP.textContent = g.multi ? (val >= 0 ? '+' : '') + val.toFixed(1) + '%' : '$' + val.toFixed(2);
         const xhT = document.getElementById('xhTime'); xhT.style.left = snapX + 'px'; xhT.textContent = pt ? fmtTime(pt.t) : '';
-        document.getElementById('xhTip').textContent = `${g.symbol}  ·  ${pt ? fmtTime(pt.t) : ''}  ·  $${pt ? pt.c.toFixed(2) : ''}`;
+        // Tooltip: date + each charted symbol's value at the snapped point (% in compare, $ in single)
+        const parts = (g.series || []).map(se => {
+            const v = se.vals[Math.min(idx, se.vals.length - 1)];
+            return `${se.sym} ${g.multi ? (v >= 0 ? '+' : '') + v.toFixed(1) + '%' : '$' + v.toFixed(2)}`;
+        });
+        document.getElementById('xhTip').textContent = (pt ? fmtTime(pt.t) : '') + '  ·  ' + parts.join('  ·  ');
     }
     function pendingLabel(o) {
         const isLong = (o.direction === 'long' || o.direction === 'call');
@@ -607,16 +614,19 @@
         return (isLong ? 'buy' : 'sell') + ' ' + (isLimit ? 'limit' : 'stop');
     }
 
-    /* ===== Interactive click → limit order / alert (single-symbol only) ===== */
+    /* ===== Interactive click → limit order / alert (targets the primary symbol) ===== */
     function chartClick(evt) {
         closeChartMenu();
-        if (!_chartGeo || _chartGeo.multi) return;  // ordering only in single-symbol mode
+        if (!_chartGeo) return;
+        const g = _chartGeo;
         const rect = evt.currentTarget.getBoundingClientRect();
         const y = evt.clientY - rect.top;
-        const frac = 1 - (y - _chartGeo.padT) / _chartGeo.plotH;
+        const frac = 1 - (y - g.padT) / g.plotH;
         if (frac < -0.02 || frac > 1.02) return;
-        const price = _chartGeo.ymin + frac * (_chartGeo.ymax - _chartGeo.ymin);
-        showChartMenu(evt.clientX, evt.clientY, _chartGeo.symbol, price);
+        const val = g.ymin + frac * (g.ymax - g.ymin);
+        // In compare mode the clicked value is a % — convert it back to the primary symbol's price.
+        const price = g.multi ? g.primaryBase * (1 + val / 100) : val;
+        showChartMenu(evt.clientX, evt.clientY, g.symbol, price, g.multi);
     }
     function _menuOutsideClose(e) {
         const m = document.getElementById('chartMenu');
@@ -627,13 +637,19 @@
         if (m) m.remove();
         document.removeEventListener('click', _menuOutsideClose, true);  // never leave a stale listener
     }
-    function showChartMenu(px, py, symbol, price) {
+    function showChartMenu(px, py, symbol, price, isCompare) {
         const p = price.toFixed(2);
         const above = price > (_chartGeo.curPrice || price);  // clicked above current price?
         const m = document.createElement('div');
         m.id = 'chartMenu';
-        m.style.cssText = `position:fixed;left:${Math.min(px, window.innerWidth - 250)}px;top:${Math.min(py, window.innerHeight - 220)}px;z-index:9500;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,0.35);padding:6px;min-width:230px;font-size:0.86em;`;
+        m.style.cssText = `position:fixed;left:${Math.min(px, window.innerWidth - 250)}px;top:${Math.min(py, window.innerHeight - 240)}px;z-index:9500;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,0.35);padding:6px;min-width:230px;font-size:0.86em;`;
         m.onclick = (e) => e.stopPropagation();  // clicks inside the menu don't close it
+        if (isCompare) {
+            const hdr = document.createElement('div');
+            hdr.style.cssText = 'padding:2px 10px 6px;font-size:0.78em;color:var(--text-secondary);';
+            hdr.innerHTML = `Compare mode → trading <b>${esc(symbol)}</b> (primary) at its price for that % level`;
+            m.appendChild(hdr);
+        }
         const qtyRow = document.createElement('div');
         qtyRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 10px 8px;border-bottom:1px solid var(--border);margin-bottom:4px;';
         qtyRow.innerHTML = `<span class="muted" style="font-size:0.85em;">Qty</span><input id="menuQty" type="number" min="1" step="1" value="1" style="width:64px;padding:4px 6px;border-radius:5px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);"><span class="muted" style="font-size:0.8em;margin-left:auto;">@ $${p}</span>`;
