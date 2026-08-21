@@ -27,7 +27,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -368,6 +368,275 @@ def paper_trading():
 def profile_page():
     """Profile & Settings hub — profile, preferences, and the Trading SOP."""
     return render_template('profile.html')
+
+
+@app.route('/finances')
+@login_required
+def finances_page():
+    """Personal finances — net worth, debts, cash flow, and an AI advisor."""
+    return render_template('finances.html')
+
+
+# ===================== PERSONAL FINANCES (net worth / debt / outlook) =====================
+
+FINANCE_ACCOUNT_TYPES = {'checking', 'savings', 'cash', 'brokerage', 'retirement', 'property', 'vehicle', 'other'}
+DEBT_TYPES = {'mortgage', 'heloc', 'home_equity', 'credit_card', 'auto', 'personal', 'student', 'home_improvement', 'other'}
+
+
+def _finance_income(user):
+    """User's stored monthly gross income (from preferences), 0 if unset."""
+    try:
+        return float((user.preferences or {}).get('monthlyGrossIncome') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@app.route('/api/finance/accounts', methods=['GET'])
+@require_api_auth
+def finance_list_accounts():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    rows = FinanceAccount.query.filter_by(user_id=uid).order_by(FinanceAccount.balance.desc()).all()
+    return jsonify({'accounts': [a.to_dict() for a in rows]})
+
+
+@app.route('/api/finance/accounts', methods=['POST'])
+@require_api_auth
+def finance_create_account():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json() or {}
+    name = (d.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    t = (d.get('type') or 'cash').lower()
+    a = FinanceAccount(user_id=uid, name=name[:120],
+                       type=t if t in FINANCE_ACCOUNT_TYPES else 'other',
+                       balance=float(d.get('balance') or 0), notes=(d.get('notes') or None))
+    db.session.add(a)
+    db.session.commit()
+    return jsonify(a.to_dict()), 201
+
+
+@app.route('/api/finance/accounts/<int:aid>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def finance_modify_account(aid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    a = FinanceAccount.query.filter_by(id=aid, user_id=uid).first()
+    if not a:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        db.session.delete(a)
+        db.session.commit()
+        return jsonify({'success': True})
+    d = request.get_json() or {}
+    if 'name' in d and (d.get('name') or '').strip():
+        a.name = d['name'].strip()[:120]
+    if 'type' in d:
+        t = (d.get('type') or 'cash').lower()
+        a.type = t if t in FINANCE_ACCOUNT_TYPES else 'other'
+    if 'balance' in d:
+        a.balance = float(d.get('balance') or 0)
+    if 'notes' in d:
+        a.notes = d.get('notes') or None
+    db.session.commit()
+    return jsonify(a.to_dict())
+
+
+@app.route('/api/finance/debts', methods=['GET'])
+@require_api_auth
+def finance_list_debts():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    rows = Debt.query.filter_by(user_id=uid).order_by(Debt.apr.desc()).all()
+    return jsonify({'debts': [x.to_dict() for x in rows]})
+
+
+@app.route('/api/finance/debts', methods=['POST'])
+@require_api_auth
+def finance_create_debt():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json() or {}
+    name = (d.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    t = (d.get('type') or 'other').lower()
+    x = Debt(user_id=uid, name=name[:120], type=t if t in DEBT_TYPES else 'other',
+             lender=(d.get('lender') or None), balance=float(d.get('balance') or 0),
+             apr=float(d.get('apr') or 0), min_payment=float(d.get('min_payment') or 0),
+             secured=bool(d.get('secured')), notes=(d.get('notes') or None))
+    db.session.add(x)
+    db.session.commit()
+    return jsonify(x.to_dict()), 201
+
+
+@app.route('/api/finance/debts/<int:did>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def finance_modify_debt(did):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    x = Debt.query.filter_by(id=did, user_id=uid).first()
+    if not x:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        db.session.delete(x)
+        db.session.commit()
+        return jsonify({'success': True})
+    d = request.get_json() or {}
+    if 'name' in d and (d.get('name') or '').strip():
+        x.name = d['name'].strip()[:120]
+    if 'type' in d:
+        t = (d.get('type') or 'other').lower()
+        x.type = t if t in DEBT_TYPES else 'other'
+    for f in ('lender', 'notes'):
+        if f in d:
+            setattr(x, f, d.get(f) or None)
+    for f in ('balance', 'apr', 'min_payment'):
+        if f in d:
+            setattr(x, f, float(d.get(f) or 0))
+    if 'secured' in d:
+        x.secured = bool(d.get('secured'))
+    db.session.commit()
+    return jsonify(x.to_dict())
+
+
+@app.route('/api/finance/income', methods=['PUT'])
+@require_api_auth
+def finance_set_income():
+    """Store monthly gross income (for DTI) in the user's preferences."""
+    if not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json() or {}
+    try:
+        inc = float(d.get('monthly_gross_income') or 0)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'invalid income'}), 400
+    current_user.preferences = {**(current_user.preferences or {}), 'monthlyGrossIncome': inc}
+    db.session.commit()
+    return jsonify({'success': True, 'monthly_gross_income': inc})
+
+
+def _finance_outlook(user_id):
+    """Assemble the whole-picture outlook: assets (manual + investment accounts),
+    debts, net worth, DTI, monthly debt service, blended APR, and interest drain."""
+    user = User.query.get(user_id)
+    manual = FinanceAccount.query.filter_by(user_id=user_id).all()
+    debts = Debt.query.filter_by(user_id=user_id).order_by(Debt.apr.desc()).all()
+
+    manual_assets = sum(float(a.balance or 0) for a in manual)
+
+    # Fold in tracked investment accounts (PortfolioAccount cash + holdings market value).
+    inv_accounts = []
+    inv_total = 0.0
+    try:
+        for acct in PortfolioAccount.query.filter_by(user_id=user_id).all():
+            cash = float(acct.cash_balance or 0)
+            hv = 0.0
+            for h in Portfolio.query.filter_by(user_id=user_id, account_id=acct.id).all():
+                if h.current_price:
+                    hv += float(h.quantity or 0) * float(h.current_price)
+            val = cash + hv
+            inv_accounts.append({'id': acct.id, 'name': acct.name, 'value': round(val, 2), 'cash': round(cash, 2)})
+            inv_total += val
+    except Exception as e:
+        logger.warning(f"finance outlook: investment fold-in failed: {e}")
+
+    total_assets = manual_assets + inv_total
+    total_debt = sum(float(x.balance or 0) for x in debts)
+    net_worth = total_assets - total_debt
+    monthly_debt_service = sum(float(x.min_payment or 0) for x in debts)
+    monthly_interest = sum(x.monthly_interest() for x in debts)
+    blended_apr = round(sum(float(x.balance or 0) * float(x.apr or 0) for x in debts) / total_debt, 2) if total_debt else 0
+    income = _finance_income(user)
+    dti = round(monthly_debt_service / income * 100, 1) if income else None
+
+    # Highlight the single most expensive debt (highest APR with a balance)
+    worst = max((x for x in debts if float(x.balance or 0) > 0), key=lambda x: float(x.apr or 0), default=None)
+
+    return {
+        'net_worth': round(net_worth, 2),
+        'total_assets': round(total_assets, 2),
+        'manual_assets': round(manual_assets, 2),
+        'investment_assets': round(inv_total, 2),
+        'total_debt': round(total_debt, 2),
+        'monthly_debt_service': round(monthly_debt_service, 2),
+        'monthly_interest': round(monthly_interest, 2),
+        'annual_interest': round(monthly_interest * 12, 2),
+        'blended_apr': blended_apr,
+        'monthly_gross_income': income,
+        'dti': dti,
+        'accounts': [a.to_dict() for a in manual],
+        'investment_accounts': inv_accounts,
+        'debts': [x.to_dict() for x in debts],
+        'worst_debt': (worst.to_dict() if worst else None),
+    }
+
+
+@app.route('/api/finance/outlook', methods=['GET'])
+@require_api_auth
+def finance_outlook():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        return jsonify(_finance_outlook(uid))
+    except Exception as e:
+        logger.error(f"Error in finance outlook: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/finance/ai-read', methods=['POST'])
+@require_api_auth
+def finance_ai_read():
+    """AI financial advisor — reads the outlook (+ optional question) and gives plain,
+    prioritized guidance. Claude → Gemini fallback. Informational, not licensed advice."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        o = _finance_outlook(uid)
+        question = (request.get_json() or {}).get('question') or ''
+        debt_lines = "; ".join(
+            f"{d['name']} ${d['balance']:,.0f} @ {d['apr']}%{' (secured)' if d['secured'] else ''}, min ${d['min_payment']:,.0f}/mo"
+            for d in o['debts']
+        ) or "none"
+        facts = (
+            f"Net worth: ${o['net_worth']:,.0f} (assets ${o['total_assets']:,.0f} incl. ${o['investment_assets']:,.0f} investments; debt ${o['total_debt']:,.0f}).\n"
+            f"Monthly gross income: ${o['monthly_gross_income']:,.0f}. DTI: {o['dti']}%.\n"
+            f"Monthly debt service: ${o['monthly_debt_service']:,.0f}. Debt interest drain: ${o['annual_interest']:,.0f}/yr (blended APR {o['blended_apr']}%).\n"
+            f"Debts (highest-rate first): {debt_lines}.\n"
+            + (f"Highest-rate debt: {o['worst_debt']['name']} at {o['worst_debt']['apr']}%.\n" if o['worst_debt'] else "")
+            + (f"\nUser's question: {question}\n" if question else "")
+        )
+        system = (
+            "You are a sharp, plain-spoken personal-finance advisor. Given the person's net worth, income, DTI, "
+            "and their debts (with balances and APRs), give prioritized, specific guidance: name the single highest-cost "
+            "problem (usually the highest-APR balance), quantify the interest drain, and lay out a concrete payoff/order "
+            "plan (avalanche by APR, 0% balance-transfer or consolidation where it helps, using liquidity vs. borrowing). "
+            "If they asked a specific question (e.g. how to finance a purchase), answer it directly and honestly — including "
+            "'wait' or 'don't borrow against the house for a depreciating asset' when that's the right call. Be concrete with "
+            "numbers. 6-10 sentences. End with one line: this is general education, not licensed financial advice — verify "
+            "actual loan APRs and consider a fee-only advisor for big moves."
+        )
+        read = claude_analyzer.read(system, facts, max_tokens=750)
+        engine = 'claude' if read else None
+        if not read:
+            read = gemini_analyzer.read(system, facts)
+            engine = 'gemini' if read else None
+        if not read:
+            return jsonify({'empty': True, 'message': 'AI advisor is unavailable right now.'}), 200
+        return jsonify({'read': read.strip(), 'engine': engine}), 200
+    except Exception as e:
+        logger.error(f"Error in finance ai-read: {e}", exc_info=True)
+        return jsonify({'error': str(e), 'empty': True, 'message': 'AI advisor temporarily unavailable'}), 200
 
 
 # ===================== TRADING SOP (Standard Operating Procedure) =====================

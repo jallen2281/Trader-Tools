@@ -823,6 +823,61 @@ class TradingSOP(db.Model):
         }
 
 
+class FinanceAccount(db.Model):
+    """A manually-tracked ASSET account for the net-worth / finances module — bank,
+    cash, property, vehicle, etc. Investment accounts are tracked separately
+    (PortfolioAccount) and folded into the outlook alongside these."""
+    __tablename__ = 'finance_accounts'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    type = db.Column(db.String(30), default='cash')  # checking|savings|cash|brokerage|retirement|property|vehicle|other
+    balance = db.Column(db.Numeric(15, 2, asdecimal=False), default=0)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'name': self.name, 'type': self.type,
+            'balance': float(self.balance or 0), 'notes': self.notes,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class Debt(db.Model):
+    """A liability (mortgage, HELOC, credit card, auto/personal/student loan, etc.) for
+    the finances module. `secured` marks debts backed by collateral (a lien on the
+    home/car), which matters for borrowing-capacity math."""
+    __tablename__ = 'debts'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    type = db.Column(db.String(30), default='other')  # mortgage|heloc|home_equity|credit_card|auto|personal|student|home_improvement|other
+    lender = db.Column(db.String(120))
+    balance = db.Column(db.Numeric(15, 2, asdecimal=False), default=0)
+    apr = db.Column(db.Numeric(6, 3, asdecimal=False), default=0)   # annual %, e.g. 24.490
+    min_payment = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    secured = db.Column(db.Boolean, default=False)  # backed by collateral (lien)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def monthly_interest(self):
+        return round(float(self.balance or 0) * float(self.apr or 0) / 100.0 / 12.0, 2)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'name': self.name, 'type': self.type, 'lender': self.lender,
+            'balance': float(self.balance or 0), 'apr': float(self.apr or 0),
+            'min_payment': float(self.min_payment or 0), 'secured': bool(self.secured),
+            'monthly_interest': self.monthly_interest(), 'notes': self.notes,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class DiscussionThread(db.Model):
     """Community discussion threads"""
     __tablename__ = 'discussion_threads'

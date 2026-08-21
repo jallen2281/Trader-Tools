@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}Finances - Trader Tools{% endblock %}
+
+{% block head %}
+<style>
+    .fin-card { background: var(--card-bg); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:18px 20px; margin-bottom:20px; }
+    .fin-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; }
+    .fin-tile { background:var(--bg-tertiary); border-radius:10px; padding:15px; text-align:center; }
+    .fin-tile .lbl { font-size:0.74em; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.03em; }
+    .fin-tile .val { font-size:1.5em; font-weight:700; margin-top:5px; }
+    .fin-tile .sub { font-size:0.72em; color:var(--text-secondary); margin-top:3px; }
+    .pos { color: var(--success); } .neg { color:#ef4444; } .warn { color:#d97706; }
+    table.fin-table { width:100%; border-collapse:collapse; font-size:0.87em; }
+    table.fin-table th { text-align:left; padding:8px 10px; color:var(--text-secondary); border-bottom:1px solid var(--border); font-weight:600; white-space:nowrap; }
+    table.fin-table td { padding:8px 10px; border-bottom:1px solid var(--border); }
+    .apr-hi { color:#ef4444; font-weight:700; }
+    .apr-mid { color:#d97706; font-weight:600; }
+    .badge { font-size:0.68em; font-weight:700; padding:2px 7px; border-radius:999px; text-transform:uppercase; }
+    .b-secured { background:rgba(168,85,247,0.15); color:#a855f7; }
+    .b-inv { background:rgba(59,130,246,0.14); color:#3b82f6; }
+    .muted { color:var(--text-secondary); }
+    .fin-in { padding:7px 9px; border-radius:6px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); box-sizing:border-box; font-size:0.9em; }
+    .btn2 { padding:8px 14px; border-radius:8px; border:1px solid var(--border); background:var(--bg-tertiary); color:var(--text-primary); font-size:0.88em; font-weight:600; cursor:pointer; }
+    .btn2.primary { background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; border:none; }
+    .btn2.danger { color:#ef4444; border-color:rgba(239,68,68,0.4); }
+    .link-btn { background:none;border:none;color:var(--accent,#667eea);cursor:pointer;font-size:0.85em;padding:0; }
+    .link-btn.danger { color:#ef4444; }
+    .modal-back { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:9000; padding:20px; }
+    .modal-box { background:var(--card-bg); color:var(--text-primary); border-radius:12px; padding:24px; max-width:480px; width:100%; max-height:88vh; overflow-y:auto; box-shadow:0 10px 40px rgba(0,0,0,0.4); }
+    .fld { display:block; font-size:0.78em; color:var(--text-secondary); margin:10px 0 4px; font-weight:600; }
+    .fire { background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:10px; padding:13px 16px; margin-bottom:16px; }
+    .ai-box { background:rgba(102,126,234,0.08); border:1px solid rgba(102,126,234,0.25); border-radius:9px; padding:14px 16px; line-height:1.6; font-size:0.92em; white-space:pre-wrap; margin-top:12px; }
+</style>
+{% endblock %}
+
+{% block content %}
+    <h1 style="margin:0 0 4px;">💰 Finances</h1>
+    <p class="muted" style="margin-top:0;font-size:0.9em;">Your whole-picture outlook — net worth, debts, cash flow, and an AI advisor. A tracking tool, not licensed financial advice.</p>
+
+    <div id="fireBox"></div>
+
+    <!-- Outlook tiles -->
+    <div class="fin-card">
+        <div id="outlookTiles" class="fin-grid"><p class="muted" style="padding:16px;">Loading outlook…</p></div>
+    </div>
+
+    <!-- Income + AI advisor -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="muted" style="font-size:0.85em;">Monthly gross income</span>
+                <input id="incomeInput" type="number" step="100" class="fin-in" style="width:130px;" placeholder="0">
+                <button class="btn2" onclick="saveIncome()">Save</button>
+                <span id="incMsg" class="muted" style="font-size:0.82em;"></span>
+            </div>
+            <button class="btn2 primary" onclick="askAdvisor('')">🤖 AI Financial Read</button>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+            <input id="advQ" class="fin-in" style="flex:1;min-width:220px;" placeholder="Ask a question — e.g. 'best way to finance a $20k trailer?'">
+            <button class="btn2" onclick="askAdvisor(document.getElementById('advQ').value)">Ask</button>
+        </div>
+        <div id="advBody"></div>
+    </div>
+
+    <!-- Debts -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Debts <span class="muted" style="font-size:0.7em;">highest-rate first</span></h2>
+            <button class="btn2 primary" onclick="openDebt(null)">+ Add Debt</button>
+        </div>
+        <div id="debtsBody"><p class="muted">Loading…</p></div>
+    </div>
+
+    <!-- Assets -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Assets</h2>
+            <button class="btn2 primary" onclick="openAccount(null)">+ Add Account</button>
+        </div>
+        <div id="assetsBody"><p class="muted">Loading…</p></div>
+    </div>
+
+    <div id="modalRoot"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script>
+    const fmt = (n) => (Number(n) < 0 ? '-$' : '$') + Math.abs(Number(n)||0).toLocaleString('en-US',{maximumFractionDigits:0});
+    const fmt2 = (n) => (Number(n) < 0 ? '-$' : '$') + Math.abs(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const esc = (s) => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const DEBT_TYPES = ['mortgage','heloc','home_equity','credit_card','auto','personal','student','home_improvement','other'];
+    const ACCT_TYPES = ['checking','savings','cash','brokerage','retirement','property','vehicle','other'];
+    let OUTLOOK = null;
+
+    async function loadOutlook() {
+        try {
+            const r = await fetch('/api/finance/outlook', { credentials:'same-origin' });
+            OUTLOOK = await r.json();
+            renderTiles(); renderFire(); renderDebts(); renderAssets();
+            if (OUTLOOK.monthly_gross_income) document.getElementById('incomeInput').value = OUTLOOK.monthly_gross_income;
+        } catch(e){ document.getElementById('outlookTiles').innerHTML='<p class="neg" style="padding:16px;">Could not load outlook.</p>'; }
+    }
+    function renderTiles() {
+        const o = OUTLOOK;
+        const dtiCls = o.dti==null?'':(o.dti>43?'neg':(o.dti>36?'warn':'pos'));
+        const tiles = [
+            ['Net Worth', fmt(o.net_worth), o.net_worth>=0?'pos':'neg', 'assets − debts'],
+            ['Total Assets', fmt(o.total_assets), '', `incl. ${fmt(o.investment_assets)} investments`],
+            ['Total Debt', fmt(o.total_debt), 'neg', `${fmt2(o.monthly_debt_service)}/mo service`],
+            ['Interest Drain', fmt(o.annual_interest)+'/yr', 'neg', `blended ${o.blended_apr}% APR`],
+            ['DTI', o.dti==null?'—':o.dti+'%', dtiCls, o.dti==null?'set income':(o.dti>43?'over 43% limit':'debt-to-income')],
+            ['Monthly Debt', fmt2(o.monthly_debt_service), '', `${fmt2(o.monthly_interest)} is interest`],
+        ];
+        document.getElementById('outlookTiles').innerHTML = tiles.map(t=>
+            `<div class="fin-tile"><div class="lbl">${t[0]}</div><div class="val ${t[2]}">${t[1]}</div><div class="sub">${t[3]}</div></div>`).join('');
+    }
+    function renderFire() {
+        const w = OUTLOOK.worst_debt, box = document.getElementById('fireBox');
+        if (!w || w.apr < 15) { box.innerHTML=''; return; }
+        box.innerHTML = `<div class="fire">🔥 <strong>Your most expensive debt:</strong> ${esc(w.name)} — <strong>${fmt(w.balance)} at ${w.apr}%</strong>, bleeding <strong>${fmt(w.monthly_interest*12)}/yr</strong> (${fmt2(w.monthly_interest)}/mo) in interest. Attack this first — every dollar here "returns" ${w.apr}%.</div>`;
+    }
+    function debtAprCls(apr){ return apr>=15?'apr-hi':(apr>=8?'apr-mid':''); }
+    function renderDebts() {
+        const el = document.getElementById('debtsBody');
+        const ds = OUTLOOK.debts || [];
+        if (!ds.length){ el.innerHTML='<p class="muted" style="padding:12px;">No debts tracked. Add one to build your picture.</p>'; return; }
+        el.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr>'+
+            '<th>Debt</th><th>Type</th><th style="text-align:right;">Balance</th><th style="text-align:right;">APR</th><th style="text-align:right;">Payment</th><th style="text-align:right;">Interest/yr</th><th></th></tr></thead><tbody>'+
+            ds.map(d=>`<tr>
+                <td><strong>${esc(d.name)}</strong>${d.lender?`<div class="muted" style="font-size:0.8em;">${esc(d.lender)}</div>`:''}</td>
+                <td>${esc(d.type.replace('_',' '))}${d.secured?' <span class="badge b-secured">lien</span>':''}</td>
+                <td style="text-align:right;">${fmt(d.balance)}</td>
+                <td style="text-align:right;" class="${debtAprCls(d.apr)}">${d.apr}%</td>
+                <td style="text-align:right;">${fmt2(d.min_payment)}</td>
+                <td style="text-align:right;" class="neg">${fmt(d.monthly_interest*12)}</td>
+                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openDebt(${JSON.stringify(d)})'>edit</button> <button class="link-btn danger" onclick="delDebt(${d.id})">✕</button></td>
+            </tr>`).join('')+'</tbody></table></div>';
+    }
+    function renderAssets() {
+        const el = document.getElementById('assetsBody');
+        const man = OUTLOOK.accounts || [], inv = OUTLOOK.investment_accounts || [];
+        let html = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th>Type</th><th style="text-align:right;">Balance</th><th></th></tr></thead><tbody>';
+        inv.forEach(a=>{ html += `<tr><td>${esc(a.name)} <span class="badge b-inv">investments</span></td><td class="muted">tracked</td><td style="text-align:right;">${fmt(a.value)}</td><td></td></tr>`; });
+        man.forEach(a=>{ html += `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.type)}</td><td style="text-align:right;">${fmt(a.balance)}</td><td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openAccount(${JSON.stringify(a)})'>edit</button> <button class="link-btn danger" onclick="delAccount(${a.id})">✕</button></td></tr>`; });
+        if (!inv.length && !man.length) html += '<tr><td colspan="4" class="muted" style="padding:12px;text-align:center;">No accounts yet. Your investment accounts fold in automatically once tracked.</td></tr>';
+        html += '</tbody></table></div>';
+        el.innerHTML = html;
+    }
+
+    /* income */
+    async function saveIncome() {
+        const v = document.getElementById('incomeInput').value, msg=document.getElementById('incMsg');
+        msg.textContent='Saving…';
+        try {
+            const r = await fetch('/api/finance/income',{method:'PUT',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({monthly_gross_income:parseFloat(v)||0})});
+            if(!r.ok) throw new Error('save failed');
+            msg.textContent='✓'; loadOutlook();
+        } catch(e){ msg.textContent='failed'; }
+    }
+
+    /* AI advisor */
+    async function askAdvisor(q) {
+        const box = document.getElementById('advBody');
+        box.innerHTML = '<div class="ai-box">🤖 Analyzing your finances…</div>';
+        try {
+            const r = await fetch('/api/finance/ai-read',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({question:q||''})});
+            const d = await r.json();
+            if (d.empty || !d.read){ box.innerHTML=`<div class="ai-box muted">${esc(d.message||'Unavailable.')}</div>`; return; }
+            box.innerHTML = `<div class="ai-box"><strong>🤖 Advisor${d.engine?' · '+d.engine:''}</strong>\n\n${esc(d.read)}</div>`;
+        } catch(e){ box.innerHTML='<div class="ai-box neg">Advisor failed.</div>'; }
+    }
+
+    /* debt modal */
+    function openDebt(d) {
+        const e = d || {type:'credit_card',apr:0,balance:0,min_payment:0,secured:false};
+        showModal(`<h2 style="margin:0 0 8px;">${d?'Edit':'Add'} Debt</h2>
+            <label class="fld">Name</label><input id="dName" class="fin-in" style="width:100%;" value="${esc(e.name||'')}">
+            <label class="fld">Lender (optional)</label><input id="dLender" class="fin-in" style="width:100%;" value="${esc(e.lender||'')}">
+            <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Type</label><select id="dType" class="fin-in" style="width:100%;">${DEBT_TYPES.map(t=>`<option value="${t}" ${e.type===t?'selected':''}>${t.replace('_',' ')}</option>`).join('')}</select></div>
+            <div style="flex:1;display:flex;align-items:flex-end;gap:6px;padding-bottom:2px;"><label style="display:flex;align-items:center;gap:6px;font-size:0.85em;"><input type="checkbox" id="dSecured" ${e.secured?'checked':''}> secured (lien)</label></div></div>
+            <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Balance $</label><input id="dBal" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.balance||0}"></div>
+            <div style="flex:1;"><label class="fld">APR %</label><input id="dApr" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.apr||0}"></div>
+            <div style="flex:1;"><label class="fld">Min pmt/mo $</label><input id="dPmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.min_payment||0}"></div></div>
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveDebt(${d?d.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="dMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function saveDebt(id) {
+        const body = {name:document.getElementById('dName').value.trim(),lender:document.getElementById('dLender').value.trim(),type:document.getElementById('dType').value,
+            balance:parseFloat(document.getElementById('dBal').value)||0,apr:parseFloat(document.getElementById('dApr').value)||0,min_payment:parseFloat(document.getElementById('dPmt').value)||0,secured:document.getElementById('dSecured').checked};
+        if(!body.name){ document.getElementById('dMsg').textContent='Name required'; return; }
+        try{ const r=await fetch(id?`/api/finance/debts/${id}`:'/api/finance/debts',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
+            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadOutlook();
+        }catch(e){ document.getElementById('dMsg').textContent=e.message; }
+    }
+    async function delDebt(id){ if(!confirm('Delete this debt?'))return; await fetch(`/api/finance/debts/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
+
+    /* account modal */
+    function openAccount(a) {
+        const e = a || {type:'checking',balance:0};
+        showModal(`<h2 style="margin:0 0 8px;">${a?'Edit':'Add'} Account</h2>
+            <label class="fld">Name</label><input id="aName" class="fin-in" style="width:100%;" value="${esc(e.name||'')}">
+            <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Type</label><select id="aType" class="fin-in" style="width:100%;">${ACCT_TYPES.map(t=>`<option value="${t}" ${e.type===t?'selected':''}>${t}</option>`).join('')}</select></div>
+            <div style="flex:1;"><label class="fld">Balance $</label><input id="aBal" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.balance||0}"></div></div>
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveAccount(${a?a.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="aMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function saveAccount(id) {
+        const body={name:document.getElementById('aName').value.trim(),type:document.getElementById('aType').value,balance:parseFloat(document.getElementById('aBal').value)||0};
+        if(!body.name){ document.getElementById('aMsg').textContent='Name required'; return; }
+        try{ const r=await fetch(id?`/api/finance/accounts/${id}`:'/api/finance/accounts',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
+            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadOutlook();
+        }catch(e){ document.getElementById('aMsg').textContent=e.message; }
+    }
+    async function delAccount(id){ if(!confirm('Delete this account?'))return; await fetch(`/api/finance/accounts/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
+
+    function showModal(html){ const r=document.getElementById('modalRoot'); r.innerHTML=`<div class="modal-back" id="_mb"><div class="modal-box">${html}</div></div>`; document.getElementById('_mb').addEventListener('click',e=>{if(e.target.id==='_mb')closeModal();}); }
+    function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
+
+    document.addEventListener('DOMContentLoaded', loadOutlook);
+</script>
+{% endblock %}
