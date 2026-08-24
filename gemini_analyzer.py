@@ -92,6 +92,37 @@ class GeminiAnalyzer:
                     return n
         return names[0]
 
+    # Error fragments that mean "this model is momentarily busy/gone" — switch to a
+    # sibling model rather than giving up (a 503 on flash-latest doesn't mean every
+    # flash variant is down).
+    _CAPACITY_MARKERS = (
+        'unavailable', 'overloaded', 'high demand', 'resource_exhausted',
+        'rate limit', 'try again later', 'internal error', '503', '429', '500',
+    )
+
+    def _candidate_models(self, exclude=frozenset()) -> list:
+        """Ordered text-generation models to try, cheapest/stablest first, so a
+        momentarily-overloaded model can fall back to a healthy sibling."""
+        names = self.list_models()
+        ranked = []
+        def ok(low):
+            bad = ('vision', 'embedding', 'tts', 'image', 'audio', 'robotics',
+                   'computer', 'lyria', 'deep-research', 'gemma')
+            return not any(b in low for b in bad)
+        # Prefer stable (non-preview) cheap flash, then pro; then anything text-capable.
+        for pref in ('2.5-flash-lite', '2.5-flash', 'flash-lite-latest', 'flash-latest',
+                     '3.5-flash', '3.6-flash', '3.7-flash', 'flash', 'pro-latest',
+                     '2.5-pro', 'pro'):
+            for n in names:
+                low = n.lower()
+                if (pref in low and 'preview' not in low and ok(low)
+                        and n not in exclude and n not in ranked):
+                    ranked.append(n)
+        for n in names:  # last resort: previews and anything else text-capable
+            if ok(n.lower()) and n not in exclude and n not in ranked:
+                ranked.append(n)
+        return ranked
+
     def _build_config(self, system: str, thinking_off: bool):
         """GenerateContentConfig with an ample output budget and (optionally)
         thinking disabled — current flash models think by default, which starves
@@ -116,9 +147,12 @@ class GeminiAnalyzer:
         if not self.client:
             return None
         model = self._resolved_model or self.model
+        tried = set()
+        alternates = None  # discovered lazily on the first capacity/not-found failure
         thinking_off = True
         tried_thinking_fallback = False
-        for _ in range(3):
+        for _ in range(6):
+            switch = False  # set true to fall through to "try a different model"
             try:
                 resp = self.client.models.generate_content(
                     model=model,
@@ -126,18 +160,18 @@ class GeminiAnalyzer:
                     config=self._build_config(system, thinking_off),
                 )
                 text = (getattr(resp, 'text', None) or '').strip()
-                self._resolved_model = model  # remember what worked
                 if text:
+                    self._resolved_model = model  # remember what worked
                     self.last_error = None
                     return text
-                # Empty text with no exception — usually a safety block or thinking ate
-                # the whole budget. Retry once with thinking left on before giving up.
+                # Empty text, no exception — usually a safety block or thinking ate the
+                # whole budget. Retry once with thinking on, then try another model.
                 if not tried_thinking_fallback and thinking_off:
                     thinking_off = False
                     tried_thinking_fallback = True
                     continue
-                self.last_error = f"empty response from {model} (finish={getattr(resp,'candidates',None) and getattr(resp.candidates[0],'finish_reason',None)})"[:300]
-                return None
+                self.last_error = f"empty response from {model}"[:300]
+                switch = True
             except Exception as e:
                 msg = str(e)
                 low = msg.lower()
@@ -146,12 +180,21 @@ class GeminiAnalyzer:
                     thinking_off = False
                     tried_thinking_fallback = True
                     continue
-                if 'NOT_FOUND' in msg or '404' in msg:
-                    picked = self._pick_model()
-                    if picked and picked != model:
-                        logger.info("Gemini model '%s' unavailable; switching to '%s'", model, picked)
-                        model = picked
-                        continue
-                logger.warning("Gemini read failed (%s); caller will omit this read", e)
-                return None
+                transient = (any(m in low for m in self._CAPACITY_MARKERS)
+                             or 'not_found' in low or '404' in msg)
+                if not transient:
+                    logger.warning("Gemini read failed (%s); caller will omit this read", e)
+                    return None
+                switch = True  # model busy/gone — try a sibling
+            if switch:
+                tried.add(model)
+                if alternates is None:
+                    alternates = self._candidate_models(exclude=tried)
+                nxt = next((c for c in alternates if c not in tried), None)
+                if not nxt:
+                    return None
+                logger.info("Gemini model '%s' unavailable; switching to '%s'", model, nxt)
+                model = nxt
+                thinking_off = True
+                tried_thinking_fallback = False
         return None
