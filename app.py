@@ -541,8 +541,11 @@ def _finance_outlook(user_id):
             cash = float(acct.cash_balance or 0)
             hv = 0.0
             for h in Portfolio.query.filter_by(user_id=user_id, account_id=acct.id).all():
-                if h.current_price:
-                    hv += float(h.quantity or 0) * float(h.current_price)
+                # Prefer live price, but fall back to cost basis (matches the rest of
+                # the app). Non-quotable holdings (e.g. a 401k tracked as one lump lot)
+                # never get a current_price, so bare current_price folded them in at $0.
+                px = float(h.current_price) if h.current_price else float(h.average_cost or 0)
+                hv += float(h.quantity or 0) * px
             val = cash + hv
             inv_accounts.append({'id': acct.id, 'name': acct.name, 'value': round(val, 2), 'cash': round(cash, 2)})
             inv_total += val
