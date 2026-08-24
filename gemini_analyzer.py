@@ -31,11 +31,21 @@ class GeminiAnalyzer:
     def __init__(self):
         self.model = getattr(Config, 'GOOGLE_AI_MODEL', 'gemini-flash-latest')
         self._resolved_model = None  # cache once a working model is confirmed
+        self.last_error = None
         api_key = getattr(Config, 'GOOGLE_AI_API_KEY', '') or ''
         self.client = None
         if _GENAI_AVAILABLE and api_key:
             try:
-                self.client = genai.Client(api_key=api_key)
+                # Give the client a hard timeout (ms) so a stuck call fails fast instead
+                # of hanging the request. Guarded — older SDKs may lack HttpOptions.
+                client_kwargs = {'api_key': api_key}
+                HO = getattr(genai_types, 'HttpOptions', None)
+                if HO is not None:
+                    try:
+                        client_kwargs['http_options'] = HO(timeout=15000)
+                    except Exception:
+                        pass
+                self.client = genai.Client(**client_kwargs)
                 logger.info("✓ Gemini analyzer ready (model=%s)", self.model)
             except Exception as e:
                 logger.warning("Could not initialize Gemini client: %s", e)
@@ -114,10 +124,21 @@ class GeminiAnalyzer:
                 )
                 text = (getattr(resp, 'text', None) or '').strip()
                 self._resolved_model = model  # remember what worked
-                return text or None
+                if text:
+                    self.last_error = None
+                    return text
+                # Empty text with no exception — usually a safety block or thinking ate
+                # the whole budget. Retry once with thinking left on before giving up.
+                if not tried_thinking_fallback and thinking_off:
+                    thinking_off = False
+                    tried_thinking_fallback = True
+                    continue
+                self.last_error = f"empty response from {model} (finish={getattr(resp,'candidates',None) and getattr(resp.candidates[0],'finish_reason',None)})"[:300]
+                return None
             except Exception as e:
                 msg = str(e)
                 low = msg.lower()
+                self.last_error = f"{type(e).__name__}: {msg}"[:300]
                 if not tried_thinking_fallback and thinking_off and ('thinking' in low or 'invalid_argument' in low):
                     thinking_off = False
                     tried_thinking_fallback = True

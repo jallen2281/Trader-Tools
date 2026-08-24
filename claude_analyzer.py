@@ -39,9 +39,13 @@ class ClaudeAnalyzer:
         self.model = getattr(Config, 'ANTHROPIC_MODEL', 'claude-opus-4-8')
         api_key = getattr(Config, 'ANTHROPIC_API_KEY', '') or ''
         self.client = None
+        self.last_error = None
         if _ANTHROPIC_AVAILABLE and api_key:
             try:
-                self.client = anthropic.Anthropic(api_key=api_key)
+                # Hard timeout + minimal retries: without these the SDK's 600s default
+                # means an unreachable API host HANGS the whole request (and blocks the
+                # Gemini fallback from ever running). Fail fast instead.
+                self.client = anthropic.Anthropic(api_key=api_key, timeout=15.0, max_retries=1)
                 logger.info("✓ Claude analyzer ready (model=%s)", self.model)
             except Exception as e:
                 logger.warning("Could not initialize Anthropic client: %s", e)
@@ -87,7 +91,9 @@ class ClaudeAnalyzer:
                 messages=[{"role": "user", "content": facts}],
             )
             text = "".join(b.text for b in resp.content if b.type == "text").strip()
+            self.last_error = None
             return text or None
         except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"[:300]
             logger.warning("Claude read failed (%s); caller should fall back to local LLM", e)
             return None

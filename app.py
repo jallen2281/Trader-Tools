@@ -4777,17 +4777,28 @@ def get_ai_status():
             'model': gemini_analyzer.model,
         },
     }
-    if request.args.get('test') == '1' and gemini_analyzer.available():
-        try:
-            out['gemini']['available_models'] = gemini_analyzer.list_models()
-        except Exception as e:
-            out['gemini']['list_error'] = repr(e)
-        try:
-            # Uses the self-healing read path, so this reflects what users get.
-            out['gemini']['test_read'] = gemini_analyzer.read("Reply with the single word OK.", "Say OK.")
-            out['gemini']['resolved_model'] = gemini_analyzer._resolved_model
-        except Exception as e:
-            out['gemini']['test_error'] = repr(e)
+    if request.args.get('test') == '1':
+        if claude_analyzer.available():
+            try:
+                # Live one-shot — reflects exactly what users get, and now fails fast
+                # (15s timeout) instead of hanging the whole request.
+                out['claude']['test_read'] = claude_analyzer.read(
+                    "Reply with the single word OK.", "Say OK.", max_tokens=10)
+            except Exception as e:
+                out['claude']['test_error'] = repr(e)
+            out['claude']['last_error'] = getattr(claude_analyzer, 'last_error', None)
+        if gemini_analyzer.available():
+            try:
+                out['gemini']['available_models'] = gemini_analyzer.list_models()
+            except Exception as e:
+                out['gemini']['list_error'] = repr(e)
+            try:
+                # Uses the self-healing read path, so this reflects what users get.
+                out['gemini']['test_read'] = gemini_analyzer.read("Reply with the single word OK.", "Say OK.")
+                out['gemini']['resolved_model'] = gemini_analyzer._resolved_model
+            except Exception as e:
+                out['gemini']['test_error'] = repr(e)
+            out['gemini']['last_error'] = getattr(gemini_analyzer, 'last_error', None)
     return jsonify(out), 200
 
 
