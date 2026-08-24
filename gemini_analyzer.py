@@ -39,10 +39,13 @@ class GeminiAnalyzer:
                 # Give the client a hard timeout (ms) so a stuck call fails fast instead
                 # of hanging the request. Guarded — older SDKs may lack HttpOptions.
                 client_kwargs = {'api_key': api_key}
+                # 60s: Gemini is the fallback engine and, when Claude is unavailable,
+                # the ONLY engine — generation (esp. longer advisor reads) needs room.
+                # Still bounded so a truly stuck call can't hang the request.
                 HO = getattr(genai_types, 'HttpOptions', None)
                 if HO is not None:
                     try:
-                        client_kwargs['http_options'] = HO(timeout=15000)
+                        client_kwargs['http_options'] = HO(timeout=60000)
                     except Exception:
                         pass
                 self.client = genai.Client(**client_kwargs)
