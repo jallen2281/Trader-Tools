@@ -39,13 +39,13 @@ class GeminiAnalyzer:
                 # Give the client a hard timeout (ms) so a stuck call fails fast instead
                 # of hanging the request. Guarded — older SDKs may lack HttpOptions.
                 client_kwargs = {'api_key': api_key}
-                # 60s: Gemini is the fallback engine and, when Claude is unavailable,
-                # the ONLY engine — generation (esp. longer advisor reads) needs room.
-                # Still bounded so a truly stuck call can't hang the request.
+                # 30s per attempt: long enough for a real advisor read, short enough
+                # that a stalled call fails fast so read() can switch to a healthy
+                # sibling model within a sane total wait (a few attempts).
                 HO = getattr(genai_types, 'HttpOptions', None)
                 if HO is not None:
                     try:
-                        client_kwargs['http_options'] = HO(timeout=60000)
+                        client_kwargs['http_options'] = HO(timeout=30000)
                     except Exception:
                         pass
                 self.client = genai.Client(**client_kwargs)
@@ -98,6 +98,7 @@ class GeminiAnalyzer:
     _CAPACITY_MARKERS = (
         'unavailable', 'overloaded', 'high demand', 'resource_exhausted',
         'rate limit', 'try again later', 'internal error', '503', '429', '500',
+        'timed out', 'timeout', 'deadline', 'read timed out',
     )
 
     def _candidate_models(self, exclude=frozenset()) -> list:
@@ -151,7 +152,7 @@ class GeminiAnalyzer:
         alternates = None  # discovered lazily on the first capacity/not-found failure
         thinking_off = True
         tried_thinking_fallback = False
-        for _ in range(6):
+        for _ in range(4):  # ~4 attempts x 30s cap = bounded total wait
             switch = False  # set true to fall through to "try a different model"
             try:
                 resp = self.client.models.generate_content(
