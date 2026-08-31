@@ -605,7 +605,7 @@ def finance_set_income():
     return jsonify({'success': True, 'monthly_gross_income': inc})
 
 
-INCOME_TYPES = {'salary', 'hourly', 'self_employed', 'other'}
+INCOME_SOURCE_TYPES = {'salary', 'hourly', 'self_employed', 'other'}
 INCOME_OWNERS = {'me', 'spouse', 'joint', 'other'}
 PAY_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly'}
 
@@ -619,7 +619,7 @@ def _apply_income_fields(x, d):
         x.owner = o if o in INCOME_OWNERS else 'me'
     if 'type' in d:
         t = (d.get('type') or 'salary').lower()
-        x.type = t if t in INCOME_TYPES else 'salary'
+        x.type = t if t in INCOME_SOURCE_TYPES else 'salary'
     if 'pay_frequency' in d:
         f = (d.get('pay_frequency') or 'biweekly').lower()
         x.pay_frequency = f if f in PAY_FREQUENCIES else 'biweekly'
