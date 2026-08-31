@@ -36,7 +36,9 @@ class ClaudeAnalyzer:
     )
 
     def __init__(self):
-        self.model = getattr(Config, 'ANTHROPIC_MODEL', 'claude-opus-4-8')
+        self.model = getattr(Config, 'ANTHROPIC_MODEL', 'claude-sonnet-5')
+        # High-stakes escalation tier (trading SOP decisions). Callers opt in per call.
+        self.model_high = getattr(Config, 'ANTHROPIC_MODEL_HIGH', 'claude-opus-4-8')
         api_key = getattr(Config, 'ANTHROPIC_API_KEY', '') or ''
         self.client = None
         self.last_error = None
@@ -79,15 +81,20 @@ class ClaudeAnalyzer:
             f"Sector exposure: {sectors or 'unavailable'}\n"
         )
 
-    def read(self, system: str, facts: str, max_tokens: int = 400) -> str | None:
-        """One-shot Claude call. Returns the read text, or None on any failure (caller falls back)."""
+    def read(self, system: str, facts: str, max_tokens: int = 400, model: str | None = None) -> str | None:
+        """One-shot Claude call. Returns the read text, or None on any failure (caller falls back).
+
+        `model` overrides the default (e.g. self.model_high for high-stakes reads). The system
+        prompt is sent as a cache_control block so Anthropic prompt-caching can reuse the static
+        prefix across calls, cutting input cost when the same system prompt repeats within the TTL.
+        """
         if not self.client:
             return None
         try:
             resp = self.client.messages.create(
-                model=self.model,
+                model=model or self.model,
                 max_tokens=max_tokens,
-                system=system,
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": facts}],
             )
             text = "".join(b.text for b in resp.content if b.type == "text").strip()

@@ -27,7 +27,11 @@ class Config:
     # Injected via the k8s secret (envFrom: secretRef); when unset, the app falls
     # back to the local LLM (Ollama/RKLLM), so this is safe to leave empty.
     ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
-    ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-8')
+    # Backbone model for routine reads (finance/tax/portfolio/budget). Sonnet is the
+    # cost/quality sweet spot; Opus ($25/M out) is reserved for the high-stakes trading
+    # SOP decision path via ANTHROPIC_MODEL_HIGH (tier='high' in cached_ai_read).
+    ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-5')
+    ANTHROPIC_MODEL_HIGH = os.getenv('ANTHROPIC_MODEL_HIGH', 'claude-opus-4-8')
 
     # Google AI (Gemini) API — second-opinion engine for holding analysis.
     # Same injection story as ANTHROPIC_API_KEY (k8s secret); safe to leave empty.

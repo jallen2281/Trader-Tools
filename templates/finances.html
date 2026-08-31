@@ -44,16 +44,21 @@
         <div id="outlookTiles" class="fin-grid"><p class="muted" style="padding:16px;">Loading outlook…</p></div>
     </div>
 
-    <!-- Income + AI advisor -->
+    <!-- Income & Pay -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Income &amp; Pay <span class="muted" id="incTotal" style="font-size:0.65em;font-weight:400;"></span></h2>
+            <button class="btn2 primary" onclick="openIncome(null)">+ Add Income</button>
+        </div>
+        <div id="incomeBody"><p class="muted">Loading…</p></div>
+        <div id="paydatesBody" style="margin-top:14px;"></div>
+    </div>
+
+    <!-- AI advisor -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <span class="muted" style="font-size:0.85em;">Monthly gross income</span>
-                <input id="incomeInput" type="number" step="100" class="fin-in" style="width:130px;" placeholder="0">
-                <button class="btn2" onclick="saveIncome()">Save</button>
-                <span id="incMsg" class="muted" style="font-size:0.82em;"></span>
-            </div>
-            <button class="btn2 primary" onclick="askAdvisor('')">🤖 AI Financial Read</button>
+            <h2 style="margin:0;font-size:1.05em;">🤖 AI Financial Read</h2>
+            <button class="btn2 primary" onclick="askAdvisor('')">Generate</button>
         </div>
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
             <input id="advQ" class="fin-in" style="flex:1;min-width:220px;" placeholder="Ask a question — e.g. 'best way to finance a $20k trailer?'">
@@ -91,14 +96,16 @@
     const esc = (s) => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const DEBT_TYPES = ['mortgage','heloc','home_equity','credit_card','auto','personal','student','home_improvement','other'];
     const ACCT_TYPES = ['checking','savings','cash','brokerage','retirement','property','vehicle','other'];
+    const INCOME_TYPES = ['salary','hourly','self_employed','other'];
+    const PAY_FREQS = ['weekly','biweekly','semimonthly','monthly'];
+    const INCOME_OWNERS = ['me','spouse','joint','other'];
     let OUTLOOK = null;
 
     async function loadOutlook() {
         try {
             const r = await fetch('/api/finance/outlook', { credentials:'same-origin' });
             OUTLOOK = await r.json();
-            renderTiles(); renderFire(); renderDebts(); renderAssets();
-            if (OUTLOOK.monthly_gross_income) document.getElementById('incomeInput').value = OUTLOOK.monthly_gross_income;
+            renderTiles(); renderFire(); renderDebts(); renderAssets(); renderIncome();
         } catch(e){ document.getElementById('outlookTiles').innerHTML='<p class="neg" style="padding:16px;">Could not load outlook.</p>'; }
     }
     function renderTiles() {
@@ -148,16 +155,83 @@
         el.innerHTML = html;
     }
 
-    /* income */
-    async function saveIncome() {
-        const v = document.getElementById('incomeInput').value, msg=document.getElementById('incMsg');
-        msg.textContent='Saving…';
-        try {
-            const r = await fetch('/api/finance/income',{method:'PUT',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({monthly_gross_income:parseFloat(v)||0})});
-            if(!r.ok) throw new Error('save failed');
-            msg.textContent='✓'; loadOutlook();
-        } catch(e){ msg.textContent='failed'; }
+    /* income & pay */
+    function renderIncome() {
+        const el=document.getElementById('incomeBody'), rows=OUTLOOK.income_sources||[];
+        document.getElementById('incTotal').textContent = rows.length ? `· ${fmt(OUTLOOK.monthly_gross_income)}/mo · ${fmt(OUTLOOK.annual_gross_income)}/yr gross` : '';
+        if(!rows.length){
+            el.innerHTML='<p class="muted" style="padding:12px;">No income yet. Add a salary or hourly job to power budgeting, DTI, and pay-date planning.</p>';
+        } else {
+            el.innerHTML='<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Source</th><th>Type</th><th style="text-align:right;">Paycheck</th><th style="text-align:right;">Gross/mo</th><th style="text-align:right;">Gross/yr</th><th></th></tr></thead><tbody>'+
+                rows.map(r=>`<tr>
+                    <td><strong>${esc(r.name)}</strong> <span class="muted" style="font-size:0.8em;">${esc(r.owner)}</span></td>
+                    <td>${r.type==='hourly'?`hourly · ${fmt2(r.hourly_rate)}/hr × ${r.hours_per_week}h${r.hours_per_week>r.ot_threshold_hours?` <span class="badge b-inv">OT ${r.ot_multiplier}×</span>`:''}`:esc(r.type.replace('_',' '))}</td>
+                    <td style="text-align:right;">${fmt2(r.paycheck_estimate)}<div class="muted" style="font-size:0.78em;">${esc(r.pay_frequency)}</div></td>
+                    <td style="text-align:right;">${fmt(r.gross_monthly)}</td>
+                    <td style="text-align:right;">${fmt(r.gross_annual)}</td>
+                    <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openIncome(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delIncome(${r.id})">✕</button></td>
+                </tr>`).join('')+'</tbody></table></div>';
+        }
+        const pd=OUTLOOK.upcoming_paydates||[], pdEl=document.getElementById('paydatesBody');
+        pdEl.innerHTML = !pd.length ? '' :
+            '<div class="muted" style="font-size:0.8em;margin-bottom:6px;">Upcoming paychecks</div><div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+            pd.map(p=>`<span class="badge b-inv" title="${esc(p.source)}">${p.date} · ${fmt(p.amount)}</span>`).join('')+'</div>';
     }
+    function incPreview() {
+        const type=document.getElementById('iType').value;
+        const rate=parseFloat(document.getElementById('iRate').value)||0, hrs=parseFloat(document.getElementById('iHours').value)||0;
+        const otm=parseFloat(document.getElementById('iOtMult').value)||1.5, ott=parseFloat(document.getElementById('iOtThresh').value)||40;
+        const sal=parseFloat(document.getElementById('iSalary').value)||0;
+        let annual;
+        if(type==='hourly'){ const reg=Math.min(hrs,ott), ot=Math.max(0,hrs-ott); annual=(reg*rate+ot*rate*otm)*52; } else annual=sal;
+        const periods={weekly:52,biweekly:26,semimonthly:24,monthly:12}[document.getElementById('iFreq').value]||26;
+        document.getElementById('iPreview').innerHTML=`Gross: <strong>${fmt(annual/12)}/mo</strong> · ${fmt(annual)}/yr · <strong>${fmt2(annual/periods)}</strong>/paycheck`;
+    }
+    function toggleIncFields() {
+        const hourly=document.getElementById('iType').value==='hourly';
+        document.getElementById('iHourlyBox').style.display=hourly?'block':'none';
+        document.getElementById('iSalaryBox').style.display=hourly?'none':'block';
+        incPreview();
+    }
+    function openIncome(x) {
+        const e=x||{owner:'me',type:'salary',pay_frequency:'biweekly',ot_multiplier:1.5,ot_threshold_hours:40,hours_per_week:40};
+        showModal(`<h2 style="margin:0 0 8px;">${x?'Edit':'Add'} Income</h2>
+            <label class="fld">Name</label><input id="iName" class="fin-in" style="width:100%;" value="${esc(e.name||'')}" placeholder="e.g. Acme Corp — salary">
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Owner</label><select id="iOwner" class="fin-in" style="width:100%;">${INCOME_OWNERS.map(o=>`<option ${e.owner===o?'selected':''}>${o}</option>`).join('')}</select></div>
+              <div style="flex:1;"><label class="fld">Type</label><select id="iType" class="fin-in" style="width:100%;" onchange="toggleIncFields()">${INCOME_TYPES.map(t=>`<option value="${t}" ${e.type===t?'selected':''}>${t.replace('_',' ')}</option>`).join('')}</select></div>
+            </div>
+            <div id="iSalaryBox"><label class="fld">Annual salary $</label><input id="iSalary" type="number" step="1000" class="fin-in" style="width:100%;" value="${e.annual_salary||0}" oninput="incPreview()"></div>
+            <div id="iHourlyBox">
+              <div style="display:flex;gap:10px;">
+                <div style="flex:1;"><label class="fld">Rate $/hr</label><input id="iRate" type="number" step="0.25" class="fin-in" style="width:100%;" value="${e.hourly_rate||0}" oninput="incPreview()"></div>
+                <div style="flex:1;"><label class="fld">Hours/week</label><input id="iHours" type="number" step="0.5" class="fin-in" style="width:100%;" value="${e.hours_per_week||40}" oninput="incPreview()"></div>
+              </div>
+              <div style="display:flex;gap:10px;">
+                <div style="flex:1;"><label class="fld">OT after (hrs)</label><input id="iOtThresh" type="number" step="1" class="fin-in" style="width:100%;" value="${e.ot_threshold_hours||40}" oninput="incPreview()"></div>
+                <div style="flex:1;"><label class="fld">OT multiplier</label><input id="iOtMult" type="number" step="0.1" class="fin-in" style="width:100%;" value="${e.ot_multiplier||1.5}" oninput="incPreview()"></div>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Pay frequency</label><select id="iFreq" class="fin-in" style="width:100%;" onchange="incPreview()">${PAY_FREQS.map(f=>`<option ${e.pay_frequency===f?'selected':''}>${f}</option>`).join('')}</select></div>
+              <div style="flex:1;"><label class="fld">Next pay date</label><input id="iNext" type="date" class="fin-in" style="width:100%;" value="${e.next_pay_date||''}"></div>
+            </div>
+            <div id="iPreview" class="muted" style="margin-top:10px;font-size:0.85em;"></div>
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveIncome(${x?x.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="iMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+        toggleIncFields();
+    }
+    async function saveIncome(id) {
+        const g=i=>document.getElementById(i);
+        const body={name:g('iName').value.trim(),owner:g('iOwner').value,type:g('iType').value,
+            annual_salary:parseFloat(g('iSalary').value)||0,hourly_rate:parseFloat(g('iRate').value)||0,
+            hours_per_week:parseFloat(g('iHours').value)||0,ot_multiplier:parseFloat(g('iOtMult').value)||1.5,
+            ot_threshold_hours:parseFloat(g('iOtThresh').value)||40,pay_frequency:g('iFreq').value,next_pay_date:g('iNext').value};
+        if(!body.name){ g('iMsg').textContent='Name required'; return; }
+        try{ const r=await fetch(id?`/api/finance/incomes/${id}`:'/api/finance/incomes',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
+            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadOutlook();
+        }catch(e){ g('iMsg').textContent=e.message; }
+    }
+    async function delIncome(id){ if(!confirm('Delete this income source?'))return; await fetch(`/api/finance/incomes/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
 
     /* AI advisor */
     async function askAdvisor(q) {

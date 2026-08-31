@@ -5,8 +5,17 @@ Phase 2: SQLAlchemy ORM Models
 
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from sqlalchemy import JSON
+
+
+def _add_one_month(d):
+    """d + 1 calendar month, clamping the day to the target month's length."""
+    y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+    # days in target month
+    nm_y, nm_m = (y + 1, 1) if m == 12 else (y, m + 1)
+    last_day = (date(nm_y, nm_m, 1) - timedelta(days=1)).day
+    return date(y, m, min(d.day, last_day))
 
 db = SQLAlchemy()
 
@@ -875,6 +884,116 @@ class Debt(db.Model):
             'min_payment': float(self.min_payment or 0), 'secured': bool(self.secured),
             'monthly_interest': self.monthly_interest(), 'notes': self.notes,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class IncomeSource(db.Model):
+    """One income stream for the finances module — a salaried or hourly job (per person).
+    Hourly folds overtime at ot_multiplier for hours beyond ot_threshold_hours. Feeds the
+    net-worth/DTI outlook, the pay-date calendar, and (Phase 3) the income-tax estimate."""
+    __tablename__ = 'income_sources'
+
+    PAY_PERIODS = {'weekly': 52, 'biweekly': 26, 'semimonthly': 24, 'monthly': 12}
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    owner = db.Column(db.String(20), default='me')     # me|spouse|joint|other
+    type = db.Column(db.String(20), default='salary')  # salary|hourly|self_employed|other
+    annual_salary = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    hourly_rate = db.Column(db.Numeric(9, 2, asdecimal=False), default=0)
+    hours_per_week = db.Column(db.Numeric(6, 2, asdecimal=False), default=40)
+    ot_multiplier = db.Column(db.Numeric(4, 2, asdecimal=False), default=1.5)
+    ot_threshold_hours = db.Column(db.Numeric(6, 2, asdecimal=False), default=40)
+    pay_frequency = db.Column(db.String(15), default='biweekly')
+    next_pay_date = db.Column(db.Date)
+    active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def weekly_gross(self):
+        """Hourly weekly gross incl. overtime; salary → its equivalent weekly slice."""
+        if self.type == 'hourly':
+            rate = float(self.hourly_rate or 0)
+            hrs = float(self.hours_per_week or 0)
+            thr = float(self.ot_threshold_hours or 40)
+            reg = min(hrs, thr)
+            ot = max(0.0, hrs - thr)
+            return round(reg * rate + ot * rate * float(self.ot_multiplier or 1.5), 2)
+        return round(self.gross_annual() / 52.0, 2)
+
+    def gross_annual(self):
+        if self.type == 'hourly':
+            rate = float(self.hourly_rate or 0)
+            hrs = float(self.hours_per_week or 0)
+            thr = float(self.ot_threshold_hours or 40)
+            reg = min(hrs, thr)
+            ot = max(0.0, hrs - thr)
+            return round((reg * rate + ot * rate * float(self.ot_multiplier or 1.5)) * 52.0, 2)
+        return round(float(self.annual_salary or 0), 2)
+
+    def gross_monthly(self):
+        return round(self.gross_annual() / 12.0, 2)
+
+    def paycheck_estimate(self):
+        """Gross per paycheck for the pay frequency (annual ÷ periods)."""
+        periods = self.PAY_PERIODS.get(self.pay_frequency, 26)
+        return round(self.gross_annual() / periods, 2)
+
+    def upcoming_paydates(self, n=6):
+        if not self.next_pay_date:
+            return []
+        out, d, freq = [], self.next_pay_date, self.pay_frequency
+        for _ in range(n):
+            out.append(d)
+            if freq == 'weekly':
+                d = d + timedelta(days=7)
+            elif freq == 'biweekly':
+                d = d + timedelta(days=14)
+            elif freq == 'semimonthly':
+                # Anchor to the 1st and 15th; step to the next such date.
+                d = date(d.year, d.month, 15) if d.day < 15 else _add_one_month(date(d.year, d.month, 1))
+            else:  # monthly
+                d = _add_one_month(d)
+        return out
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'name': self.name, 'owner': self.owner, 'type': self.type,
+            'annual_salary': float(self.annual_salary or 0), 'hourly_rate': float(self.hourly_rate or 0),
+            'hours_per_week': float(self.hours_per_week or 0), 'ot_multiplier': float(self.ot_multiplier or 1.5),
+            'ot_threshold_hours': float(self.ot_threshold_hours or 40), 'pay_frequency': self.pay_frequency,
+            'next_pay_date': self.next_pay_date.isoformat() if self.next_pay_date else None,
+            'active': bool(self.active),
+            'weekly_gross': self.weekly_gross(), 'gross_monthly': self.gross_monthly(),
+            'gross_annual': self.gross_annual(), 'paycheck_estimate': self.paycheck_estimate(),
+            'upcoming_paydates': [d.isoformat() for d in self.upcoming_paydates(4)],
+        }
+
+
+class AIInsight(db.Model):
+    """Cached AI read. Keyed by (user_id, kind, input_hash) where input_hash covers the
+    model + system + facts, so an unchanged request within its TTL is served from here
+    instead of re-calling the (paid) model. This is the main AI cost control — most page
+    views hit the cache and spend nothing."""
+    __tablename__ = 'ai_insights'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    kind = db.Column(db.String(40), nullable=False, index=True)  # finance_outlook|tax|budget|portfolio|sop|...
+    input_hash = db.Column(db.String(64), nullable=False, index=True)  # sha256(model|system|facts)
+    engine = db.Column(db.String(20))   # claude|gemini|local
+    model = db.Column(db.String(60))
+    content = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, index=True)
+
+    __table_args__ = (db.Index('ix_ai_insights_lookup', 'user_id', 'kind', 'input_hash'),)
+
+    def to_dict(self):
+        return {
+            'read': self.content, 'engine': self.engine, 'model': self.model,
+            'cached': True, 'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 
 

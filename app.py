@@ -21,13 +21,14 @@ from tax_analyzer import TaxAnalyzer
 from config import Config
 from datetime import datetime, timedelta
 import json
+import hashlib
 import traceback
 import pandas as pd
 import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -232,6 +233,61 @@ except Exception as e:
     logger.error(f"✗ Failed to initialize LLMAnalyzer: {e}")
     raise
 
+
+def cached_ai_read(user_id, kind, system, facts, *, ttl_minutes=360, tier='default',
+                   max_tokens=500, refresh=False):
+    """Cost-controlled AI read: Claude → Gemini → local, memoized in AIInsight.
+
+    The result is keyed by sha256(model|system|facts); an unchanged request within
+    ttl_minutes is served from the DB with NO model call (the main AI cost control).
+    tier='high' escalates the Claude call to the Opus model for high-stakes reasoning.
+    Returns a dict shaped like the endpoints' JSON: {read, engine, model, cached}.
+    Pass refresh=True (e.g. from ?refresh=1) to force a regeneration.
+    """
+    model = claude_analyzer.model_high if tier == 'high' else claude_analyzer.model
+    input_hash = hashlib.sha256(f"{model}\x1f{system}\x1f{facts}".encode('utf-8')).hexdigest()
+    now = datetime.utcnow()
+
+    if not refresh:
+        try:
+            hit = (AIInsight.query
+                   .filter_by(user_id=user_id, kind=kind, input_hash=input_hash)
+                   .filter(AIInsight.expires_at > now)
+                   .order_by(AIInsight.created_at.desc()).first())
+            if hit:
+                return hit.to_dict()
+        except Exception as e:
+            logger.warning(f"cached_ai_read lookup failed ({kind}): {e}")
+
+    # Miss (or forced refresh) — run the fallback chain.
+    read = claude_analyzer.read(system, facts, max_tokens=max_tokens, model=model)
+    engine, used_model = ('claude', model) if read else (None, None)
+    if not read:
+        read = gemini_analyzer.read(system, facts)
+        engine, used_model = ('gemini', gemini_analyzer._resolved_model or gemini_analyzer.model) if read else (None, None)
+    if not read:
+        try:
+            local = llm_analyzer._call_llm([{'role': 'user', 'content': system + '\n\n' + facts}], timeout=60)
+            if local and not (local.lstrip().startswith("{'") or "'choices'" in local or 'rkllm_chat' in local):
+                read, engine, used_model = local, 'local', getattr(Config, 'FALLBACK_MODEL', 'local')
+        except Exception as e:
+            logger.warning(f"cached_ai_read local fallback failed ({kind}): {e}")
+    if not read:
+        return {'empty': True, 'message': 'AI is unavailable right now.', 'cached': False}
+
+    read = read.strip()
+    try:
+        db.session.add(AIInsight(
+            user_id=user_id, kind=kind, input_hash=input_hash, engine=engine,
+            model=used_model, content=read, created_at=now,
+            expires_at=now + timedelta(minutes=ttl_minutes)))
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"cached_ai_read store failed ({kind}): {e}")
+    return {'read': read, 'engine': engine, 'model': used_model, 'cached': False}
+
+
 # Initialize Trade Journal after LLM Analyzer (Feature #5)
 if PHASE4_ENABLED and PHASE2_ENABLED:
     try:
@@ -384,11 +440,36 @@ DEBT_TYPES = {'mortgage', 'heloc', 'home_equity', 'credit_card', 'auto', 'person
 
 
 def _finance_income(user):
-    """User's stored monthly gross income (from preferences), 0 if unset."""
+    """Monthly gross income: sum of the user's active IncomeSource rows, falling back to
+    the legacy preferences.monthlyGrossIncome number for users who haven't added sources."""
+    try:
+        rows = IncomeSource.query.filter_by(user_id=user.id, active=True).all()
+        if rows:
+            return round(sum(r.gross_monthly() for r in rows), 2)
+    except Exception as e:
+        logger.warning(f"_finance_income source sum failed: {e}")
     try:
         return float((user.preferences or {}).get('monthlyGrossIncome') or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _seed_income_from_prefs(user):
+    """One-time migration: if the user has a legacy preferences.monthlyGrossIncome but no
+    IncomeSource rows yet, seed a single salaried source so the new UI shows their income."""
+    try:
+        if IncomeSource.query.filter_by(user_id=user.id).first():
+            return
+        monthly = float((user.preferences or {}).get('monthlyGrossIncome') or 0)
+        if monthly <= 0:
+            return
+        db.session.add(IncomeSource(
+            user_id=user.id, name='Primary income', owner='me', type='salary',
+            annual_salary=round(monthly * 12.0, 2), pay_frequency='biweekly'))
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"_seed_income_from_prefs failed: {e}")
 
 
 @app.route('/api/finance/accounts', methods=['GET'])
@@ -524,6 +605,91 @@ def finance_set_income():
     return jsonify({'success': True, 'monthly_gross_income': inc})
 
 
+INCOME_TYPES = {'salary', 'hourly', 'self_employed', 'other'}
+INCOME_OWNERS = {'me', 'spouse', 'joint', 'other'}
+PAY_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly'}
+
+
+def _apply_income_fields(x, d):
+    """Copy validated income fields from request dict d onto IncomeSource x."""
+    if 'name' in d and (d.get('name') or '').strip():
+        x.name = d['name'].strip()[:120]
+    if 'owner' in d:
+        o = (d.get('owner') or 'me').lower()
+        x.owner = o if o in INCOME_OWNERS else 'me'
+    if 'type' in d:
+        t = (d.get('type') or 'salary').lower()
+        x.type = t if t in INCOME_TYPES else 'salary'
+    if 'pay_frequency' in d:
+        f = (d.get('pay_frequency') or 'biweekly').lower()
+        x.pay_frequency = f if f in PAY_FREQUENCIES else 'biweekly'
+    for f in ('annual_salary', 'hourly_rate', 'hours_per_week', 'ot_multiplier', 'ot_threshold_hours'):
+        if f in d:
+            try:
+                setattr(x, f, float(d.get(f) or 0))
+            except (TypeError, ValueError):
+                pass
+    if 'next_pay_date' in d:
+        npd = (d.get('next_pay_date') or '').strip()
+        try:
+            x.next_pay_date = datetime.strptime(npd, '%Y-%m-%d').date() if npd else None
+        except ValueError:
+            x.next_pay_date = None
+    if 'active' in d:
+        x.active = bool(d.get('active'))
+
+
+@app.route('/api/finance/incomes', methods=['GET'])
+@require_api_auth
+def finance_list_incomes():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    user = User.query.get(uid)
+    _seed_income_from_prefs(user)  # one-time migration of the legacy single number
+    rows = IncomeSource.query.filter_by(user_id=uid).order_by(IncomeSource.created_at).all()
+    return jsonify({
+        'incomes': [r.to_dict() for r in rows],
+        'total_gross_monthly': round(sum(r.gross_monthly() for r in rows if r.active), 2),
+        'total_gross_annual': round(sum(r.gross_annual() for r in rows if r.active), 2),
+    })
+
+
+@app.route('/api/finance/incomes', methods=['POST'])
+@require_api_auth
+def finance_create_income():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json() or {}
+    name = (d.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    x = IncomeSource(user_id=uid, name=name[:120])
+    _apply_income_fields(x, d)
+    db.session.add(x)
+    db.session.commit()
+    return jsonify(x.to_dict()), 201
+
+
+@app.route('/api/finance/incomes/<int:iid>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def finance_modify_income(iid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    x = IncomeSource.query.filter_by(id=iid, user_id=uid).first()
+    if not x:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        db.session.delete(x)
+        db.session.commit()
+        return jsonify({'success': True})
+    _apply_income_fields(x, request.get_json() or {})
+    db.session.commit()
+    return jsonify(x.to_dict())
+
+
 def _finance_outlook(user_id):
     """Assemble the whole-picture outlook: assets (manual + investment accounts),
     debts, net worth, DTI, monthly debt service, blended APR, and interest drain."""
@@ -561,6 +727,14 @@ def _finance_outlook(user_id):
     income = _finance_income(user)
     dti = round(monthly_debt_service / income * 100, 1) if income else None
 
+    # Income sources + upcoming pay dates (merged across sources, soonest first).
+    income_rows = IncomeSource.query.filter_by(user_id=user_id, active=True).all()
+    paydates = []
+    for r in income_rows:
+        for d in r.upcoming_paydates(4):
+            paydates.append({'date': d.isoformat(), 'source': r.name, 'amount': r.paycheck_estimate()})
+    paydates.sort(key=lambda p: p['date'])
+
     # Highlight the single most expensive debt (highest APR with a balance)
     worst = max((x for x in debts if float(x.balance or 0) > 0), key=lambda x: float(x.apr or 0), default=None)
 
@@ -575,11 +749,14 @@ def _finance_outlook(user_id):
         'annual_interest': round(monthly_interest * 12, 2),
         'blended_apr': blended_apr,
         'monthly_gross_income': income,
+        'annual_gross_income': round(income * 12, 2),
         'dti': dti,
         'accounts': [a.to_dict() for a in manual],
         'investment_accounts': inv_accounts,
         'debts': [x.to_dict() for x in debts],
         'worst_debt': (worst.to_dict() if worst else None),
+        'income_sources': [r.to_dict() for r in income_rows],
+        'upcoming_paydates': paydates[:8],
     }
 
 
@@ -629,14 +806,12 @@ def finance_ai_read():
             "numbers. 6-10 sentences. End with one line: this is general education, not licensed financial advice — verify "
             "actual loan APRs and consider a fee-only advisor for big moves."
         )
-        read = claude_analyzer.read(system, facts, max_tokens=750)
-        engine = 'claude' if read else None
-        if not read:
-            read = gemini_analyzer.read(system, facts)
-            engine = 'gemini' if read else None
-        if not read:
+        refresh = request.args.get('refresh') == '1' or bool((request.get_json(silent=True) or {}).get('refresh'))
+        out = cached_ai_read(uid, 'finance_outlook', system, facts,
+                             ttl_minutes=360, max_tokens=750, refresh=refresh)
+        if out.get('empty'):
             return jsonify({'empty': True, 'message': 'AI advisor is unavailable right now.'}), 200
-        return jsonify({'read': read.strip(), 'engine': engine}), 200
+        return jsonify(out), 200
     except Exception as e:
         logger.error(f"Error in finance ai-read: {e}", exc_info=True)
         return jsonify({'error': str(e), 'empty': True, 'message': 'AI advisor temporarily unavailable'}), 200
@@ -1508,21 +1683,13 @@ def get_tax_ai_read():
             "actual 1099s and a CPA."
         )
 
-        read = claude_analyzer.read(system, facts, max_tokens=700)
-        engine = 'claude' if read else None
-        if not read:
-            read = gemini_analyzer.read(system, facts)
-            engine = 'gemini' if read else None
-        if not read:
-            try:
-                local = llm_analyzer._call_llm([{'role': 'user', 'content': system + '\n\n' + facts}], timeout=60)
-                if local and not (local.lstrip().startswith("{'") or "'choices'" in local or 'rkllm_chat' in local):
-                    read, engine = local, 'local'
-            except Exception as e:
-                logger.warning(f"Local LLM fallback failed for tax ai-read: {e}")
-        if not read:
+        refresh = request.args.get('refresh') == '1'
+        out = cached_ai_read(user_id, 'tax', system, facts,
+                             ttl_minutes=360, max_tokens=700, refresh=refresh)
+        if out.get('empty'):
             return jsonify({'empty': True, 'message': 'AI tax read unavailable right now.'}), 200
-        return jsonify({'read': read.strip(), 'engine': engine, 'year': year}), 200
+        out['year'] = year
+        return jsonify(out), 200
     except Exception as e:
         logger.error(f"Error in tax ai-read: {e}", exc_info=True)
         return jsonify({'error': str(e), 'empty': True, 'message': 'AI tax read temporarily unavailable'}), 200
