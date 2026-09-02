@@ -154,18 +154,9 @@ nodeSelector: {}
 tolerations: []
 
 affinity:
-  # Keep trader-tools off node1: its host resolver SERVFAILs ghcr.io, so containerd
-  # there can't pull images and any pod scheduled on it wedges in ImagePullBackOff.
-  # This is app-scheduling only — node1 is untouched and keeps running other workloads.
-  # Remove this block once node1's DNS is fixed.
-  nodeAffinity:
-    requiredDuringSchedulingIgnoredDuringExecution:
-      nodeSelectorTerms:
-        - matchExpressions:
-            - key: kubernetes.io/hostname
-              operator: NotIn
-              values:
-                - node1
+  # (Removed the node1 exclusion — node1 was rebooted and is healthy again; the
+  # cluster DNS issue was fixed. maxUnavailable:1 + maxSurge:2 keeps rollouts
+  # resilient to any single node that can't pull, so no per-node exclusion is needed.)
   podAntiAffinity:
     preferredDuringSchedulingIgnoredDuringExecution:
       - weight: 100
