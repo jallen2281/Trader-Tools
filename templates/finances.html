@@ -99,6 +99,7 @@
     const INCOME_TYPES = ['salary','hourly','self_employed','other'];
     const PAY_FREQS = ['weekly','biweekly','semimonthly','monthly'];
     const INCOME_OWNERS = ['me','spouse','joint','other'];
+    const INCOME_TAX_FORMS = ['W2','1099','none'];
     let OUTLOOK = null;
 
     async function loadOutlook() {
@@ -158,48 +159,79 @@
     /* income & pay */
     function renderIncome() {
         const el=document.getElementById('incomeBody'), rows=OUTLOOK.income_sources||[];
-        document.getElementById('incTotal').textContent = rows.length ? `· ${fmt(OUTLOOK.monthly_gross_income)}/mo · ${fmt(OUTLOOK.annual_gross_income)}/yr gross` : '';
+        let head = rows.length ? `· ${fmt(OUTLOOK.monthly_gross_income)}/mo · ${fmt(OUTLOOK.annual_gross_income)}/yr gross` : '';
+        if ((OUTLOOK.monthly_tax_setaside||0) > 0) head += ` · set aside ${fmt(OUTLOOK.monthly_tax_setaside)}/mo for taxes → ${fmt(OUTLOOK.monthly_net_income)}/mo net`;
+        document.getElementById('incTotal').textContent = head;
         if(!rows.length){
-            el.innerHTML='<p class="muted" style="padding:12px;">No income yet. Add a salary or hourly job to power budgeting, DTI, and pay-date planning.</p>';
+            el.innerHTML='<p class="muted" style="padding:12px;">No income yet. Add a salary, hourly, or commission (1099) source to power budgeting, DTI, and pay planning.</p>';
         } else {
-            el.innerHTML='<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Source</th><th>Type</th><th style="text-align:right;">Paycheck</th><th style="text-align:right;">Gross/mo</th><th style="text-align:right;">Gross/yr</th><th></th></tr></thead><tbody>'+
-                rows.map(r=>`<tr>
+            el.innerHTML='<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Source</th><th>Type</th><th style="text-align:right;">Paycheck / basis</th><th style="text-align:right;">Gross/mo</th><th style="text-align:right;">Gross/yr</th><th></th></tr></thead><tbody>'+
+                rows.map(r=>{
+                    const taxBadge = r.tax_form==='1099' ? ' <span class="badge b-secured">1099</span>' : (r.tax_form==='none' ? ' <span class="badge">untaxed</span>' : '');
+                    let typeCell, basisCell;
+                    if(r.irregular){
+                        typeCell = `commission${taxBadge}`;
+                        basisCell = `<button class="link-btn" onclick='openIncomeEvents(${JSON.stringify(r)})'>log / view $</button><div class="muted" style="font-size:0.78em;">YTD ${fmt(r.ytd_received)} · 12mo ${fmt(r.trailing_12mo_received)}</div>`;
+                    } else if(r.type==='hourly'){
+                        typeCell = `hourly${taxBadge} · ${fmt2(r.hourly_rate)}/hr × ${r.hours_per_week}h${r.hours_per_week>r.ot_threshold_hours?` <span class="badge b-inv">OT ${r.ot_multiplier}×</span>`:''}`;
+                        basisCell = `${fmt2(r.paycheck_estimate)}<div class="muted" style="font-size:0.78em;">${esc(r.pay_frequency)}</div>`;
+                    } else {
+                        typeCell = `${esc(r.type.replace('_',' '))}${taxBadge}`;
+                        basisCell = `${fmt2(r.paycheck_estimate)}<div class="muted" style="font-size:0.78em;">${esc(r.pay_frequency)}</div>`;
+                    }
+                    const setaside = r.tax_setaside_monthly>0 ? `<div class="muted" style="font-size:0.75em;">−${fmt(r.tax_setaside_monthly)} tax</div>` : '';
+                    return `<tr>
                     <td><strong>${esc(r.name)}</strong> <span class="muted" style="font-size:0.8em;">${esc(r.owner)}</span></td>
-                    <td>${r.type==='hourly'?`hourly · ${fmt2(r.hourly_rate)}/hr × ${r.hours_per_week}h${r.hours_per_week>r.ot_threshold_hours?` <span class="badge b-inv">OT ${r.ot_multiplier}×</span>`:''}`:esc(r.type.replace('_',' '))}</td>
-                    <td style="text-align:right;">${fmt2(r.paycheck_estimate)}<div class="muted" style="font-size:0.78em;">${esc(r.pay_frequency)}</div></td>
-                    <td style="text-align:right;">${fmt(r.gross_monthly)}</td>
+                    <td>${typeCell}</td>
+                    <td style="text-align:right;">${basisCell}</td>
+                    <td style="text-align:right;">${fmt(r.gross_monthly)}${setaside}</td>
                     <td style="text-align:right;">${fmt(r.gross_annual)}</td>
                     <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openIncome(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delIncome(${r.id})">✕</button></td>
-                </tr>`).join('')+'</tbody></table></div>';
+                </tr>`;}).join('')+'</tbody></table></div>';
         }
         const pd=OUTLOOK.upcoming_paydates||[], pdEl=document.getElementById('paydatesBody');
         pdEl.innerHTML = !pd.length ? '' :
-            '<div class="muted" style="font-size:0.8em;margin-bottom:6px;">Upcoming paychecks</div><div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+            '<div class="muted" style="font-size:0.8em;margin-bottom:6px;">Upcoming paychecks (scheduled income)</div><div style="display:flex;gap:8px;flex-wrap:wrap;">'+
             pd.map(p=>`<span class="badge b-inv" title="${esc(p.source)}">${p.date} · ${fmt(p.amount)}</span>`).join('')+'</div>';
     }
     function incPreview() {
-        const type=document.getElementById('iType').value;
-        const rate=parseFloat(document.getElementById('iRate').value)||0, hrs=parseFloat(document.getElementById('iHours').value)||0;
-        const otm=parseFloat(document.getElementById('iOtMult').value)||1.5, ott=parseFloat(document.getElementById('iOtThresh').value)||40;
-        const sal=parseFloat(document.getElementById('iSalary').value)||0;
+        const g=i=>document.getElementById(i);
+        const irr=g('iIrregular').checked, type=g('iType').value, is1099=g('iTaxForm').value==='1099';
         let annual;
-        if(type==='hourly'){ const reg=Math.min(hrs,ott), ot=Math.max(0,hrs-ott); annual=(reg*rate+ot*rate*otm)*52; } else annual=sal;
-        const periods={weekly:52,biweekly:26,semimonthly:24,monthly:12}[document.getElementById('iFreq').value]||26;
-        document.getElementById('iPreview').innerHTML=`Gross: <strong>${fmt(annual/12)}/mo</strong> · ${fmt(annual)}/yr · <strong>${fmt2(annual/periods)}</strong>/paycheck`;
+        if(irr){ annual=parseFloat(g('iEstAnnual').value)||0; }
+        else if(type==='hourly'){ const rate=parseFloat(g('iRate').value)||0, hrs=parseFloat(g('iHours').value)||0, otm=parseFloat(g('iOtMult').value)||1.5, ott=parseFloat(g('iOtThresh').value)||40; const reg=Math.min(hrs,ott), ot=Math.max(0,hrs-ott); annual=(reg*rate+ot*rate*otm)*52; }
+        else annual=parseFloat(g('iSalary').value)||0;
+        const rate=parseFloat(g('iTaxRate').value)||0;
+        const setaside = is1099 ? annual*rate/100 : 0;
+        let s=`Gross: <strong>${fmt(annual/12)}/mo</strong> · ${fmt(annual)}/yr`;
+        if(!irr){ const periods={weekly:52,biweekly:26,semimonthly:24,monthly:12}[g('iFreq').value]||26; s+=` · <strong>${fmt2(annual/periods)}</strong>/paycheck`; }
+        else { s+=` <span class="muted">(annualized${(parseFloat(g('iEstAnnual').value)||0)>0?' from your estimate; logged payments override once entered':''})</span>`; }
+        if(setaside>0) s+=`<br>Set aside ~${rate}% for taxes: <strong>${fmt(setaside/12)}/mo</strong> → net <strong>${fmt((annual-setaside)/12)}/mo</strong>`;
+        g('iPreview').innerHTML=s;
     }
     function toggleIncFields() {
-        const hourly=document.getElementById('iType').value==='hourly';
-        document.getElementById('iHourlyBox').style.display=hourly?'block':'none';
-        document.getElementById('iSalaryBox').style.display=hourly?'none':'block';
+        const g=i=>document.getElementById(i);
+        const irr=g('iIrregular').checked, hourly=g('iType').value==='hourly', is1099=g('iTaxForm').value==='1099';
+        g('iIrregularBox').style.display=irr?'block':'none';
+        g('iScheduleBox').style.display=irr?'none':'block';
+        g('iSalaryBox').style.display=(!irr && !hourly)?'block':'none';
+        g('iHourlyBox').style.display=(!irr && hourly)?'block':'none';
+        g('iTaxRateBox').style.display=is1099?'block':'none';
         incPreview();
     }
     function openIncome(x) {
-        const e=x||{owner:'me',type:'salary',pay_frequency:'biweekly',ot_multiplier:1.5,ot_threshold_hours:40,hours_per_week:40};
+        const e=x||{owner:'me',type:'salary',tax_form:'W2',pay_frequency:'biweekly',ot_multiplier:1.5,ot_threshold_hours:40,hours_per_week:40,est_tax_rate:28,irregular:false};
         showModal(`<h2 style="margin:0 0 8px;">${x?'Edit':'Add'} Income</h2>
-            <label class="fld">Name</label><input id="iName" class="fin-in" style="width:100%;" value="${esc(e.name||'')}" placeholder="e.g. Acme Corp — salary">
+            <label class="fld">Name</label><input id="iName" class="fin-in" style="width:100%;" value="${esc(e.name||'')}" placeholder="e.g. Acme Corp — salary, or Realty commissions">
             <div style="display:flex;gap:10px;">
               <div style="flex:1;"><label class="fld">Owner</label><select id="iOwner" class="fin-in" style="width:100%;">${INCOME_OWNERS.map(o=>`<option ${e.owner===o?'selected':''}>${o}</option>`).join('')}</select></div>
               <div style="flex:1;"><label class="fld">Type</label><select id="iType" class="fin-in" style="width:100%;" onchange="toggleIncFields()">${INCOME_TYPES.map(t=>`<option value="${t}" ${e.type===t?'selected':''}>${t.replace('_',' ')}</option>`).join('')}</select></div>
+              <div style="flex:1;"><label class="fld">Tax form</label><select id="iTaxForm" class="fin-in" style="width:100%;" onchange="toggleIncFields()">${INCOME_TAX_FORMS.map(t=>`<option ${e.tax_form===t?'selected':''}>${t}</option>`).join('')}</select></div>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:0.9em;"><input type="checkbox" id="iIrregular" ${e.irregular?'checked':''} onchange="toggleIncFields()"> Irregular income (commission / per-deal — no fixed schedule or amount)</label>
+            <div id="iIrregularBox">
+              <label class="fld">Estimated annual $ <span class="muted">(planning figure until you log payments)</span></label>
+              <input id="iEstAnnual" type="number" step="1000" class="fin-in" style="width:100%;" value="${e.estimated_annual||0}" oninput="incPreview()">
             </div>
             <div id="iSalaryBox"><label class="fld">Annual salary $</label><input id="iSalary" type="number" step="1000" class="fin-in" style="width:100%;" value="${e.annual_salary||0}" oninput="incPreview()"></div>
             <div id="iHourlyBox">
@@ -212,17 +244,19 @@
                 <div style="flex:1;"><label class="fld">OT multiplier</label><input id="iOtMult" type="number" step="0.1" class="fin-in" style="width:100%;" value="${e.ot_multiplier||1.5}" oninput="incPreview()"></div>
               </div>
             </div>
-            <div style="display:flex;gap:10px;">
+            <div id="iScheduleBox" style="display:flex;gap:10px;">
               <div style="flex:1;"><label class="fld">Pay frequency</label><select id="iFreq" class="fin-in" style="width:100%;" onchange="incPreview()">${PAY_FREQS.map(f=>`<option ${e.pay_frequency===f?'selected':''}>${f}</option>`).join('')}</select></div>
               <div style="flex:1;"><label class="fld">Next pay date</label><input id="iNext" type="date" class="fin-in" style="width:100%;" value="${e.next_pay_date||''}"></div>
             </div>
+            <div id="iTaxRateBox"><label class="fld">Tax set-aside % <span class="muted">(1099 — covers income + ~15.3% self-employment tax; ~25–30% typical)</span></label><input id="iTaxRate" type="number" step="1" class="fin-in" style="width:100%;" value="${e.est_tax_rate||28}" oninput="incPreview()"></div>
             <div id="iPreview" class="muted" style="margin-top:10px;font-size:0.85em;"></div>
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveIncome(${x?x.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="iMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
         toggleIncFields();
     }
     async function saveIncome(id) {
         const g=i=>document.getElementById(i);
-        const body={name:g('iName').value.trim(),owner:g('iOwner').value,type:g('iType').value,
+        const body={name:g('iName').value.trim(),owner:g('iOwner').value,type:g('iType').value,tax_form:g('iTaxForm').value,
+            irregular:g('iIrregular').checked,estimated_annual:parseFloat(g('iEstAnnual').value)||0,est_tax_rate:parseFloat(g('iTaxRate').value)||0,
             annual_salary:parseFloat(g('iSalary').value)||0,hourly_rate:parseFloat(g('iRate').value)||0,
             hours_per_week:parseFloat(g('iHours').value)||0,ot_multiplier:parseFloat(g('iOtMult').value)||1.5,
             ot_threshold_hours:parseFloat(g('iOtThresh').value)||40,pay_frequency:g('iFreq').value,next_pay_date:g('iNext').value};
@@ -232,6 +266,40 @@
         }catch(e){ g('iMsg').textContent=e.message; }
     }
     async function delIncome(id){ if(!confirm('Delete this income source?'))return; await fetch(`/api/finance/incomes/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
+
+    /* irregular-income payments log (commission checks) */
+    function openIncomeEvents(src) {
+        const evs=src.events||[];
+        const rows = evs.length ? evs.map(e=>`<tr><td>${e.date}</td><td>${esc(e.description||'')}</td><td style="text-align:right;">${fmt2(e.gross_amount)}</td><td style="text-align:right;"><button class="link-btn danger" onclick="delIncomeEvent(${src.id},${e.id})">✕</button></td></tr>`).join('')
+            : '<tr><td colspan="4" class="muted" style="padding:8px;text-align:center;">No payments logged yet.</td></tr>';
+        const today=new Date().toISOString().slice(0,10);
+        showModal(`<h2 style="margin:0 0 4px;">${esc(src.name)} — payments</h2>
+            <div class="muted" style="font-size:0.82em;margin-bottom:10px;">YTD <strong>${fmt(src.ytd_received)}</strong> · trailing 12mo <strong>${fmt(src.trailing_12mo_received)}</strong> (used to annualize this source)</div>
+            <div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Date</th><th>Deal / note</th><th style="text-align:right;">Amount</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+            <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+              <div><label class="fld">Date</label><input id="evDate" type="date" class="fin-in" value="${today}"></div>
+              <div style="flex:1;min-width:110px;"><label class="fld">Amount $</label><input id="evAmt" type="number" step="0.01" class="fin-in" style="width:100%;" placeholder="commission $"></div>
+              <div style="flex:2;min-width:130px;"><label class="fld">Deal / note</label><input id="evDesc" class="fin-in" style="width:100%;" placeholder="123 Main St closing"></div>
+              <button class="btn2 primary" onclick="addIncomeEvent(${src.id})">Log</button>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:14px;align-items:center;"><button class="btn2" onclick="closeModal()">Done</button><span id="evMsg" class="muted" style="font-size:0.82em;"></span></div>`);
+    }
+    async function addIncomeEvent(id) {
+        const g=i=>document.getElementById(i);
+        const body={date:g('evDate').value,gross_amount:parseFloat(g('evAmt').value)||0,description:g('evDesc').value.trim()};
+        if(!body.gross_amount){ g('evMsg').textContent='Amount required'; return; }
+        try{ const r=await fetch(`/api/finance/incomes/${id}/events`,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
+            if(!r.ok) throw new Error((await r.json()).error||'fail');
+            await loadOutlook();
+            const src=(OUTLOOK.income_sources||[]).find(s=>s.id===id); if(src) openIncomeEvents(src); else closeModal();
+        }catch(e){ g('evMsg').textContent=e.message; }
+    }
+    async function delIncomeEvent(sid,eid) {
+        if(!confirm('Delete this payment?'))return;
+        await fetch(`/api/finance/incomes/${sid}/events/${eid}`,{method:'DELETE',credentials:'same-origin'});
+        await loadOutlook();
+        const src=(OUTLOOK.income_sources||[]).find(s=>s.id===sid); if(src) openIncomeEvents(src); else closeModal();
+    }
 
     /* AI advisor */
     async function askAdvisor(q) {

@@ -19,7 +19,7 @@ from claude_analyzer import ClaudeAnalyzer
 from gemini_analyzer import GeminiAnalyzer
 from tax_analyzer import TaxAnalyzer
 from config import Config
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import json
 import hashlib
 import traceback
@@ -28,7 +28,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -608,6 +608,7 @@ def finance_set_income():
 INCOME_SOURCE_TYPES = {'salary', 'hourly', 'self_employed', 'other'}
 INCOME_OWNERS = {'me', 'spouse', 'joint', 'other'}
 PAY_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly'}
+INCOME_TAX_FORMS = {'W2', '1099', 'none'}
 
 
 def _apply_income_fields(x, d):
@@ -623,7 +624,13 @@ def _apply_income_fields(x, d):
     if 'pay_frequency' in d:
         f = (d.get('pay_frequency') or 'biweekly').lower()
         x.pay_frequency = f if f in PAY_FREQUENCIES else 'biweekly'
-    for f in ('annual_salary', 'hourly_rate', 'hours_per_week', 'ot_multiplier', 'ot_threshold_hours'):
+    if 'tax_form' in d:
+        tf = (d.get('tax_form') or 'W2')
+        x.tax_form = tf if tf in INCOME_TAX_FORMS else 'W2'
+    if 'irregular' in d:
+        x.irregular = bool(d.get('irregular'))
+    for f in ('annual_salary', 'hourly_rate', 'hours_per_week', 'ot_multiplier',
+              'ot_threshold_hours', 'estimated_annual', 'est_tax_rate'):
         if f in d:
             try:
                 setattr(x, f, float(d.get(f) or 0))
@@ -648,10 +655,13 @@ def finance_list_incomes():
     user = User.query.get(uid)
     _seed_income_from_prefs(user)  # one-time migration of the legacy single number
     rows = IncomeSource.query.filter_by(user_id=uid).order_by(IncomeSource.created_at).all()
+    active = [r for r in rows if r.active]
     return jsonify({
-        'incomes': [r.to_dict() for r in rows],
-        'total_gross_monthly': round(sum(r.gross_monthly() for r in rows if r.active), 2),
-        'total_gross_annual': round(sum(r.gross_annual() for r in rows if r.active), 2),
+        'incomes': [r.to_dict(include_events=True) for r in rows],
+        'total_gross_monthly': round(sum(r.gross_monthly() for r in active), 2),
+        'total_gross_annual': round(sum(r.gross_annual() for r in active), 2),
+        'total_net_monthly': round(sum(r.net_monthly() for r in active), 2),
+        'total_tax_setaside_monthly': round(sum(r.tax_setaside_monthly() for r in active), 2),
     })
 
 
@@ -687,7 +697,51 @@ def finance_modify_income(iid):
         return jsonify({'success': True})
     _apply_income_fields(x, request.get_json() or {})
     db.session.commit()
-    return jsonify(x.to_dict())
+    return jsonify(x.to_dict(include_events=True))
+
+
+@app.route('/api/finance/incomes/<int:iid>/events', methods=['GET', 'POST'])
+@require_api_auth
+def finance_income_events(iid):
+    """List or log actual payments (commission checks) against an irregular income source."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    src = IncomeSource.query.filter_by(id=iid, user_id=uid).first()
+    if not src:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'GET':
+        return jsonify({'events': [e.to_dict() for e in src.events]})
+    d = request.get_json() or {}
+    dt = (d.get('date') or '').strip()
+    try:
+        edate = datetime.strptime(dt, '%Y-%m-%d').date() if dt else date.today()
+    except ValueError:
+        return jsonify({'error': 'invalid date (YYYY-MM-DD)'}), 400
+    try:
+        amt = float(d.get('gross_amount') or 0)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'invalid gross_amount'}), 400
+    ev = IncomeEvent(income_source_id=src.id, user_id=uid, date=edate,
+                     gross_amount=amt, description=(d.get('description') or None))
+    db.session.add(ev)
+    db.session.commit()
+    # Return the refreshed source (annualization now reflects the new event).
+    return jsonify({'event': ev.to_dict(), 'source': src.to_dict(include_events=True)}), 201
+
+
+@app.route('/api/finance/incomes/<int:iid>/events/<int:eid>', methods=['DELETE'])
+@require_api_auth
+def finance_delete_income_event(iid, eid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    ev = IncomeEvent.query.filter_by(id=eid, income_source_id=iid, user_id=uid).first()
+    if not ev:
+        return jsonify({'error': 'Not found'}), 404
+    db.session.delete(ev)
+    db.session.commit()
+    return jsonify({'success': True})
 
 
 def _finance_outlook(user_id):
@@ -735,6 +789,11 @@ def _finance_outlook(user_id):
             paydates.append({'date': d.isoformat(), 'source': r.name, 'amount': r.paycheck_estimate()})
     paydates.sort(key=lambda p: p['date'])
 
+    # Un-withheld (1099) income needs a tax reserve — a big commission check isn't all spendable.
+    tax_setaside_monthly = round(sum(r.tax_setaside_monthly() for r in income_rows), 2)
+    net_monthly_income = round(sum(r.net_monthly() for r in income_rows), 2)
+    has_irregular = any(r.irregular for r in income_rows)
+
     # Highlight the single most expensive debt (highest APR with a balance)
     worst = max((x for x in debts if float(x.balance or 0) > 0), key=lambda x: float(x.apr or 0), default=None)
 
@@ -750,12 +809,15 @@ def _finance_outlook(user_id):
         'blended_apr': blended_apr,
         'monthly_gross_income': income,
         'annual_gross_income': round(income * 12, 2),
+        'monthly_net_income': net_monthly_income,
+        'monthly_tax_setaside': tax_setaside_monthly,
+        'has_irregular_income': has_irregular,
         'dti': dti,
         'accounts': [a.to_dict() for a in manual],
         'investment_accounts': inv_accounts,
         'debts': [x.to_dict() for x in debts],
         'worst_debt': (worst.to_dict() if worst else None),
-        'income_sources': [r.to_dict() for r in income_rows],
+        'income_sources': [r.to_dict(include_events=True) for r in income_rows],
         'upcoming_paydates': paydates[:8],
     }
 
@@ -788,10 +850,19 @@ def finance_ai_read():
             f"{d['name']} ${d['balance']:,.0f} @ {d['apr']}%{' (secured)' if d['secured'] else ''}, min ${d['min_payment']:,.0f}/mo"
             for d in o['debts']
         ) or "none"
+        irregular_note = ""
+        if o.get('has_irregular_income'):
+            irregular_note = (
+                f"NOTE: some income is irregular 1099/commission (e.g. real-estate) — not withheld and lumpy. "
+                f"Est. monthly tax set-aside: ${o.get('monthly_tax_setaside', 0):,.0f}; net after set-aside: "
+                f"${o.get('monthly_net_income', 0):,.0f}/mo. Treat commission checks as partly owed to taxes "
+                f"(income + ~15.3% self-employment tax) and remind about quarterly estimated payments.\n"
+            )
         facts = (
             f"Net worth: ${o['net_worth']:,.0f} (assets ${o['total_assets']:,.0f} incl. ${o['investment_assets']:,.0f} investments; debt ${o['total_debt']:,.0f}).\n"
             f"Monthly gross income: ${o['monthly_gross_income']:,.0f}. DTI: {o['dti']}%.\n"
-            f"Monthly debt service: ${o['monthly_debt_service']:,.0f}. Debt interest drain: ${o['annual_interest']:,.0f}/yr (blended APR {o['blended_apr']}%).\n"
+            + irregular_note
+            + f"Monthly debt service: ${o['monthly_debt_service']:,.0f}. Debt interest drain: ${o['annual_interest']:,.0f}/yr (blended APR {o['blended_apr']}%).\n"
             f"Debts (highest-rate first): {debt_lines}.\n"
             + (f"Highest-rate debt: {o['worst_debt']['name']} at {o['worst_debt']['apr']}%.\n" if o['worst_debt'] else "")
             + (f"\nUser's question: {question}\n" if question else "")

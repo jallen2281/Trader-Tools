@@ -907,13 +907,37 @@ class IncomeSource(db.Model):
     ot_threshold_hours = db.Column(db.Numeric(6, 2, asdecimal=False), default=40)
     pay_frequency = db.Column(db.String(15), default='biweekly')
     next_pay_date = db.Column(db.Date)
+    # Tax character + irregular (commission/1099) handling.
+    #  tax_form: 'W2' (withheld at source) | '1099' (no withholding; income + self-employment
+    #            tax owed by the earner) | 'none' (untaxed, e.g. gift/reimbursement).
+    #  irregular: True for lumpy per-deal income (realty commissions) — no fixed schedule or
+    #            amount; annualized from logged IncomeEvents (trailing 12mo) or estimated_annual.
+    #  est_tax_rate: % of gross to reserve for taxes on un-withheld (1099) income; the module
+    #            surfaces the set-aside so a big commission check isn't mistaken for spendable cash.
+    tax_form = db.Column(db.String(6), default='W2')
+    irregular = db.Column(db.Boolean, default=False)
+    estimated_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    est_tax_rate = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)  # e.g. 28.00
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    events = db.relationship('IncomeEvent', backref='source', lazy=True,
+                             cascade='all, delete-orphan', order_by='IncomeEvent.date.desc()')
+
+    def trailing_12mo_received(self):
+        """Sum of logged income events over the last 365 days (irregular income)."""
+        cutoff = date.today() - timedelta(days=365)
+        return round(sum(float(e.gross_amount or 0) for e in (self.events or []) if e.date and e.date >= cutoff), 2)
+
+    def ytd_received(self):
+        """Sum of logged income events since Jan 1 of the current year."""
+        jan1 = date(date.today().year, 1, 1)
+        return round(sum(float(e.gross_amount or 0) for e in (self.events or []) if e.date and e.date >= jan1), 2)
+
     def weekly_gross(self):
-        """Hourly weekly gross incl. overtime; salary → its equivalent weekly slice."""
-        if self.type == 'hourly':
+        """Hourly weekly gross incl. overtime; others → their equivalent weekly slice."""
+        if self.type == 'hourly' and not self.irregular:
             rate = float(self.hourly_rate or 0)
             hrs = float(self.hours_per_week or 0)
             thr = float(self.ot_threshold_hours or 40)
@@ -923,6 +947,11 @@ class IncomeSource(db.Model):
         return round(self.gross_annual() / 52.0, 2)
 
     def gross_annual(self):
+        # Irregular (commission/1099): annualize from actuals — trailing 12mo of logged events;
+        # fall back to the user's estimated_annual when there aren't events yet.
+        if self.irregular:
+            t12 = self.trailing_12mo_received()
+            return t12 if t12 > 0 else round(float(self.estimated_annual or 0), 2)
         if self.type == 'hourly':
             rate = float(self.hourly_rate or 0)
             hrs = float(self.hours_per_week or 0)
@@ -935,13 +964,26 @@ class IncomeSource(db.Model):
     def gross_monthly(self):
         return round(self.gross_annual() / 12.0, 2)
 
+    def tax_setaside_monthly(self):
+        """Est. monthly dollars to reserve for taxes on un-withheld (1099) income."""
+        if self.tax_form != '1099':
+            return 0.0
+        return round(self.gross_monthly() * float(self.est_tax_rate or 0) / 100.0, 2)
+
+    def net_monthly(self):
+        """Gross monthly less the tax set-aside (for 1099); == gross for withheld/none."""
+        return round(self.gross_monthly() - self.tax_setaside_monthly(), 2)
+
     def paycheck_estimate(self):
-        """Gross per paycheck for the pay frequency (annual ÷ periods)."""
+        """Gross per paycheck for a scheduled source; N/A (0) for irregular income."""
+        if self.irregular:
+            return 0.0
         periods = self.PAY_PERIODS.get(self.pay_frequency, 26)
         return round(self.gross_annual() / periods, 2)
 
     def upcoming_paydates(self, n=6):
-        if not self.next_pay_date:
+        # Irregular income has no schedule — nothing to project.
+        if self.irregular or not self.next_pay_date:
             return []
         out, d, freq = [], self.next_pay_date, self.pay_frequency
         for _ in range(n):
@@ -957,17 +999,46 @@ class IncomeSource(db.Model):
                 d = _add_one_month(d)
         return out
 
-    def to_dict(self):
-        return {
+    def to_dict(self, include_events=False):
+        d = {
             'id': self.id, 'name': self.name, 'owner': self.owner, 'type': self.type,
             'annual_salary': float(self.annual_salary or 0), 'hourly_rate': float(self.hourly_rate or 0),
             'hours_per_week': float(self.hours_per_week or 0), 'ot_multiplier': float(self.ot_multiplier or 1.5),
             'ot_threshold_hours': float(self.ot_threshold_hours or 40), 'pay_frequency': self.pay_frequency,
             'next_pay_date': self.next_pay_date.isoformat() if self.next_pay_date else None,
+            'tax_form': self.tax_form, 'irregular': bool(self.irregular),
+            'estimated_annual': float(self.estimated_annual or 0), 'est_tax_rate': float(self.est_tax_rate or 0),
             'active': bool(self.active),
             'weekly_gross': self.weekly_gross(), 'gross_monthly': self.gross_monthly(),
             'gross_annual': self.gross_annual(), 'paycheck_estimate': self.paycheck_estimate(),
-            'upcoming_paydates': [d.isoformat() for d in self.upcoming_paydates(4)],
+            'net_monthly': self.net_monthly(), 'tax_setaside_monthly': self.tax_setaside_monthly(),
+            'ytd_received': self.ytd_received(), 'trailing_12mo_received': self.trailing_12mo_received(),
+            'upcoming_paydates': [pd.isoformat() for pd in self.upcoming_paydates(4)],
+        }
+        if include_events:
+            d['events'] = [e.to_dict() for e in (self.events or [])]
+        return d
+
+
+class IncomeEvent(db.Model):
+    """One actual payment received against an irregular income source — e.g. a realty
+    commission check. Logged as it lands (variable amount, irregular date); the parent
+    IncomeSource annualizes from the trailing 12 months of these."""
+    __tablename__ = 'income_events'
+
+    id = db.Column(db.Integer, primary_key=True)
+    income_source_id = db.Column(db.Integer, db.ForeignKey('income_sources.id'), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    date = db.Column(db.Date, nullable=False, index=True)
+    gross_amount = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    description = db.Column(db.String(200))   # e.g. "123 Main St closing"
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'income_source_id': self.income_source_id,
+            'date': self.date.isoformat() if self.date else None,
+            'gross_amount': float(self.gross_amount or 0), 'description': self.description,
         }
 
 
