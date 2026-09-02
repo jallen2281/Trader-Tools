@@ -20,7 +20,7 @@ spec:
               command: ["/bin/sh", "/scripts/backup.sh"]
               env:
                 - name: PGHOST
-                  value: supabase.kegbot.net
+                  value: supabase-supabase-db.supabase.svc.cluster.local
                 - name: PGPORT
                   value: "5432"
                 - name: PGUSER
