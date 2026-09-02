@@ -8,7 +8,7 @@ if sys.stdout.encoding != 'utf-8':
 if sys.stderr.encoding != 'utf-8':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, Response
 from flask_login import login_required, current_user, logout_user
 from functools import wraps
 from data_fetcher import FinancialDataFetcher, normalize_crypto_symbol
@@ -28,7 +28,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, TaxDocument
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -88,6 +88,9 @@ def _get_current_user_id():
 
 app = Flask(__name__)
 app.config.from_object(Config)
+# Cap uploads (tax docs / receipts) at 15 MB — plenty for a PDF/photo, and it bounds the
+# Postgres blob size. Larger uploads get a 413.
+app.config['MAX_CONTENT_LENGTH'] = 15 * 1024 * 1024
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # Add logging for debugging
@@ -1991,6 +1994,286 @@ def get_tax_years():
         return jsonify({'years': tax_analyzer.available_years(user_id)}), 200
     except Exception as e:
         logger.error(f"Error in tax years: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ===================== TAX DOCUMENTS + INCOME-TAX ESTIMATE (Phase 3) =====================
+
+TAX_DOC_TYPES = {'W2', '1099-NEC', '1099-MISC', '1099-INT', '1099-DIV', '1099-B', '1098', 'receipt', 'other'}
+ALLOWED_DOC_MIMES = {'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'}
+
+
+def _tax_doc_extract(doc):
+    """Vision-read a stored W2/1099/receipt via Claude and return extracted fields (or None).
+    Cached by file hash so re-extraction of the same file costs nothing."""
+    if not doc.data or doc.content_type not in ALLOWED_DOC_MIMES:
+        return None
+    input_hash = hashlib.sha256(f"{doc.doc_type}\x1f".encode() + doc.data).hexdigest()
+    now = datetime.utcnow()
+    try:
+        hit = (AIInsight.query.filter_by(user_id=doc.user_id, kind='taxdoc_extract', input_hash=input_hash)
+               .filter(AIInsight.expires_at > now).first())
+        if hit:
+            return json.loads(hit.content)
+    except Exception:
+        pass
+    system = ("You are a precise tax-document data extractor. Read the attached document and return ONLY a compact "
+              "JSON object — no prose, no markdown code fences.")
+    if doc.doc_type == 'receipt':
+        prompt = ('Extract this receipt as JSON with keys: merchant (string), date (YYYY-MM-DD or null), '
+                  'amount (number: the total), category (one of housing, utilities, transportation, insurance, food, '
+                  'healthcare, subscriptions, entertainment, personal, other), tax_deductible (true or false, best guess). '
+                  'Return only the JSON object.')
+    else:
+        prompt = ('Extract this US tax form as JSON with keys: form_type (e.g. "W-2","1099-NEC"), tax_year (integer or null), '
+                  'issuer (employer or payer name), wages (number: W-2 box 1 wages, or the 1099 income amount), '
+                  'federal_income_tax_withheld (number: W-2 box 2, or 1099 withholding; 0 if none). '
+                  'Use 0 for any missing number. Return only the JSON object.')
+    raw = claude_analyzer.read_document(system, prompt, doc.data, doc.content_type, max_tokens=500)
+    if not raw:
+        return None
+    txt = raw.strip()
+    try:
+        data = json.loads(txt[txt.find('{'):txt.rfind('}') + 1])
+    except Exception as e:
+        logger.warning(f"tax doc extract JSON parse failed: {e}")
+        return None
+    try:
+        db.session.add(AIInsight(user_id=doc.user_id, kind='taxdoc_extract', input_hash=input_hash,
+                                 engine='claude', model=claude_analyzer.model, content=json.dumps(data),
+                                 created_at=now, expires_at=now + timedelta(days=365)))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return data
+
+
+def _num(data, *keys):
+    for k in keys:
+        v = data.get(k)
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            try:
+                return float(v.replace(',', '').replace('$', '').strip())
+            except ValueError:
+                pass
+    return None
+
+
+def _apply_extracted_to_doc(doc, data):
+    """Map extracted JSON onto the doc's structured columns (wages/withheld or receipt fields)."""
+    if not isinstance(data, dict):
+        return
+    doc.extracted = data
+    if doc.doc_type == 'receipt':
+        a = _num(data, 'amount', 'total')
+        if a is not None:
+            doc.amount = a
+        if data.get('merchant'):
+            doc.merchant = str(data['merchant'])[:160]
+        if data.get('category'):
+            doc.category = str(data['category'])[:50]
+        if isinstance(data.get('tax_deductible'), bool):
+            doc.deductible = data['tax_deductible']
+    else:
+        w = _num(data, 'wages', 'box1', 'income', 'amount')
+        if w is not None:
+            doc.wages = w
+        fw = _num(data, 'federal_income_tax_withheld', 'withheld', 'box2', 'federal_withholding')
+        if fw is not None:
+            doc.fed_withheld = fw
+        if data.get('issuer') and not doc.issuer:
+            doc.issuer = str(data['issuer'])[:160]
+        if isinstance(data.get('tax_year'), int) and not doc.tax_year:
+            doc.tax_year = data['tax_year']
+
+
+@app.route('/api/tax/documents', methods=['GET', 'POST'])
+@require_api_auth
+def tax_documents():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    if request.method == 'GET':
+        q = TaxDocument.query.filter_by(user_id=uid)
+        yr = request.args.get('year', type=int)
+        if yr:
+            q = q.filter_by(tax_year=yr)
+        rows = q.order_by(TaxDocument.uploaded_at.desc()).all()
+        return jsonify({'documents': [d.to_dict() for d in rows]})
+    # POST — multipart upload
+    f = request.files.get('file')
+    if not f or not f.filename:
+        return jsonify({'error': 'file is required'}), 400
+    ctype = (f.mimetype or '').lower()
+    if ctype not in ALLOWED_DOC_MIMES:
+        return jsonify({'error': f'unsupported type {ctype}; use PDF or image'}), 400
+    from werkzeug.utils import secure_filename
+    blob = f.read()
+    if not blob:
+        return jsonify({'error': 'empty file'}), 400
+    form = request.form
+    dt = (form.get('doc_type') or 'other')
+    doc = TaxDocument(
+        user_id=uid, data=blob, size=len(blob), content_type=ctype,
+        filename=secure_filename(f.filename)[:255],
+        doc_type=dt if dt in TAX_DOC_TYPES else 'other',
+        tax_year=(form.get('tax_year', type=int) or datetime.now().year),
+        issuer=(form.get('issuer') or None),
+        notes=(form.get('notes') or None),
+    )
+    db.session.add(doc)
+    db.session.commit()
+    # Best-effort auto-extract unless the client opts out (?extract=0).
+    if form.get('extract') != '0':
+        try:
+            data = _tax_doc_extract(doc)
+            if data:
+                _apply_extracted_to_doc(doc, data)
+                db.session.commit()
+        except Exception as e:
+            logger.warning(f"auto-extract failed for doc {doc.id}: {e}")
+    return jsonify(doc.to_dict()), 201
+
+
+@app.route('/api/tax/documents/<int:did>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def tax_document_modify(did):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    doc = TaxDocument.query.filter_by(id=did, user_id=uid).first()
+    if not doc:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        db.session.delete(doc)
+        db.session.commit()
+        return jsonify({'success': True})
+    d = request.get_json() or {}
+    if 'doc_type' in d and d['doc_type'] in TAX_DOC_TYPES:
+        doc.doc_type = d['doc_type']
+    if 'tax_year' in d:
+        try:
+            doc.tax_year = int(d['tax_year']) if d.get('tax_year') else None
+        except (TypeError, ValueError):
+            pass
+    for f in ('issuer', 'merchant', 'category', 'notes'):
+        if f in d:
+            setattr(doc, f, (d.get(f) or None))
+    for f in ('wages', 'fed_withheld', 'amount'):
+        if f in d:
+            try:
+                setattr(doc, f, float(d.get(f) or 0))
+            except (TypeError, ValueError):
+                pass
+    if 'deductible' in d:
+        doc.deductible = bool(d.get('deductible'))
+    db.session.commit()
+    return jsonify(doc.to_dict())
+
+
+@app.route('/api/tax/documents/<int:did>/download', methods=['GET'])
+@require_api_auth
+def tax_document_download(did):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    doc = TaxDocument.query.filter_by(id=did, user_id=uid).first()
+    if not doc or not doc.data:
+        return jsonify({'error': 'Not found'}), 404
+    return Response(doc.data, mimetype=doc.content_type or 'application/octet-stream',
+                    headers={'Content-Disposition': f'inline; filename="{doc.filename or "document"}"'})
+
+
+@app.route('/api/tax/documents/<int:did>/extract', methods=['POST'])
+@require_api_auth
+def tax_document_extract(did):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    doc = TaxDocument.query.filter_by(id=did, user_id=uid).first()
+    if not doc:
+        return jsonify({'error': 'Not found'}), 404
+    data = _tax_doc_extract(doc)
+    if not data:
+        return jsonify({'empty': True, 'message': 'Could not extract fields (enter them manually).'}), 200
+    _apply_extracted_to_doc(doc, data)
+    db.session.commit()
+    return jsonify({'extracted': data, 'document': doc.to_dict()}), 200
+
+
+# --- Income-tax estimate (approximate; 2025 MFJ figures) ---
+_FED_BRACKETS_MFJ = [(0, 0.10), (23850, 0.12), (96950, 0.22), (206700, 0.24),
+                     (394600, 0.32), (501050, 0.35), (751600, 0.37)]
+_FED_BRACKETS_SINGLE = [(0, 0.10), (11925, 0.12), (48475, 0.22), (103350, 0.24),
+                        (197300, 0.32), (250525, 0.35), (626350, 0.37)]
+_STD_DEDUCTION = {'mfj': 30000, 'single': 15000}
+_SS_WAGE_BASE = 176100
+
+
+def _bracket_tax(taxable, brackets):
+    tax, n = 0.0, len(brackets)
+    for i, (floor, rate) in enumerate(brackets):
+        ceil = brackets[i + 1][0] if i + 1 < n else float('inf')
+        if taxable > floor:
+            tax += (min(taxable, ceil) - floor) * rate
+        else:
+            break
+    return round(tax, 2)
+
+
+def _income_tax_estimate(user_id, year=None, filing='mfj'):
+    """Rough federal income + self-employment tax estimate from tracked income sources and
+    any W2/1099 withholding on file. Clearly an estimate — not tax advice."""
+    filing = filing if filing in _STD_DEDUCTION else 'mfj'
+    srcs = IncomeSource.query.filter_by(user_id=user_id, active=True).all()
+    w2_wages = round(sum(s.gross_annual() for s in srcs if s.tax_form == 'W2'), 2)
+    se_income = round(sum(s.gross_annual() for s in srcs if s.tax_form == '1099'), 2)
+
+    se_net = round(se_income * 0.9235, 2)
+    ss_room = max(0.0, _SS_WAGE_BASE - w2_wages)
+    se_tax = round(min(se_net, ss_room) * 0.124 + se_net * 0.029, 2)
+    half_se = round(se_tax / 2.0, 2)
+
+    std = _STD_DEDUCTION[filing]
+    taxable = max(0.0, w2_wages + se_net - half_se - std)
+    brackets = _FED_BRACKETS_MFJ if filing == 'mfj' else _FED_BRACKETS_SINGLE
+    fed_income_tax = _bracket_tax(taxable, brackets)
+
+    # Withholding already remitted (from W2/1099 docs on file for the year).
+    yr = year or datetime.now().year
+    withheld = round(sum(float(d.fed_withheld or 0) for d in
+                         TaxDocument.query.filter_by(user_id=user_id, tax_year=yr).all()), 2)
+
+    total_tax = round(fed_income_tax + se_tax, 2)
+    balance_due = round(total_tax - withheld, 2)
+    gross = w2_wages + se_income
+    return {
+        'year': yr, 'filing_status': filing,
+        'w2_wages': w2_wages, 'se_income': se_income, 'se_net': se_net,
+        'standard_deduction': std, 'taxable_income': round(taxable, 2),
+        'federal_income_tax': fed_income_tax, 'self_employment_tax': se_tax,
+        'total_federal_tax': total_tax, 'withheld': withheld,
+        'balance_due': balance_due, 'refund': round(-balance_due, 2) if balance_due < 0 else 0,
+        'effective_rate': round(total_tax / gross * 100, 1) if gross else 0,
+        'quarterly_estimate': round(max(0.0, se_tax + (fed_income_tax if withheld == 0 else 0)) / 4.0, 2),
+        'note': 'Approximate: 2025 federal brackets, standard deduction, no state/credits. Not tax advice.',
+    }
+
+
+@app.route('/api/tax/income-estimate', methods=['GET'])
+@require_api_auth
+def tax_income_estimate():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        year = request.args.get('year', type=int)
+        filing = (request.args.get('filing') or 'mfj').lower()
+        return jsonify(_income_tax_estimate(uid, year=year, filing=filing))
+    except Exception as e:
+        logger.error(f"Error in income-tax estimate: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

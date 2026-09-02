@@ -1144,6 +1144,48 @@ class BudgetCategory(db.Model):
         }
 
 
+class TaxDocument(db.Model):
+    """A stored tax document or receipt. File bytes live in Postgres (bytea) rather than a
+    filesystem because the app's PVC is ReadWriteOnce — a shared disk across the 3 pods is
+    unsafe, but a Postgres blob is multi-pod-correct for small PDFs/images. `extracted` holds
+    the AI-read fields; wages/fed_withheld feed the income-tax estimate; amount/merchant/
+    category/deductible are for receipts (which also feed budget actuals + deductions)."""
+    __tablename__ = 'tax_documents'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    tax_year = db.Column(db.Integer, index=True)
+    doc_type = db.Column(db.String(20), default='other')  # W2|1099-*|1098|receipt|other
+    issuer = db.Column(db.String(160))       # employer / payer / merchant
+    filename = db.Column(db.String(255))
+    content_type = db.Column(db.String(80))
+    size = db.Column(db.Integer)
+    data = db.Column(db.LargeBinary)         # the raw file bytes (Postgres bytea)
+    extracted = db.Column(JSON)              # AI-extracted structured fields (as read)
+    # Key figures used by the income-tax estimate (W2/1099):
+    wages = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    fed_withheld = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    # Receipt fields:
+    amount = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    merchant = db.Column(db.String(160))
+    category = db.Column(db.String(50))
+    deductible = db.Column(db.Boolean, default=False)
+    notes = db.Column(db.Text)
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        """Metadata only — never ships the file bytes (download via the dedicated route)."""
+        return {
+            'id': self.id, 'tax_year': self.tax_year, 'doc_type': self.doc_type,
+            'issuer': self.issuer, 'filename': self.filename, 'content_type': self.content_type,
+            'size': self.size, 'extracted': self.extracted or {},
+            'wages': float(self.wages or 0), 'fed_withheld': float(self.fed_withheld or 0),
+            'amount': float(self.amount or 0), 'merchant': self.merchant,
+            'category': self.category, 'deductible': bool(self.deductible), 'notes': self.notes,
+            'uploaded_at': self.uploaded_at.isoformat() if self.uploaded_at else None,
+        }
+
+
 class AIInsight(db.Model):
     """Cached AI read. Keyed by (user_id, kind, input_hash) where input_hash covers the
     model + system + facts, so an unchanged request within its TTL is served from here

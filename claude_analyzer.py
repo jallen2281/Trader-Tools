@@ -81,6 +81,38 @@ class ClaudeAnalyzer:
             f"Sector exposure: {sectors or 'unavailable'}\n"
         )
 
+    def read_document(self, system: str, prompt: str, file_bytes: bytes, media_type: str,
+                      max_tokens: int = 700, model: str | None = None) -> str | None:
+        """Multimodal read of an uploaded document (PDF or image) — used to extract fields
+        from a W2/1099/receipt. Returns the model's text (expected to be JSON), or None on
+        any failure so the caller can fall back to manual entry. Sonnet is multimodal, so the
+        default model works; the system block is cache_control'd like read()."""
+        if not self.client:
+            return None
+        import base64
+        try:
+            b64 = base64.standard_b64encode(file_bytes).decode('ascii')
+            if media_type == 'application/pdf':
+                doc_block = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}}
+            elif media_type in ("image/png", "image/jpeg", "image/gif", "image/webp"):
+                doc_block = {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}
+            else:
+                self.last_error = f"unsupported media_type {media_type}"
+                return None
+            resp = self.client.messages.create(
+                model=model or self.model,
+                max_tokens=max_tokens,
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": [doc_block, {"type": "text", "text": prompt}]}],
+            )
+            text = "".join(b.text for b in resp.content if b.type == "text").strip()
+            self.last_error = None
+            return text or None
+        except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"[:300]
+            logger.warning("Claude read_document failed (%s)", e)
+            return None
+
     def read(self, system: str, facts: str, max_tokens: int = 400, model: str | None = None) -> str | None:
         """One-shot Claude call. Returns the read text, or None on any failure (caller falls back).
 

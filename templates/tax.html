@@ -45,6 +45,28 @@
         <div id="taxAiBody" style="margin-top:12px;"></div>
     </div>
 
+    <!-- Income-Tax Estimate -->
+    <div class="tax-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Income-Tax Estimate <span class="muted" style="font-size:0.58em;font-weight:400;">approximate · from your income sources + W2/1099 withholding</span></h2>
+            <select id="filingStatus" onchange="loadIncomeEstimate()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);">
+                <option value="mfj">Married filing jointly</option>
+                <option value="single">Single</option>
+            </select>
+        </div>
+        <div class="summary-grid" id="incEstSummary" style="margin-top:14px;"><div class="summary-tile"><div class="lbl muted">Loading…</div></div></div>
+        <div id="incEstNote" class="muted" style="margin-top:10px;font-size:0.8em;"></div>
+    </div>
+
+    <!-- Tax Documents & Receipts -->
+    <div class="tax-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+            <h2 style="margin:0;">Documents &amp; Receipts <span class="muted" style="font-size:0.58em;font-weight:400;">W2 · 1099 · receipts — stored securely, AI-read</span></h2>
+            <button class="btn btn-primary" onclick="openDocUpload()" style="padding:5px 14px;font-size:0.85em;">+ Upload</button>
+        </div>
+        <div id="docsBody"><p class="muted">Loading…</p></div>
+    </div>
+
     <!-- Realized Gains -->
     <div class="tax-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
@@ -171,6 +193,15 @@
         </div>
         <div id="reconcileResult" style="margin-top:14px;"></div>
     </div>
+
+    <div id="modalRoot"></div>
+    <style>
+        .modal-back { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:9000; padding:20px; }
+        .modal-box { background:var(--card-bg,#fff); color:var(--text-primary); border-radius:12px; padding:24px; max-width:480px; width:100%; max-height:88vh; overflow-y:auto; box-shadow:0 10px 40px rgba(0,0,0,0.4); }
+        .modal-box label { display:block; font-size:0.78em; color:var(--text-secondary); margin:10px 0 3px; }
+        .modal-box .m-in { width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); box-sizing:border-box; }
+        .doc-badge { display:inline-block; padding:1px 7px; border-radius:10px; font-size:0.72em; background:rgba(99,102,241,0.14); color:#6366f1; }
+    </style>
 {% endblock %}
 
 {% block scripts %}
@@ -217,7 +248,139 @@
         loadRealized();
         loadHarvest();
         loadLtThreshold();
+        loadIncomeEstimate();
+        loadTaxDocs();
     }
+
+    /* ===== Income-Tax Estimate (Phase 3) ===== */
+    async function loadIncomeEstimate() {
+        const grid = document.getElementById('incEstSummary'), note = document.getElementById('incEstNote');
+        try {
+            const filing = document.getElementById('filingStatus').value;
+            const res = await fetch('/api/tax/income-estimate?filing=' + filing, { credentials: 'same-origin' });
+            const d = await res.json();
+            if (d.error) { grid.innerHTML = '<div class="summary-tile"><div class="lbl gain-neg">Error</div></div>'; return; }
+            const dueLbl = d.balance_due >= 0 ? 'Est. Balance Due' : 'Est. Refund';
+            const dueVal = d.balance_due >= 0 ? d.balance_due : d.refund;
+            const tiles = [
+                ['Gross Income', fmt(d.w2_wages + d.se_income), '', `W2 ${fmt(d.w2_wages)} · 1099 ${fmt(d.se_income)}`],
+                ['Federal Income Tax', fmt(d.federal_income_tax), '', `taxable ${fmt(d.taxable_income)}`],
+                ['Self-Employment Tax', fmt(d.self_employment_tax), d.self_employment_tax>0?'gain-neg':'', 'on 1099 income'],
+                ['Total Federal Tax', fmt(d.total_federal_tax), '', `~${d.effective_rate}% effective`],
+                [dueLbl, fmt(dueVal), d.balance_due>0?'gain-neg':'gain-pos', `withheld ${fmt(d.withheld)}`],
+                ['Quarterly Estimate', fmt(d.quarterly_estimate), '', 'set aside per quarter'],
+            ];
+            grid.innerHTML = tiles.map(t=>`<div class="summary-tile"><div class="lbl">${t[0]}</div><div class="val ${t[2]}">${t[1]}</div><div class="sub">${t[3]}</div></div>`).join('');
+            note.textContent = d.note || '';
+        } catch(e) { grid.innerHTML = '<div class="summary-tile"><div class="lbl gain-neg">Could not load estimate.</div></div>'; }
+    }
+
+    /* ===== Tax Documents & Receipts (Phase 3) ===== */
+    const TAX_DOC_TYPES = ['W2','1099-NEC','1099-MISC','1099-INT','1099-DIV','1099-B','1098','receipt','other'];
+    async function loadTaxDocs() {
+        const el = document.getElementById('docsBody');
+        try {
+            const res = await fetch('/api/tax/documents', { credentials: 'same-origin' });
+            const d = await res.json();
+            renderTaxDocs(d.documents || []);
+        } catch(e) { el.innerHTML = '<p class="gain-neg" style="padding:12px;">Could not load documents.</p>'; }
+    }
+    function renderTaxDocs(docs) {
+        const el = document.getElementById('docsBody');
+        if (!docs.length) { el.innerHTML = '<p class="muted" style="padding:12px;">No documents yet. Upload a W2, 1099, or receipt — it\'s stored securely and auto-read for key figures.</p>'; return; }
+        el.innerHTML = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.9em;"><thead><tr style="text-align:left;border-bottom:1px solid var(--border);">'+
+            '<th style="padding:6px;">Type</th><th style="padding:6px;">Year</th><th style="padding:6px;">Issuer / merchant</th><th style="padding:6px;text-align:right;">Key figures</th><th style="padding:6px;"></th></tr></thead><tbody>'+
+            docs.map(x=>{
+                const key = x.doc_type==='receipt'
+                    ? `${fmt(x.amount)}${x.deductible?' <span class="doc-badge">deductible</span>':''}${x.category?` <span class="muted">${esc(x.category)}</span>`:''}`
+                    : (x.wages||x.fed_withheld ? `wages ${fmt(x.wages)} · withheld ${fmt(x.fed_withheld)}` : '<span class="muted">—</span>');
+                return `<tr style="border-bottom:1px solid var(--border);">
+                    <td style="padding:6px;"><span class="doc-badge">${esc(x.doc_type)}</span></td>
+                    <td style="padding:6px;">${x.tax_year||'—'}</td>
+                    <td style="padding:6px;">${esc(x.issuer||x.merchant||x.filename||'')}</td>
+                    <td style="padding:6px;text-align:right;">${key}</td>
+                    <td style="padding:6px;text-align:right;white-space:nowrap;">
+                      <a href="/api/tax/documents/${x.id}/download" target="_blank" style="color:#6366f1;text-decoration:none;">view</a>
+                      · <button class="link-btn" style="background:none;border:none;color:#6366f1;cursor:pointer;" onclick='editDoc(${JSON.stringify(x)})'>edit</button>
+                      · <button class="link-btn" style="background:none;border:none;color:#6366f1;cursor:pointer;" onclick="extractDoc(${x.id})">re-read</button>
+                      · <button class="link-btn" style="background:none;border:none;color:#ef4444;cursor:pointer;" onclick="delDoc(${x.id})">✕</button>
+                    </td>
+                </tr>`;}).join('')+'</tbody></table></div>';
+    }
+    function openDocUpload() {
+        const yr = new Date().getFullYear();
+        showModal(`<h2 style="margin:0 0 10px;">Upload Document</h2>
+            <label>File (PDF or image)</label><input id="upFile" type="file" accept="application/pdf,image/*" class="m-in">
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label>Type</label><select id="upType" class="m-in">${TAX_DOC_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
+              <div style="flex:1;"><label>Tax year</label><input id="upYear" type="number" class="m-in" value="${yr}"></div>
+            </div>
+            <label>Issuer / merchant (optional)</label><input id="upIssuer" class="m-in" placeholder="employer, payer, or store">
+            <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:0.85em;"><input type="checkbox" id="upExtract" checked> Auto-read with AI (extract key figures)</label>
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn btn-primary" onclick="uploadDoc()">Upload</button><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><span id="upMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function uploadDoc() {
+        const g=i=>document.getElementById(i), msg=g('upMsg');
+        const f = g('upFile').files[0];
+        if (!f) { msg.textContent='Choose a file'; return; }
+        msg.textContent='Uploading & reading…';
+        const fd = new FormData();
+        fd.append('file', f);
+        fd.append('doc_type', g('upType').value);
+        fd.append('tax_year', g('upYear').value);
+        fd.append('issuer', g('upIssuer').value);
+        fd.append('extract', g('upExtract').checked ? '1' : '0');
+        try {
+            const r = await fetch('/api/tax/documents', { method:'POST', credentials:'same-origin', body: fd });
+            if (!r.ok) throw new Error((await r.json()).error || 'upload failed');
+            closeModal(); loadTaxDocs(); loadIncomeEstimate();
+        } catch(e) { msg.textContent = e.message; }
+    }
+    function editDoc(x) {
+        const isR = x.doc_type==='receipt';
+        showModal(`<h2 style="margin:0 0 10px;">Edit ${esc(x.doc_type)}</h2>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label>Tax year</label><input id="edYear" type="number" class="m-in" value="${x.tax_year||''}"></div>
+              <div style="flex:1;"><label>${isR?'Merchant':'Issuer'}</label><input id="edIssuer" class="m-in" value="${esc(isR?(x.merchant||''):(x.issuer||''))}"></div>
+            </div>
+            ${isR ? `<div style="display:flex;gap:10px;">
+                <div style="flex:1;"><label>Amount $</label><input id="edAmount" type="number" step="0.01" class="m-in" value="${x.amount||0}"></div>
+                <div style="flex:1;"><label>Category</label><input id="edCategory" class="m-in" value="${esc(x.category||'')}"></div>
+              </div>
+              <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:0.85em;"><input type="checkbox" id="edDeduct" ${x.deductible?'checked':''}> Tax-deductible</label>`
+            : `<div style="display:flex;gap:10px;">
+                <div style="flex:1;"><label>Wages / income $</label><input id="edWages" type="number" step="0.01" class="m-in" value="${x.wages||0}"></div>
+                <div style="flex:1;"><label>Fed withheld $</label><input id="edWithheld" type="number" step="0.01" class="m-in" value="${x.fed_withheld||0}"></div>
+              </div>`}
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn btn-primary" onclick="saveDoc(${x.id},${isR})">Save</button><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><span id="edMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function saveDoc(id, isR) {
+        const g=i=>document.getElementById(i);
+        const body = { tax_year: g('edYear').value };
+        if (isR) { body.merchant=g('edIssuer').value; body.amount=parseFloat(g('edAmount').value)||0; body.category=g('edCategory').value; body.deductible=g('edDeduct').checked; }
+        else { body.issuer=g('edIssuer').value; body.wages=parseFloat(g('edWages').value)||0; body.fed_withheld=parseFloat(g('edWithheld').value)||0; }
+        try {
+            const r = await fetch(`/api/tax/documents/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify(body) });
+            if (!r.ok) throw new Error((await r.json()).error || 'save failed');
+            closeModal(); loadTaxDocs(); loadIncomeEstimate();
+        } catch(e) { g('edMsg').textContent = e.message; }
+    }
+    async function extractDoc(id) {
+        const el = document.getElementById('docsBody');
+        try {
+            const r = await fetch(`/api/tax/documents/${id}/extract`, { method:'POST', credentials:'same-origin' });
+            const d = await r.json();
+            if (d.empty) { alert(d.message || 'Could not extract.'); return; }
+            loadTaxDocs(); loadIncomeEstimate();
+        } catch(e) { alert('Extract failed'); }
+    }
+    async function delDoc(id) {
+        if (!confirm('Delete this document?')) return;
+        await fetch(`/api/tax/documents/${id}`, { method:'DELETE', credentials:'same-origin' });
+        loadTaxDocs(); loadIncomeEstimate();
+    }
+    function showModal(html){ const r=document.getElementById('modalRoot'); r.innerHTML=`<div class="modal-back" id="_mb"><div class="modal-box">${html}</div></div>`; document.getElementById('_mb').addEventListener('click',e=>{if(e.target.id==='_mb')closeModal();}); }
+    function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
     async function loadLtThreshold() {
         const detail = document.getElementById('ltDetail');
