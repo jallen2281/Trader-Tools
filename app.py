@@ -28,7 +28,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -742,6 +742,218 @@ def finance_delete_income_event(iid, eid):
     db.session.delete(ev)
     db.session.commit()
     return jsonify({'success': True})
+
+
+BILL_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly', 'annual'}
+BUDGET_KINDS = {'expense', 'savings', 'income'}
+BUDGET_CATEGORIES = {'housing', 'utilities', 'transportation', 'insurance', 'food',
+                     'debt', 'subscriptions', 'healthcare', 'childcare', 'savings',
+                     'entertainment', 'personal', 'taxes', 'other'}
+
+
+def _apply_bill_fields(x, d):
+    if 'name' in d and (d.get('name') or '').strip():
+        x.name = d['name'].strip()[:120]
+    if 'payee' in d:
+        x.payee = (d.get('payee') or None)
+    if 'category' in d:
+        c = (d.get('category') or 'other').lower()
+        x.category = c if c in BUDGET_CATEGORIES else 'other'
+    if 'frequency' in d:
+        f = (d.get('frequency') or 'monthly').lower()
+        x.frequency = f if f in BILL_FREQUENCIES else 'monthly'
+    if 'amount' in d:
+        try:
+            x.amount = float(d.get('amount') or 0)
+        except (TypeError, ValueError):
+            pass
+    if 'due_day' in d:
+        try:
+            x.due_day = int(d['due_day']) if d.get('due_day') not in (None, '') else None
+        except (TypeError, ValueError):
+            x.due_day = None
+    if 'next_due_date' in d:
+        nd = (d.get('next_due_date') or '').strip()
+        try:
+            x.next_due_date = datetime.strptime(nd, '%Y-%m-%d').date() if nd else None
+        except ValueError:
+            x.next_due_date = None
+    if 'autopay' in d:
+        x.autopay = bool(d.get('autopay'))
+    for f in ('linked_debt_id', 'from_account_id'):
+        if f in d:
+            try:
+                setattr(x, f, int(d[f]) if d.get(f) not in (None, '') else None)
+            except (TypeError, ValueError):
+                setattr(x, f, None)
+    if 'notes' in d:
+        x.notes = (d.get('notes') or None)
+    if 'active' in d:
+        x.active = bool(d.get('active'))
+
+
+@app.route('/api/finance/bills', methods=['GET', 'POST'])
+@require_api_auth
+def finance_bills():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    if request.method == 'GET':
+        rows = RecurringBill.query.filter_by(user_id=uid).order_by(RecurringBill.category, RecurringBill.name).all()
+        return jsonify({
+            'bills': [b.to_dict() for b in rows],
+            'total_monthly': round(sum(b.monthly_amount() for b in rows if b.active), 2),
+        })
+    d = request.get_json() or {}
+    if not (d.get('name') or '').strip():
+        return jsonify({'error': 'name is required'}), 400
+    b = RecurringBill(user_id=uid, name='')
+    _apply_bill_fields(b, d)
+    db.session.add(b)
+    db.session.commit()
+    return jsonify(b.to_dict()), 201
+
+
+@app.route('/api/finance/bills/<int:bid>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def finance_modify_bill(bid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    b = RecurringBill.query.filter_by(id=bid, user_id=uid).first()
+    if not b:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        db.session.delete(b)
+        db.session.commit()
+        return jsonify({'success': True})
+    _apply_bill_fields(b, request.get_json() or {})
+    db.session.commit()
+    return jsonify(b.to_dict())
+
+
+@app.route('/api/finance/budgets', methods=['GET', 'POST'])
+@require_api_auth
+def finance_budgets():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    if request.method == 'GET':
+        return jsonify({'budgets': _budget_rollup(uid)})
+    d = request.get_json() or {}
+    cat = (d.get('category') or '').strip().lower()
+    if not cat:
+        return jsonify({'error': 'category is required'}), 400
+    cat = cat if cat in BUDGET_CATEGORIES else 'other'
+    row = BudgetCategory.query.filter_by(user_id=uid, category=cat).first()
+    if not row:
+        row = BudgetCategory(user_id=uid, category=cat)
+        db.session.add(row)
+    try:
+        row.monthly_limit = float(d.get('monthly_limit') or 0)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'invalid monthly_limit'}), 400
+    k = (d.get('kind') or 'expense').lower()
+    row.kind = k if k in BUDGET_KINDS else 'expense'
+    if 'notes' in d:
+        row.notes = (d.get('notes') or None)
+    db.session.commit()
+    return jsonify(row.to_dict()), 201
+
+
+@app.route('/api/finance/budgets/<int:bid>', methods=['DELETE'])
+@require_api_auth
+def finance_delete_budget(bid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    row = BudgetCategory.query.filter_by(id=bid, user_id=uid).first()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+def _budget_rollup(user_id):
+    """Per-category: monthly limit vs committed (recurring bills mapped to that category).
+    Actual spend (receipts / bank sync) fills in later; committed is the known floor now."""
+    budgets = BudgetCategory.query.filter_by(user_id=user_id).all()
+    bills = RecurringBill.query.filter_by(user_id=user_id, active=True).all()
+    committed = {}
+    for b in bills:
+        committed[b.category] = round(committed.get(b.category, 0) + b.monthly_amount(), 2)
+    out = []
+    seen = set()
+    for cat in budgets:
+        seen.add(cat.category)
+        limit = float(cat.monthly_limit or 0)
+        com = committed.get(cat.category, 0)
+        out.append({**cat.to_dict(), 'committed_monthly': com,
+                    'remaining': round(limit - com, 2),
+                    'over': com > limit and limit > 0})
+    # categories that have bills but no explicit budget row
+    for cat, com in committed.items():
+        if cat not in seen:
+            out.append({'id': None, 'category': cat, 'monthly_limit': 0, 'kind': 'expense',
+                        'notes': None, 'committed_monthly': com, 'remaining': round(-com, 2), 'over': False})
+    out.sort(key=lambda r: -r['committed_monthly'])
+    return out
+
+
+def _finance_cashflow(user_id, days=60, starting_balance=None):
+    """Project inflows (scheduled paychecks) and outflows (recurring bills) over the next
+    `days`, with a running balance. Irregular income is excluded (no schedule to project)."""
+    today = date.today()
+    horizon = today + timedelta(days=days)
+    events = []
+    for src in IncomeSource.query.filter_by(user_id=user_id, active=True).all():
+        amt = src.paycheck_estimate()
+        if src.irregular or amt <= 0:
+            continue
+        for pd in src.upcoming_paydates(12):
+            if today <= pd <= horizon:
+                events.append({'date': pd.isoformat(), 'label': src.name, 'amount': round(amt, 2), 'type': 'income'})
+    for b in RecurringBill.query.filter_by(user_id=user_id, active=True).all():
+        for dd in b.upcoming_due_dates(12):
+            if today <= dd <= horizon:
+                events.append({'date': dd.isoformat(), 'label': b.name, 'amount': -round(float(b.amount or 0), 2), 'type': 'bill'})
+    events.sort(key=lambda e: e['date'])
+
+    # Starting balance: caller-provided, else sum of liquid manual accounts (checking/savings/cash).
+    if starting_balance is None:
+        liquid = FinanceAccount.query.filter_by(user_id=user_id).all()
+        starting_balance = round(sum(float(a.balance or 0) for a in liquid
+                                     if a.type in ('checking', 'savings', 'cash')), 2)
+    bal = float(starting_balance)
+    lowest = bal
+    for e in events:
+        bal = round(bal + e['amount'], 2)
+        e['running_balance'] = bal
+        lowest = min(lowest, bal)
+    return {
+        'days': days, 'starting_balance': round(float(starting_balance), 2),
+        'ending_balance': round(bal, 2), 'lowest_balance': round(lowest, 2),
+        'total_in': round(sum(e['amount'] for e in events if e['amount'] > 0), 2),
+        'total_out': round(sum(-e['amount'] for e in events if e['amount'] < 0), 2),
+        'events': events,
+    }
+
+
+@app.route('/api/finance/cashflow', methods=['GET'])
+@require_api_auth
+def finance_cashflow():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    days = request.args.get('days', type=int) or 60
+    days = max(7, min(days, 180))
+    sb = request.args.get('starting_balance', type=float)
+    try:
+        return jsonify(_finance_cashflow(uid, days=days, starting_balance=sb))
+    except Exception as e:
+        logger.error(f"Error in cashflow: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 def _finance_outlook(user_id):

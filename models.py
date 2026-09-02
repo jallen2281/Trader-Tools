@@ -1042,6 +1042,108 @@ class IncomeEvent(db.Model):
         }
 
 
+class RecurringBill(db.Model):
+    """A recurring outflow (rent/mortgage, utilities, subscriptions, loan payments) for
+    the budgeting module. Feeds the cash-flow calendar (bill-outs vs pay-ins) and the
+    budget-vs-plan rollup. May link to a Debt (its minimum payment) or the account it's
+    paid from."""
+    __tablename__ = 'recurring_bills'
+
+    # occurrences per year, for normalizing any frequency to a monthly figure
+    FREQ_PER_YEAR = {'weekly': 52, 'biweekly': 26, 'semimonthly': 24, 'monthly': 12,
+                     'quarterly': 4, 'annual': 1}
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    payee = db.Column(db.String(120))
+    category = db.Column(db.String(50), default='other', index=True)
+    amount = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    frequency = db.Column(db.String(15), default='monthly')
+    next_due_date = db.Column(db.Date)
+    due_day = db.Column(db.Integer)          # day-of-month convenience for monthly bills
+    autopay = db.Column(db.Boolean, default=False)
+    linked_debt_id = db.Column(db.Integer, db.ForeignKey('debts.id'))
+    from_account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
+    active = db.Column(db.Boolean, default=True)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def monthly_amount(self):
+        per_year = self.FREQ_PER_YEAR.get(self.frequency, 12)
+        return round(float(self.amount or 0) * per_year / 12.0, 2)
+
+    def _anchor(self):
+        """Next due date to project from: explicit next_due_date, else this/next month's due_day."""
+        if self.next_due_date:
+            return self.next_due_date
+        if self.due_day:
+            today = date.today()
+            day = min(int(self.due_day), 28)
+            d = date(today.year, today.month, day)
+            return d if d >= today else _add_one_month(d)
+        return None
+
+    def upcoming_due_dates(self, n=6):
+        d = self._anchor()
+        if not d:
+            return []
+        out, freq = [], self.frequency
+        for _ in range(n):
+            out.append(d)
+            if freq == 'weekly':
+                d = d + timedelta(days=7)
+            elif freq == 'biweekly':
+                d = d + timedelta(days=14)
+            elif freq == 'semimonthly':
+                d = date(d.year, d.month, 15) if d.day < 15 else _add_one_month(date(d.year, d.month, 1))
+            elif freq == 'quarterly':
+                d = _add_one_month(_add_one_month(_add_one_month(d)))
+            elif freq == 'annual':
+                try:
+                    d = date(d.year + 1, d.month, d.day)
+                except ValueError:
+                    d = date(d.year + 1, d.month, 28)
+            else:  # monthly
+                d = _add_one_month(d)
+        return out
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'name': self.name, 'payee': self.payee, 'category': self.category,
+            'amount': float(self.amount or 0), 'frequency': self.frequency,
+            'monthly_amount': self.monthly_amount(),
+            'next_due_date': self.next_due_date.isoformat() if self.next_due_date else None,
+            'due_day': self.due_day, 'autopay': bool(self.autopay),
+            'linked_debt_id': self.linked_debt_id, 'from_account_id': self.from_account_id,
+            'active': bool(self.active), 'notes': self.notes,
+            'upcoming_due_dates': [d.isoformat() for d in self.upcoming_due_dates(3)],
+        }
+
+
+class BudgetCategory(db.Model):
+    """A monthly budget limit for a spending category (or a savings target). Budget-vs-plan
+    compares the limit against the recurring bills mapped to the same category (and, later,
+    actual spend from receipts / bank sync)."""
+    __tablename__ = 'budget_categories'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    category = db.Column(db.String(50), nullable=False)
+    monthly_limit = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    kind = db.Column(db.String(15), default='expense')  # expense | savings | income
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'category': self.category, 'monthly_limit': float(self.monthly_limit or 0),
+            'kind': self.kind, 'notes': self.notes,
+        }
+
+
 class AIInsight(db.Model):
     """Cached AI read. Keyed by (user_id, kind, input_hash) where input_hash covers the
     model + system + facts, so an unchanged request within its TTL is served from here

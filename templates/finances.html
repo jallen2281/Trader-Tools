@@ -85,6 +85,33 @@
         <div id="assetsBody"><p class="muted">Loading…</p></div>
     </div>
 
+    <!-- Bills -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Bills <span class="muted" id="billsTotal" style="font-size:0.65em;font-weight:400;"></span></h2>
+            <button class="btn2 primary" onclick="openBill(null)">+ Add Bill</button>
+        </div>
+        <div id="billsBody"><p class="muted">Loading…</p></div>
+    </div>
+
+    <!-- Budget -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Budget <span class="muted" style="font-size:0.65em;font-weight:400;">limit vs committed (bills)</span></h2>
+            <button class="btn2 primary" onclick="openBudget(null)">+ Set Budget</button>
+        </div>
+        <div id="budgetBody"><p class="muted">Loading…</p></div>
+    </div>
+
+    <!-- Cash-flow -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Cash-flow <span class="muted" style="font-size:0.65em;font-weight:400;">next 60 days · pay-ins vs bills</span></h2>
+            <span id="cashflowSummary" class="muted" style="font-size:0.82em;"></span>
+        </div>
+        <div id="cashflowBody"><p class="muted">Loading…</p></div>
+    </div>
+
     <div id="modalRoot"></div>
 {% endblock %}
 
@@ -100,13 +127,16 @@
     const PAY_FREQS = ['weekly','biweekly','semimonthly','monthly'];
     const INCOME_OWNERS = ['me','spouse','joint','other'];
     const INCOME_TAX_FORMS = ['W2','1099','none'];
-    let OUTLOOK = null;
+    const BILL_FREQS = ['weekly','biweekly','semimonthly','monthly','quarterly','annual'];
+    const BUDGET_CATS = ['housing','utilities','transportation','insurance','food','debt','subscriptions','healthcare','childcare','savings','entertainment','personal','taxes','other'];
+    const BUDGET_KINDS = ['expense','savings','income'];
+    let OUTLOOK = null, BILLS = null;
 
     async function loadOutlook() {
         try {
             const r = await fetch('/api/finance/outlook', { credentials:'same-origin' });
             OUTLOOK = await r.json();
-            renderTiles(); renderFire(); renderDebts(); renderAssets(); renderIncome();
+            renderTiles(); renderFire(); renderDebts(); renderAssets(); renderIncome(); loadBudgeting();
         } catch(e){ document.getElementById('outlookTiles').innerHTML='<p class="neg" style="padding:16px;">Could not load outlook.</p>'; }
     }
     function renderTiles() {
@@ -354,9 +384,121 @@
     }
     async function delAccount(id){ if(!confirm('Delete this account?'))return; await fetch(`/api/finance/accounts/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
 
+    /* ===== Bills, Budget & Cash-flow (Phase 2) ===== */
+    async function loadBudgeting() {
+        try {
+            const [bills, budgets, cash] = await Promise.all([
+                fetch('/api/finance/bills',{credentials:'same-origin'}).then(r=>r.json()),
+                fetch('/api/finance/budgets',{credentials:'same-origin'}).then(r=>r.json()),
+                fetch('/api/finance/cashflow?days=60',{credentials:'same-origin'}).then(r=>r.json()),
+            ]);
+            BILLS = bills.bills||[];
+            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash);
+        } catch(e){ document.getElementById('billsBody').innerHTML='<p class="neg" style="padding:12px;">Could not load budgeting.</p>'; }
+    }
+    function renderBills(d) {
+        const el=document.getElementById('billsBody'), bills=d.bills||[];
+        document.getElementById('billsTotal').textContent = bills.length ? `· ${fmt(d.total_monthly)}/mo` : '';
+        if(!bills.length){ el.innerHTML='<p class="muted" style="padding:12px;">No bills yet. Add recurring bills to build the cash-flow calendar and budget.</p>'; return; }
+        el.innerHTML='<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Bill</th><th>Category</th><th>Next due</th><th style="text-align:right;">Amount</th><th style="text-align:right;">/mo</th><th></th></tr></thead><tbody>'+
+            bills.map(b=>`<tr>
+                <td><strong>${esc(b.name)}</strong>${b.payee?`<div class="muted" style="font-size:0.8em;">${esc(b.payee)}</div>`:''}${b.autopay?' <span class="badge b-inv">auto</span>':''}</td>
+                <td>${esc(b.category)}</td>
+                <td>${b.upcoming_due_dates&&b.upcoming_due_dates[0]?b.upcoming_due_dates[0]:'<span class="muted">—</span>'}<div class="muted" style="font-size:0.78em;">${esc(b.frequency)}</div></td>
+                <td style="text-align:right;">${fmt2(b.amount)}</td>
+                <td style="text-align:right;">${fmt(b.monthly_amount)}</td>
+                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openBill(${JSON.stringify(b)})'>edit</button> <button class="link-btn danger" onclick="delBill(${b.id})">✕</button></td>
+            </tr>`).join('')+'</tbody></table></div>';
+    }
+    function renderBudgets(rows) {
+        const el=document.getElementById('budgetBody');
+        if(!rows.length){ el.innerHTML='<p class="muted" style="padding:12px;">No budget set. Set a monthly limit per category to track it against your bills.</p>'; return; }
+        el.innerHTML = rows.map(r=>{
+            const limit=r.monthly_limit||0, com=r.committed_monthly||0;
+            const pct = limit>0 ? Math.min(100, Math.round(com/limit*100)) : (com>0?100:0);
+            const barColor = r.over ? 'var(--neg,#ef4444)' : (pct>=80?'#f59e0b':'#22c55e');
+            const right = limit>0 ? `${fmt(com)} / ${fmt(limit)} <span class="muted">(${pct}%)</span>` : `${fmt(com)} committed <span class="muted">(no limit)</span>`;
+            return `<div style="margin-bottom:10px;">
+                <div style="display:flex;justify-content:space-between;font-size:0.88em;margin-bottom:3px;">
+                  <span><strong>${esc(r.category)}</strong>${r.kind!=='expense'?` <span class="muted">(${esc(r.kind)})</span>`:''}${r.over?' <span class="neg" style="font-size:0.85em;">over</span>':''}</span>
+                  <span>${right}</span>
+                </div>
+                <div style="background:var(--bg-tertiary,#eee);border-radius:6px;height:8px;overflow:hidden;"><div style="width:${pct}%;height:100%;background:${barColor};"></div></div>
+                ${r.id?`<div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick='openBudget(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delBudget(${r.id})">✕</button></div>`:`<div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick="openBudget({category:'${esc(r.category)}'})">set limit</button></div>`}
+            </div>`;
+        }).join('');
+    }
+    function renderCashflow(c) {
+        const el=document.getElementById('cashflowBody');
+        const sum=document.getElementById('cashflowSummary');
+        if(!c || !c.events){ el.innerHTML='<p class="muted" style="padding:12px;">Add income + bills to project cash-flow.</p>'; sum.textContent=''; return; }
+        const lowCls = c.lowest_balance<0 ? 'neg' : '';
+        sum.innerHTML = `start ${fmt(c.starting_balance)} → end <strong>${fmt(c.ending_balance)}</strong> · low <span class="${lowCls}">${fmt(c.lowest_balance)}</span>`;
+        if(!c.events.length){ el.innerHTML='<p class="muted" style="padding:12px;">No scheduled pay-ins or bills in the next '+c.days+' days. (Irregular commission income isn\'t projected.)</p>'; return; }
+        if(c.lowest_balance<0) el.innerHTML='<div class="fire" style="margin-bottom:10px;">⚠️ Projected balance goes <strong>negative</strong> ('+fmt(c.lowest_balance)+') within '+c.days+' days — a bill lands before enough pay comes in. Shift a due date or hold a buffer.</div>'; else el.innerHTML='';
+        el.innerHTML += '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Date</th><th>Item</th><th style="text-align:right;">Amount</th><th style="text-align:right;">Balance</th></tr></thead><tbody>'+
+            c.events.map(e=>`<tr>
+                <td>${e.date}</td>
+                <td>${e.type==='income'?'💵 ':'📄 '}${esc(e.label)}</td>
+                <td style="text-align:right;" class="${e.amount<0?'neg':'pos'}">${e.amount<0?'-':'+'}${fmt2(Math.abs(e.amount))}</td>
+                <td style="text-align:right;" class="${e.running_balance<0?'neg':''}">${fmt(e.running_balance)}</td>
+            </tr>`).join('')+'</tbody></table></div>';
+    }
+    /* bill modal */
+    function openBill(b) {
+        const e=b||{category:'other',frequency:'monthly',amount:0,autopay:false};
+        const debts=(OUTLOOK&&OUTLOOK.debts)||[], accts=(OUTLOOK&&OUTLOOK.accounts)||[];
+        showModal(`<h2 style="margin:0 0 8px;">${b?'Edit':'Add'} Bill</h2>
+            <label class="fld">Name</label><input id="bName" class="fin-in" style="width:100%;" value="${esc(e.name||'')}" placeholder="e.g. Mortgage, Electric, Netflix">
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Payee (optional)</label><input id="bPayee" class="fin-in" style="width:100%;" value="${esc(e.payee||'')}"></div>
+              <div style="flex:1;"><label class="fld">Category</label><select id="bCat" class="fin-in" style="width:100%;">${BUDGET_CATS.map(c=>`<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+            </div>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Amount $</label><input id="bAmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.amount||0}"></div>
+              <div style="flex:1;"><label class="fld">Frequency</label><select id="bFreq" class="fin-in" style="width:100%;">${BILL_FREQS.map(f=>`<option ${e.frequency===f?'selected':''}>${f}</option>`).join('')}</select></div>
+            </div>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Next due date</label><input id="bNext" type="date" class="fin-in" style="width:100%;" value="${e.next_due_date||''}"></div>
+              <div style="flex:1;"><label class="fld">Due day (monthly)</label><input id="bDay" type="number" min="1" max="31" class="fin-in" style="width:100%;" value="${e.due_day||''}" placeholder="e.g. 1"></div>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:0.88em;"><input type="checkbox" id="bAuto" ${e.autopay?'checked':''}> Autopay</label>
+            <div style="display:flex;gap:10px;margin-top:6px;"><button class="btn2 primary" onclick="saveBill(${b?b.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="bMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function saveBill(id) {
+        const g=i=>document.getElementById(i);
+        const body={name:g('bName').value.trim(),payee:g('bPayee').value.trim(),category:g('bCat').value,
+            amount:parseFloat(g('bAmt').value)||0,frequency:g('bFreq').value,next_due_date:g('bNext').value,
+            due_day:g('bDay').value,autopay:g('bAuto').checked};
+        if(!body.name){ g('bMsg').textContent='Name required'; return; }
+        try{ const r=await fetch(id?`/api/finance/bills/${id}`:'/api/finance/bills',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
+            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadBudgeting();
+        }catch(e){ g('bMsg').textContent=e.message; }
+    }
+    async function delBill(id){ if(!confirm('Delete this bill?'))return; await fetch(`/api/finance/bills/${id}`,{method:'DELETE',credentials:'same-origin'}); loadBudgeting(); }
+    /* budget modal */
+    function openBudget(b) {
+        const e=b||{category:'housing',monthly_limit:0,kind:'expense'};
+        showModal(`<h2 style="margin:0 0 8px;">${b&&b.id?'Edit':'Set'} Budget</h2>
+            <label class="fld">Category</label><select id="buCat" class="fin-in" style="width:100%;" ${b&&b.id?'disabled':''}>${BUDGET_CATS.map(c=>`<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Monthly limit $</label><input id="buLimit" type="number" step="10" class="fin-in" style="width:100%;" value="${e.monthly_limit||0}"></div>
+              <div style="flex:1;"><label class="fld">Kind</label><select id="buKind" class="fin-in" style="width:100%;">${BUDGET_KINDS.map(k=>`<option ${e.kind===k?'selected':''}>${k}</option>`).join('')}</select></div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveBudget()">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="buMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function saveBudget() {
+        const g=i=>document.getElementById(i);
+        const body={category:g('buCat').value,monthly_limit:parseFloat(g('buLimit').value)||0,kind:g('buKind').value};
+        try{ const r=await fetch('/api/finance/budgets',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
+            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadBudgeting();
+        }catch(e){ g('buMsg').textContent=e.message; }
+    }
+    async function delBudget(id){ if(!confirm('Remove this budget limit?'))return; await fetch(`/api/finance/budgets/${id}`,{method:'DELETE',credentials:'same-origin'}); loadBudgeting(); }
+
     function showModal(html){ const r=document.getElementById('modalRoot'); r.innerHTML=`<div class="modal-back" id="_mb"><div class="modal-box">${html}</div></div>`; document.getElementById('_mb').addEventListener('click',e=>{if(e.target.id==='_mb')closeModal();}); }
     function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
-    document.addEventListener('DOMContentLoaded', loadOutlook);
+    document.addEventListener('DOMContentLoaded', loadOutlook);  // loadOutlook chains loadBudgeting()
 </script>
 {% endblock %}
