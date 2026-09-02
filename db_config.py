@@ -161,7 +161,21 @@ def init_database(app):
         inspector = inspect(db.engine)
         if _add_column_if_missing(db, inspector, 'portfolio_accounts', 'cash_balance', 'NUMERIC(15,2)', '0'):
             logger.info("✓ Added cash_balance to portfolio_accounts table")
-        
+
+        # Migrate: add 1099/irregular-income columns to income_sources (create_all only
+        # creates NEW tables; it never adds columns to an existing one). income_events is
+        # a new table, so create_all handles it — only the added columns need this.
+        inspector = inspect(db.engine)
+        if 'income_sources' in inspector.get_table_names():
+            _add_column_if_missing(db, inspector, 'income_sources', 'tax_form', "VARCHAR(6)", "'W2'")
+            inspector = inspect(db.engine)
+            _add_column_if_missing(db, inspector, 'income_sources', 'irregular', 'BOOLEAN', 'false')
+            inspector = inspect(db.engine)
+            _add_column_if_missing(db, inspector, 'income_sources', 'estimated_annual', 'NUMERIC(12,2)', '0')
+            inspector = inspect(db.engine)
+            if _add_column_if_missing(db, inspector, 'income_sources', 'est_tax_rate', 'NUMERIC(5,2)', '0'):
+                logger.info("✓ Added 1099/irregular columns to income_sources table")
+
         # Create dividends table if it doesn't exist
         if 'dividends' not in inspector.get_table_names():
             if is_pg:
