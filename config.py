@@ -42,7 +42,10 @@ class Config:
 
     # Flask settings
     FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
-    FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
+    # Debug defaults OFF. Enabling it exposes the Werkzeug debugger (an RCE behind a PIN),
+    # so it must be an explicit opt-in for local runs, never something a missing env var
+    # turns on. Production runs gunicorn, which never reaches app.run() at all.
+    FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
     
     # Default stock settings
     DEFAULT_SYMBOL = os.getenv('DEFAULT_SYMBOL', 'AAPL')

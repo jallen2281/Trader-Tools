@@ -104,11 +104,16 @@ def init_database(app):
     # Create tables
     with app.app_context():
         is_pg = _is_postgres(db)
-        
+
+        # Imported unconditionally: text() is used all through this function, not just on the
+        # Postgres-only paths. Importing it inside `if is_pg` left it unbound on SQLite, so
+        # init_database raised and the except handler silently disabled the entire Phase 2
+        # stack (auth, RBAC, login) instead of just skipping a migration.
+        from sqlalchemy import text
+
         # PostgreSQL: drop orphaned sequences that conflict with SERIAL columns
         # (Supabase template databases may include pre-existing sequences)
         if is_pg:
-            from sqlalchemy import text
             existing_tables = set()
             try:
                 result = db.session.execute(text(
