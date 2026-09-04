@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Consent — Trader Tools{% endblock %}
+
+{% block head %}
+<style>
+    .cs-wrap { max-width: 680px; margin: 24px auto 60px; }
+    .cs-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+               box-shadow: var(--shadow); padding: 26px 30px; }
+    .cs-card h1 { margin: 0 0 6px; font-size: 1.5em; }
+    .cs-lead { color: var(--text-secondary, #888); margin: 0 0 20px; line-height: 1.6; }
+    .cs-list { margin: 0 0 6px; padding-left: 0; list-style: none; }
+    .cs-list li { display: flex; gap: 10px; padding: 11px 0;
+                  border-bottom: 1px solid var(--border); line-height: 1.55; }
+    .cs-list li:last-child { border-bottom: none; }
+    .cs-ico { flex: 0 0 22px; font-size: 1.05em; }
+    .cs-note { background: #fef3c7; color: #92400e; border-radius: 8px;
+               padding: 12px 14px; margin: 16px 0 4px; font-size: 0.9em; line-height: 1.55; }
+    .cs-accept { display: flex; gap: 11px; align-items: flex-start; margin: 22px 0 18px;
+                 padding: 15px; border: 1px solid var(--border); border-radius: 8px;
+                 cursor: pointer; line-height: 1.5; }
+    .cs-accept input { margin-top: 3px; flex: 0 0 auto; width: 17px; height: 17px; cursor: pointer; }
+    .cs-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .cs-err { color: #ef4444; font-size: 0.9em; margin-bottom: 12px; }
+    .cs-ver { color: var(--text-secondary, #888); font-size: 0.82em; margin-top: 18px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="cs-wrap">
+    <div class="cs-card">
+        <h1>Before you continue</h1>
+        <p class="cs-lead">
+            This application stores financial information you provide, and sends some of it to
+            named service providers in order to work. Please review what that involves and
+            confirm you consent.
+        </p>
+
+        {% if error %}<div class="cs-err">{{ error }}</div>{% endif %}
+
+        <ul class="cs-list">
+            <li>
+                <span class="cs-ico">🗄️</span>
+                <span><strong>Collection and storage.</strong> Financial records you enter —
+                accounts, balances, debts, income, bills, budgets, transactions, and investment
+                holdings — are stored in a private database, along with your name and email
+                address from Google sign-in.</span>
+            </li>
+            <li>
+                <span class="cs-ico">📄</span>
+                <span><strong>Documents.</strong> Tax documents and receipts you upload are
+                stored as complete files. These often contain sensitive identifiers such as
+                Social Security numbers.</span>
+            </li>
+            <li>
+                <span class="cs-ico">🤖</span>
+                <span><strong>AI processing.</strong> When you request an AI analysis, a summary
+                of your financial figures is sent to Anthropic and, for some features, Google.
+                When you use automatic document reading, the complete uploaded file is sent to
+                Anthropic.</span>
+            </li>
+            <li>
+                <span class="cs-ico">🏦</span>
+                <span><strong>Connected accounts.</strong> If you link a bank or brokerage
+                account, that connection is made through Plaid. Your banking credentials go
+                directly to Plaid and are never seen or stored by this application.</span>
+            </li>
+            <li>
+                <span class="cs-ico">🗑️</span>
+                <span><strong>Deletion.</strong> You can delete any record, any uploaded
+                document, or your entire account at any time. Deleted data may remain in
+                database backups for up to 30 days.</span>
+            </li>
+        </ul>
+
+        <div class="cs-note">
+            Your data is never sold, never used for advertising, and never shared with anyone
+            for their own purposes.
+        </div>
+
+        <form method="POST" action="/consent">
+            <label class="cs-accept" for="acceptBox">
+                <input type="checkbox" name="accept" id="acceptBox" value="1">
+                <span>I consent to the collection, processing, and storage of my data as
+                described in the <a href="/privacy" target="_blank" rel="noopener">Privacy
+                Policy</a>, including the AI processing described above.</span>
+            </label>
+
+            <div class="cs-actions">
+                <button type="submit" class="btn2 primary">Agree and continue</button>
+                <a href="/logout" class="btn2">Decline and sign out</a>
+            </div>
+        </form>
+
+        <div class="cs-ver">Privacy policy version {{ version }}</div>
+    </div>
+</div>
+{% endblock %}

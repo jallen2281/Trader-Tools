@@ -314,6 +314,77 @@ def log_response(response):
     return response
 
 
+# The privacy-policy version a signed-in user must have accepted. Bump this string whenever
+# the policy changes materially: every user is re-prompted on their next request, and the
+# version they accepted is recorded, so consent is auditable per policy revision.
+PRIVACY_POLICY_VERSION = '2026-09-03'
+
+# Reachable without having accepted the current policy. /privacy and /consent obviously must
+# be, /logout must be so "decline" is always possible, and /login|/authorize must be so the
+# sign-in round-trip can complete before consent is even evaluated.
+CONSENT_EXEMPT_PATHS = {'/consent', '/privacy', '/login', '/authorize', '/logout', '/health'}
+
+
+@app.route('/privacy')
+def privacy():
+    """The privacy policy. Deliberately public — it has to be readable without an account,
+    both for people deciding whether to sign up and for Plaid, which fetches the URL."""
+    return render_template('privacy.html')
+
+
+@app.before_request
+def require_privacy_consent():
+    """Gate the application on acceptance of the current privacy policy.
+
+    This is a before_request hook rather than a decorator because consent has to cover all
+    130+ authenticated endpoints — decorating them individually would mean touching every
+    one and would silently miss every route added afterwards. Token-authenticated API
+    callers get a machine-readable 403 instead of an HTML redirect they cannot act on.
+    """
+    if not PHASE2_ENABLED:
+        return None
+    if request.endpoint == 'static' or request.path.startswith('/static/'):
+        return None
+    if request.path in CONSENT_EXEMPT_PATHS:
+        return None
+    try:
+        if not current_user.is_authenticated:
+            return None
+        if getattr(current_user, 'privacy_consent_version', None) == PRIVACY_POLICY_VERSION:
+            return None
+    except Exception:
+        # Auth stack unavailable — fail open rather than locking the app on a hook error.
+        return None
+    if request.path.startswith('/api/') or request.headers.get('Authorization', '').startswith('Bearer '):
+        return jsonify({'error': 'Privacy policy acceptance required',
+                        'code': 'consent_required',
+                        'policy_version': PRIVACY_POLICY_VERSION}), 403
+    return redirect(url_for('consent'))
+
+
+@app.route('/consent', methods=['GET', 'POST'])
+def consent():
+    """Collect explicit consent for collection, processing and storage before first use."""
+    if not PHASE2_ENABLED:
+        return redirect(url_for('index'))
+    try:
+        if not current_user.is_authenticated:
+            return redirect(url_for('login'))
+    except Exception:
+        return redirect(url_for('login'))
+    if request.method == 'POST':
+        if not request.form.get('accept'):
+            return render_template('consent.html', version=PRIVACY_POLICY_VERSION,
+                                   error='You must accept the privacy policy to continue.'), 400
+        current_user.privacy_consent_at = datetime.utcnow()
+        current_user.privacy_consent_version = PRIVACY_POLICY_VERSION
+        db.session.commit()
+        logger.info("Privacy consent recorded for user %s (version %s)",
+                    current_user.id, PRIVACY_POLICY_VERSION)
+        return redirect(url_for('index'))
+    return render_template('consent.html', version=PRIVACY_POLICY_VERSION, error=None)
+
+
 @app.route('/')
 def index():
     """Render the main dashboard."""

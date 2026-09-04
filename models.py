@@ -46,6 +46,12 @@ class User(UserMixin, db.Model):
     deleted_at = db.Column(db.DateTime, index=True)
     deleted_by = db.Column(db.Integer)  # admin user id, or the user's own id for self-serve
 
+    # Privacy-policy consent. `privacy_consent_version` stores the policy version the user
+    # actually accepted, not a boolean — bumping PRIVACY_POLICY_VERSION in app.py therefore
+    # re-prompts everyone on their next request instead of silently grandfathering them in.
+    privacy_consent_at = db.Column(db.DateTime)
+    privacy_consent_version = db.Column(db.String(20))
+
     # Relationships
     # NOTE: lazy='select' (not selectin) is deliberate — verify_session_token loads a
     # User on every authed request and does NOT need groups; eager-loading them here

@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+{% block title %}Privacy Policy — Trader Tools{% endblock %}
+
+{% block head %}
+<style>
+    .pp-wrap { max-width: 860px; margin: 0 auto; padding: 8px 4px 60px; line-height: 1.65; }
+    .pp-wrap h1 { margin: 0 0 4px; font-size: 1.9em; }
+    .pp-wrap h2 { margin: 34px 0 10px; font-size: 1.22em; padding-bottom: 6px;
+                  border-bottom: 1px solid var(--border); }
+    .pp-wrap h3 { margin: 20px 0 6px; font-size: 1.02em; }
+    .pp-wrap p, .pp-wrap li { color: var(--text-primary); }
+    .pp-wrap ul { margin: 8px 0 8px 22px; }
+    .pp-wrap li { margin-bottom: 6px; }
+    .pp-meta { color: var(--text-secondary, #888); font-size: 0.9em; margin-bottom: 26px; }
+    .pp-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+               padding: 16px 20px; margin: 18px 0; }
+    .pp-flag { background: #fef3c7; color: #92400e; border-radius: 4px; padding: 1px 6px;
+               font-weight: 600; font-size: 0.92em; }
+    .pp-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.93em; }
+    .pp-table th, .pp-table td { text-align: left; padding: 9px 10px;
+                                 border-bottom: 1px solid var(--border); vertical-align: top; }
+    .pp-table th { font-weight: 600; }
+    .pp-toc a { display: block; padding: 2px 0; font-size: 0.93em; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pp-wrap">
+
+    <h1>Privacy Policy</h1>
+    <p class="pp-meta">
+        Last updated: September 3, 2026
+    </p>
+
+    <p>
+        Trader Tools is a personal financial dashboard that I built and operate. It brings
+        together budgeting, debt tracking, tax records, and investment portfolio data in one
+        place. This policy explains exactly what information the application collects, where
+        that information goes, and how you can remove it.
+    </p>
+
+    <div class="pp-card">
+        <strong>The short version.</strong> Your financial data is stored in a private database
+        that only I administer. It is never sold, never used for advertising, and never shared
+        with anyone for their own purposes. It <em>is</em> sent to a small number of named
+        service providers that make the application work — most notably AI providers that
+        generate the written analysis and read your uploaded documents. Those providers are
+        listed by name in <a href="#third-parties">Section 5</a>. You can delete your account
+        and its data at any time.
+    </div>
+
+    <h2 id="collect">1. Information collected</h2>
+
+    <h3>Account and identity</h3>
+    <p>
+        Sign-in is handled entirely by Google. The application never sees, receives, or stores
+        a password. From Google's sign-in response it stores your Google account identifier,
+        email address, display name, and profile picture URL.
+    </p>
+
+    <h3>Financial information you enter</h3>
+    <p>
+        Anything you record in the application is stored in its database, including: asset
+        accounts and balances; debts, with interest rates, balances, and payment amounts;
+        income sources, pay rates, and pay schedules; recurring bills; budget categories and
+        limits; individual spending transactions, including merchant, amount, date, and
+        category; investment holdings, trades, cost basis, and dividends; and any notes you
+        attach to these records.
+    </p>
+
+    <h3>Documents you upload</h3>
+    <p>
+        Tax documents and receipts you upload are stored as complete files in the database.
+        <span class="pp-flag">This includes documents such as W-2 and 1099 forms, which
+        typically contain Social Security numbers, employer details, and full wage
+        information.</span> Uploaded files are retained until you delete them.
+    </p>
+
+    <h3>Connected financial accounts</h3>
+    <p>
+        If you choose to connect a bank or brokerage account, that connection is made through
+        Plaid. Your banking credentials are entered directly into Plaid's interface — they are
+        never transmitted to, seen by, or stored by this application. What is received back and
+        stored is account metadata, balances, transaction history, and, depending on the account
+        type, loan terms and investment holdings.
+    </p>
+
+    <h3>Technical information</h3>
+    <p>
+        A session cookie is set to keep you signed in. Server logs record request paths,
+        timestamps, and error details for operational and diagnostic purposes. If you create a
+        personal access token for API use, a record of that token is stored.
+    </p>
+
+    <h2 id="use">2. How information is used</h2>
+    <p>
+        Information is used solely to operate the features you are using: displaying your
+        financial position, calculating budgets and cash-flow projections, tracking portfolio
+        performance, estimating taxes, and generating written analysis at your request. It is
+        not used for advertising, profiling, or any purpose unrelated to running the
+        application, and it is not sold or licensed to anyone.
+    </p>
+
+    <h2 id="ai">3. AI processing</h2>
+    <p>
+        Several features send your data to third-party AI providers for processing. This is the
+        most significant way information leaves the application, so it is described in detail
+        here rather than buried in a list.
+    </p>
+    <ul>
+        <li>
+            <strong>Written financial analysis.</strong> When you request an AI read — a
+            financial outlook, a tax summary, a portfolio or budget analysis — a structured
+            summary of the relevant figures is transmitted to Anthropic (Claude) and, for some
+            features, to Google (Gemini). This summary contains real financial values such as
+            balances, debts, income, and holdings.
+        </li>
+        <li>
+            <strong>Document reading.</strong>
+            <span class="pp-flag">When you upload a tax document or receipt, the complete file
+            is transmitted to Anthropic so its contents can be extracted automatically.</span>
+            For a W-2 or 1099, that means the full document — including any Social Security
+            number printed on it — is sent to that provider. If you would rather this not
+            happen, do not use the automatic extraction feature; the corresponding fields can
+            be entered by hand instead.
+        </li>
+        <li>
+            <strong>Results are cached.</strong> AI-generated text is stored in the database and
+            reused for a period of time so identical requests do not trigger a new call.
+        </li>
+        <li>
+            <strong>Local processing option.</strong> The application can fall back to a
+            locally-hosted language model. When that path is used, the data involved does not
+            leave the server.
+        </li>
+    </ul>
+
+    <h2 id="third-parties">4. Where data is stored</h2>
+    <p>
+        Data is stored in a PostgreSQL database running on infrastructure I operate. The
+        application is served over HTTPS with certificates issued and renewed automatically.
+        Application credentials are held as Kubernetes secrets and are not present in source
+        code or container images. The application container runs as an unprivileged user.
+        Database backups are taken on an automated daily schedule and retained for 30 days.
+    </p>
+
+    <h2>5. Service providers</h2>
+    <p>
+        These are the third parties that receive data, and what each one receives. None of them
+        receive your information for their own independent purposes.
+    </p>
+    <table class="pp-table">
+        <thead>
+            <tr><th>Provider</th><th>What it receives</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Google</td>
+                <td>Sign-in identity: account ID, email, name, profile picture</td>
+                <td>Authentication</td>
+            </tr>
+            <tr>
+                <td>Anthropic (Claude)</td>
+                <td>Financial summaries; complete uploaded tax documents and receipts</td>
+                <td>Written analysis and document field extraction</td>
+            </tr>
+            <tr>
+                <td>Google AI (Gemini)</td>
+                <td>Financial summaries</td>
+                <td>Secondary analysis on some features</td>
+            </tr>
+            <tr>
+                <td>Plaid</td>
+                <td>Your banking credentials, entered directly into Plaid — never through this application</td>
+                <td>Connecting financial accounts, where you choose to</td>
+            </tr>
+            <tr>
+                <td>Market data providers</td>
+                <td>Ticker symbols only — no personal or account information</td>
+                <td>Prices, fundamentals, and news</td>
+            </tr>
+        </tbody>
+    </table>
+    <p>
+        Plaid handles your information under its own privacy policy, available at
+        <a href="https://plaid.com/legal/#end-user-privacy-policy" target="_blank" rel="noopener noreferrer">plaid.com/legal</a>.
+    </p>
+
+    <h2>6. Retention and deletion</h2>
+    <p>
+        Your records are kept until you delete them or delete your account. Deleting your
+        account removes personal details from the active record immediately and disables
+        sign-in; the account can be restored by signing in again within the retention window,
+        after which it can be permanently purged. Individual records — transactions, documents,
+        accounts, debts — can be deleted at any time from within the application, and deletion
+        is immediate.
+    </p>
+    <p>
+        One limitation worth stating plainly: deleted data may persist in database backups for
+        up to 30 days after deletion, until the backup containing it ages out of the retention
+        window.
+    </p>
+
+    <h2>7. Cookies</h2>
+    <p>
+        A single session cookie keeps you signed in. There are no advertising cookies, no
+        analytics trackers, and no third-party tracking of any kind.
+    </p>
+
+    <h2>8. Your choices</h2>
+    <ul>
+        <li>View and edit any record you have entered, directly in the application.</li>
+        <li>Delete individual records, uploaded documents, or your entire account.</li>
+        <li>Export your portfolio and tax data.</li>
+        <li>Disconnect a linked financial institution, which stops further data retrieval.</li>
+        <li>Decline AI document extraction and enter document fields manually instead.</li>
+    </ul>
+
+    <h2>9. Children</h2>
+    <p>
+        This application is not directed to children and is not intended for use by anyone
+        under 18. No information is knowingly collected from children.
+    </p>
+
+    <h2>10. Changes to this policy</h2>
+    <p>
+        If this policy changes, the revised version will be posted here with an updated date at
+        the top. Material changes to how data is shared will be reflected here before the change
+        takes effect.
+    </p>
+
+    <h2>11. Contact</h2>
+    <p>
+        Questions about this policy, or requests regarding your data, can be sent to
+        <span class="pp-flag">[YOUR CONTACT EMAIL]</span>.
+    </p>
+
+</div>
+{% endblock %}

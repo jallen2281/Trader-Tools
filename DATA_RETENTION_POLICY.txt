@@ -1,0 +1,234 @@
+================================================================================
+DATA RETENTION AND DISPOSAL POLICY
+Trader Tools (tradertools.kegbot.net)
+================================================================================
+
+Version:        1.0
+Effective:      8/28/2026
+Owner:          Jared Allen, sole operator
+Next review:    8/28/2027
+
+--------------------------------------------------------------------------------
+1. PURPOSE AND SCOPE
+--------------------------------------------------------------------------------
+
+This policy defines how long each category of data held by the Trader Tools
+application is retained, how it is disposed of at end of life, and how those
+periods are enforced.
+
+It covers all data held by the application: the PostgreSQL production database,
+uploaded document files stored within that database, automated database backups,
+and application server logs.
+
+The governing principle is that data is retained only as long as it serves the
+purpose it was collected for, and that the person the data describes can remove
+it at any time.
+
+--------------------------------------------------------------------------------
+2. ROLES AND RESPONSIBILITIES
+--------------------------------------------------------------------------------
+
+The application is operated by a single individual, who is responsible for
+maintaining this policy, verifying that automated enforcement is running as
+described, executing any manual disposal steps, and performing the periodic
+review defined in Section 10.
+
+There are no employees, contractors, or other parties with access to production
+systems or stored data.
+
+--------------------------------------------------------------------------------
+3. DATA CATEGORIES AND RETENTION PERIODS
+--------------------------------------------------------------------------------
+
+  CATEGORY                     RETENTION PERIOD
+  ---------------------------  ---------------------------------------------
+  Account identity             Life of the account. On deletion, personal
+  (name, email, Google ID,     details are scrubbed from the active record
+  profile picture)             immediately and the account is disabled;
+                               the record is permanently purged 30 days
+                               later.
+
+  Financial records            Life of the account. Individually deletable
+  (accounts, balances, debts,  by the user at any time, with immediate
+  income, bills, budgets,      effect. Purged with the account.
+  spending transactions)
+
+  Investment records           Life of the account. Individually deletable
+  (holdings, trades, cost      by the user at any time. Purged with the
+  basis, dividends)            account.
+
+  Uploaded tax documents       Retained until deleted by the user. These are
+  and receipts                 NOT subject to automatic time-based deletion,
+                               because tax records carry independent
+                               multi-year retention needs and premature
+                               disposal would destroy records the user may be
+                               required to produce. Deletion is user-initiated
+                               and immediate. Purged with the account.
+
+  Connected-account            Life of the connection. Destroyed immediately
+  credentials/tokens           and permanently when the user disconnects the
+  (Plaid access tokens)        institution or deletes the account.
+
+  AI-generated analysis        Cached with a defined time-to-live. Purged
+  cache                        within 30 days of expiry.
+
+  Session records              Purged within 7 days of session expiry.
+                               All sessions for an account are destroyed
+                               immediately on account deletion.
+
+  Application server logs      30 days.
+
+  Database backups             30 days, then permanently deleted.
+
+--------------------------------------------------------------------------------
+4. DISPOSAL METHODS
+--------------------------------------------------------------------------------
+
+Database records are disposed of by hard DELETE, removing the row rather than
+flagging it. Uploaded documents are stored as binary columns within the database
+rather than on a filesystem, so deleting the record disposes of the file in the
+same operation; there is no separate file store requiring a second wipe.
+
+Database backups are disposed of by file deletion from the backup volume during
+the scheduled backup run.
+
+No storage media leaves the operator's control, so no media sanitization or
+certificate-of-destruction process applies.
+
+--------------------------------------------------------------------------------
+5. ENFORCEMENT
+--------------------------------------------------------------------------------
+
+Retention periods are enforced by automated scheduled jobs, not by manual
+action. Section 12 records the current implementation status of each control.
+
+  - Backup retention is enforced by the prune step of the nightly backup
+    CronJob, which runs daily at 02:00 UTC and deletes any dump older than the
+    retention window.
+
+  - Account purge, cache expiry, and session expiry are enforced by a scheduled
+    retention job that identifies records past their retention period and
+    deletes them.
+
+  - User-initiated deletions are enforced synchronously by the application at
+    the time of the request.
+
+--------------------------------------------------------------------------------
+6. USER-INITIATED DELETION
+--------------------------------------------------------------------------------
+
+Users may delete individual records, individual uploaded documents, or their
+entire account at any time from within the application. Record and document
+deletion takes effect immediately.
+
+Account deletion scrubs personal details from the active record and disables
+sign-in immediately. For 30 days the account may be restored by signing in
+again, after which it is permanently purged and cannot be recovered.
+
+--------------------------------------------------------------------------------
+7. BACKUP RETENTION AND ITS LIMITS
+--------------------------------------------------------------------------------
+
+Deleted data may persist in database backups for up to 30 days after deletion,
+until every backup created before the deletion has aged out of the retention
+window.
+
+Backups are not selectively edited to remove individual records. Doing so would
+compromise backup integrity and the ability to restore a consistent database
+state. The 30-day backup window is therefore the effective maximum lag between a
+deletion request and the total disappearance of that data from all systems. This
+limit is disclosed to users in the privacy policy.
+
+--------------------------------------------------------------------------------
+8. THIRD-PARTY PROCESSORS
+--------------------------------------------------------------------------------
+
+Data transmitted to third-party processors is retained according to those
+providers' own policies, which are outside the operator's direct control. The
+processors are named in the privacy policy. Deleting data from this application
+does not retroactively delete copies held by a processor that received it.
+
+To limit this exposure, only the minimum data necessary is transmitted: analysis
+requests send summarized figures rather than full records, and document
+extraction is a user-initiated action that can be declined in favor of manual
+entry.
+
+--------------------------------------------------------------------------------
+9. EXCEPTIONS AND LEGAL HOLD
+--------------------------------------------------------------------------------
+
+Retention periods may be suspended where a longer period is required by law,
+regulation, or a legal proceeding. Any such hold is documented in Section 13
+with its scope, reason, and start date, and is lifted as soon as the requirement
+ends. No holds are in effect as of this version.
+
+--------------------------------------------------------------------------------
+10. POLICY REVIEW
+--------------------------------------------------------------------------------
+
+This policy is reviewed at least annually, and additionally whenever any of the
+following occurs:
+
+  - A new category of personal data begins to be collected.
+  - A new third-party processor begins receiving data.
+  - A change is made to backup schedule or retention.
+  - A change in applicable law affects the periods defined above.
+
+Each review verifies that the automated enforcement jobs are running and
+succeeding, that the retention periods above still match what the system
+actually does, and that the data category list is complete. The outcome is
+recorded in Section 13, including reviews that result in no change.
+
+--------------------------------------------------------------------------------
+11. APPLICABLE LAW
+--------------------------------------------------------------------------------
+
+The operator is responsible for determining which data protection laws apply to
+this application based on its user base and their locations, and for adjusting
+the periods above accordingly. This document defines the retention and disposal
+practice; it does not itself constitute a determination of, or certification of
+compliance with, any specific statutory regime.
+
+--------------------------------------------------------------------------------
+12. IMPLEMENTATION STATUS
+--------------------------------------------------------------------------------
+
+This section records honestly which controls in Section 5 are automated today.
+It is updated as controls are implemented and is intended to be emptied of
+"pending" entries over time.
+
+  CONTROL                             STATUS
+  ----------------------------------  -----------------------------------------
+  Backup retention (30 days)          AUTOMATED. Enforced by the nightly
+                                      backup CronJob prune step.
+
+  User-initiated record deletion      AUTOMATED. Enforced synchronously by the
+                                      application.
+
+  User-initiated account deletion     AUTOMATED for the scrub-and-disable step.
+                                      Permanent purge is currently operator-
+                                      initiated rather than time-triggered.
+
+  30-day purge of deleted accounts    PENDING. Requires the scheduled retention
+                                      job. Target: [DATE].
+
+  AI cache expiry purge               PENDING. Expired entries are treated as
+                                      expired on read but are not yet deleted
+                                      from storage. Target: [DATE].
+
+  Session record expiry purge         PENDING. Same as above. Target: [DATE].
+
+  Server log retention (30 days)      VERIFY. Confirm the platform's log
+                                      retention setting matches this policy.
+
+--------------------------------------------------------------------------------
+13. REVISION AND REVIEW HISTORY
+--------------------------------------------------------------------------------
+
+  DATE          VERSION   AUTHOR          NOTE
+  ------------  --------  --------------  ---------------------------------
+  8/28/2026        1.0       Jared Allen     Initial policy defined.
+
+================================================================================
+END OF POLICY
+================================================================================

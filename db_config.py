@@ -181,6 +181,14 @@ def init_database(app):
             if _add_column_if_missing(db, inspector, 'income_sources', 'est_tax_rate', 'NUMERIC(5,2)', '0'):
                 logger.info("✓ Added 1099/irregular columns to income_sources table")
 
+        # Migrate: privacy-consent columns on users (create_all never alters an existing table)
+        inspector = inspect(db.engine)
+        if 'users' in inspector.get_table_names():
+            _add_column_if_missing(db, inspector, 'users', 'privacy_consent_at', 'TIMESTAMP')
+            inspector = inspect(db.engine)
+            if _add_column_if_missing(db, inspector, 'users', 'privacy_consent_version', 'VARCHAR(20)'):
+                logger.info("✓ Added privacy-consent columns to users table")
+
         # Create dividends table if it doesn't exist
         if 'dividends' not in inspector.get_table_names():
             if is_pg:
