@@ -3,7 +3,7 @@ DATA RETENTION AND DISPOSAL POLICY
 Trader Tools (tradertools.kegbot.net)
 ================================================================================
 
-Version:        1.0
+Version:        1.1
 Effective:      8/28/2026
 Owner:          Jared Allen, sole operator
 Next review:    8/28/2027
@@ -205,18 +205,16 @@ It is updated as controls are implemented and is intended to be emptied of
   User-initiated record deletion      AUTOMATED. Enforced synchronously by the
                                       application.
 
-  User-initiated account deletion     AUTOMATED for the scrub-and-disable step.
-                                      Permanent purge is currently operator-
-                                      initiated rather than time-triggered.
+  User-initiated account deletion     AUTOMATED. Scrub-and-disable is applied
+                                      synchronously; permanent purge is
+                                      time-triggered by the retention job.
 
-  30-day purge of deleted accounts    PENDING. Requires the scheduled retention
-                                      job. Target: [DATE].
+  30-day purge of deleted accounts    AUTOMATED. Enforced by the retention
+                                      CronJob, daily at 03:30 UTC.
 
-  AI cache expiry purge               PENDING. Expired entries are treated as
-                                      expired on read but are not yet deleted
-                                      from storage. Target: [DATE].
+  AI cache expiry purge               AUTOMATED. Same job.
 
-  Session record expiry purge         PENDING. Same as above. Target: [DATE].
+  Session record expiry purge         AUTOMATED. Same job.
 
   Server log retention (30 days)      VERIFY. Confirm the platform's log
                                       retention setting matches this policy.
@@ -227,7 +225,12 @@ It is updated as controls are implemented and is intended to be emptied of
 
   DATE          VERSION   AUTHOR          NOTE
   ------------  --------  --------------  ---------------------------------
-  8/28/2026        1.0       Jared Allen     Initial policy defined.
+  8/28/2026     1.0       Jared Allen     Initial policy defined.
+  9/3/2026      1.1       Jared Allen     Retention job implemented; account,
+                                          session and AI-cache purges moved
+                                          from PENDING to AUTOMATED. Corrected
+                                          a defect in the purge routine that
+                                          left finance and tax records behind.
 
 ================================================================================
 END OF POLICY

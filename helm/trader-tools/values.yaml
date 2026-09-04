@@ -168,3 +168,26 @@ affinity:
                 values:
                   - trader-tools
           topologyKey: kubernetes.io/hostname
+
+# ---------------------------------------------------------------------------
+# Data retention enforcement — see DATA_RETENTION_POLICY.txt.
+# The policy defines these periods; the retention CronJob enforces them. Change a
+# value here and change Section 3 of the policy to match, then note it in the
+# policy's revision history.
+# ---------------------------------------------------------------------------
+retention:
+  enabled: true
+  # 03:30 UTC — deliberately after the 02:00 backup, so a fresh dump exists from
+  # 90 minutes before anything is permanently destroyed.
+  schedule: "30 3 * * *"
+  accountDays: 30    # grace period before a soft-deleted account is hard-purged
+  sessionDays: 7     # how long expired session rows linger before deletion
+  aiCacheDays: 30    # how long expired AI cache entries linger before deletion
+  dryRun: false      # "true" logs what would be purged without deleting anything
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi

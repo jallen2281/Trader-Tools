@@ -3419,25 +3419,10 @@ def admin_purge_user(user_id):
     if not user.is_deleted():
         return jsonify({'error': 'Soft-delete the account before purging'}), 400
     try:
-        uid = user.id
-        from models import UserSession
-        # Drop group memberships (association rows) then user-owned rows not covered
-        # by the User model's delete-orphan cascades.
-        user.groups = []
-        for model, col in ((PaperTrade, 'user_id'), (TradingSOP, 'user_id'),
-                           (Notification, 'user_id'), (ThreadVote, 'user_id'),
-                           (ThreadReply, 'user_id'), (DiscussionThread, 'user_id')):
-            try:
-                model.query.filter(getattr(model, col) == uid).delete(synchronize_session=False)
-            except Exception as e:
-                logger.warning(f"purge: {model.__name__} cleanup skipped: {e}")
-        try:
-            CopyTradingFollow.query.filter(
-                (CopyTradingFollow.follower_id == uid) | (CopyTradingFollow.leader_id == uid)
-            ).delete(synchronize_session=False)
-        except Exception as e:
-            logger.warning(f"purge: CopyTradingFollow cleanup skipped: {e}")
-        db.session.delete(user)  # cascades watchlist/alerts/portfolio/txns/etc.
+        # Shared with the scheduled retention job (retention.py) so the cascade has exactly
+        # one definition — a second copy would drift the moment a model is added.
+        from retention import purge_user_record
+        uid = purge_user_record(db, user)
         db.session.commit()
         return jsonify({'success': True, 'purged_user_id': uid})
     except Exception as e:

@@ -1,0 +1,65 @@
+{{- if .Values.retention.enabled }}
+# Enforces DATA_RETENTION_POLICY.txt. The policy defines the periods; this is what makes
+# them real. Runs `python retention.py` in the application image — same code, same models,
+# same secret as the web pods, so there is no second definition of the purge cascade to
+# drift out of sync.
+#
+# Backup retention is enforced separately by the backup CronJob's own prune step; this job
+# covers the database side: soft-deleted accounts past their grace period, expired sessions,
+# and expired AI cache entries.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "trader-tools.fullname" . }}-retention
+  labels:
+    {{- include "trader-tools.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.retention.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  # Kept deliberately high: a silently failing retention job means data is being retained
+  # past its policy period, so the failure history needs to survive long enough to notice.
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "trader-tools.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: retention
+        spec:
+          restartPolicy: OnFailure
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "trader-tools.serviceAccountName" . }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: retention
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["python", "retention.py"]
+              envFrom:
+                # DATABASE_URL comes from the same secret the web pods use.
+                - configMapRef:
+                    name: {{ include "trader-tools.fullname" . }}
+                - secretRef:
+                    name: {{ include "trader-tools.fullname" . }}
+              env:
+                - name: RETENTION_ACCOUNT_DAYS
+                  value: {{ .Values.retention.accountDays | quote }}
+                - name: RETENTION_SESSION_DAYS
+                  value: {{ .Values.retention.sessionDays | quote }}
+                - name: RETENTION_AI_CACHE_DAYS
+                  value: {{ .Values.retention.aiCacheDays | quote }}
+                - name: RETENTION_DRY_RUN
+                  value: {{ .Values.retention.dryRun | quote }}
+              resources:
+                {{- toYaml .Values.retention.resources | nindent 16 }}
+{{- end }}
