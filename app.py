@@ -292,6 +292,37 @@ def cached_ai_read(user_id, kind, system, facts, *, ttl_minutes=360, tier='defau
     return {'read': read, 'engine': engine, 'model': used_model, 'cached': False}
 
 
+
+def _can_use_ai():
+    """Whether the caller may spend a paid AI call ('ai_analysis' permission).
+
+    Admins bypass, per _effective_permissions. A newly registered account belongs to no
+    group and therefore holds no permissions, so open registration cannot burn the API key.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return False
+    return user_has_permission(User.query.get(uid), 'ai_analysis')
+
+
+def require_ai_permission(f):
+    """Gate an endpoint that spends money on a paid AI provider.
+
+    This exists instead of @require_permission('ai_analysis') purely because of import
+    order: decorators are evaluated at module load, and several of these routes are defined
+    over a thousand lines before the RBAC block. Wrapping the check in a call-time lookup
+    sidesteps that without having to move working code.
+    """
+    @wraps(f)
+    def inner(*args, **kwargs):
+        if not _can_use_ai():
+            return jsonify({'error': 'AI features require the "ai_analysis" permission. '
+                                     'Ask an admin to grant it.',
+                            'missing_permission': 'ai_analysis'}), 403
+        return f(*args, **kwargs)
+    return inner
+
+
 # Initialize Trade Journal after LLM Analyzer (Feature #5)
 if PHASE4_ENABLED and PHASE2_ENABLED:
     try:
@@ -1499,6 +1530,7 @@ def finance_outlook():
 
 @app.route('/api/finance/ai-read', methods=['POST'])
 @require_api_auth
+@require_ai_permission
 def finance_ai_read():
     """AI financial advisor — reads the outlook (+ optional question) and gives plain,
     prioritized guidance. Claude → Gemini fallback. Informational, not licensed advice."""
@@ -1778,6 +1810,7 @@ def _format_sop_for_ai(sop_dict):
 
 @app.route('/api/sop/ai-review', methods=['POST'])
 @require_api_auth
+@require_ai_permission
 def sop_ai_review():
     """AI critique of an SOP (the active one, or a posted draft). Returns recommendations; no mutation."""
     try:
@@ -1818,6 +1851,7 @@ def sop_ai_review():
 
 @app.route('/api/sop/generate', methods=['POST'])
 @require_api_auth
+@require_ai_permission
 def generate_sop():
     """AI-generate an SOP DRAFT from a short questionnaire. Returns the draft — NOT applied until approved."""
     try:
@@ -2371,6 +2405,7 @@ def export_tax_8949():
 
 @app.route('/api/tax/ai-read', methods=['GET'])
 @require_api_auth
+@require_ai_permission
 def get_tax_ai_read():
     """Plain-English read of the whole tax picture — realized, harvestable
     losses, and positions approaching long-term. Claude primary → Gemini →
@@ -2572,8 +2607,9 @@ def tax_documents():
     )
     db.session.add(doc)
     db.session.commit()
-    # Best-effort auto-extract unless the client opts out (?extract=0).
-    if form.get('extract') != '0':
+    # Best-effort auto-extract unless the client opts out (?extract=0) or lacks the AI
+    # permission — the document is still stored either way, just not read automatically.
+    if form.get('extract') != '0' and _can_use_ai():
         try:
             data = _tax_doc_extract(doc)
             if data:
@@ -2635,6 +2671,7 @@ def tax_document_download(did):
 
 @app.route('/api/tax/documents/<int:did>/extract', methods=['POST'])
 @require_api_auth
+@require_ai_permission
 def tax_document_extract(did):
     uid = _get_current_user_id()
     if not uid:
@@ -2819,6 +2856,7 @@ PERMISSIONS = {
     'unlimited_watchlist': 'Remove watchlist size limits',
     'data_export': 'Export portfolio / tax data',
     'api_tokens': 'Create Personal Access Tokens (API / AI access)',
+    'plaid_link': 'Connect bank/brokerage accounts via Plaid and see the data they return',
 }
 
 
@@ -5946,6 +5984,11 @@ def get_ai_status():
         },
     }
     if request.args.get('test') == '1':
+        # The booleans above are free; ?test=1 fires live Claude and Gemini calls, so the
+        # diagnostic stays open while the part that costs money does not.
+        if not _can_use_ai():
+            return jsonify({'error': 'Live provider tests require the "ai_analysis" permission.',
+                            'missing_permission': 'ai_analysis'}), 403
         if claude_analyzer.available():
             try:
                 # Live one-shot — reflects exactly what users get, and now fails fast
@@ -7073,6 +7116,7 @@ def get_diversification():
 
 @app.route('/api/correlation/ai-read', methods=['GET'])
 @require_api_auth
+@require_ai_permission
 def get_correlation_ai_read():
     """Plain-English AI read of the diversification metrics.
 

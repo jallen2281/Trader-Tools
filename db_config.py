@@ -57,8 +57,21 @@ class DatabaseConfig:
             'pool_recycle': 3600,    # recycle hourly to pre-empt server-side idle timeouts
         }
     
-    # Session configuration
-    SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+    # Session configuration.
+    # The dev fallback is fine locally and catastrophic in production: it is a literal in a
+    # public repo, so anything signed with it (every session cookie, hence every user's
+    # identity) is forgeable by anyone. Rather than degrade silently when the env var is
+    # missing, refuse to boot in production — a CrashLoopBackOff is a far better outcome
+    # than a quietly forgeable session.
+    _DEV_SECRET_KEY = 'dev-secret-key-change-in-production'
+    SECRET_KEY = os.getenv('SECRET_KEY', _DEV_SECRET_KEY)
+    if SECRET_KEY == _DEV_SECRET_KEY and os.getenv('FLASK_ENV', '').lower() == 'production':
+        raise RuntimeError(
+            'SECRET_KEY is unset or still the built-in development value while '
+            'FLASK_ENV=production. Refusing to start with the '
+            'built-in development key, which would make every session cookie forgeable. '
+            'Set SECRET_KEY in the trader-tools secret.'
+        )
     SESSION_COOKIE_SECURE = os.getenv('SESSION_COOKIE_SECURE', 'True').lower() == 'true'
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = 'Lax'

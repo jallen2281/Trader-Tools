@@ -162,7 +162,11 @@ def get_auth_routes(google):
                 pass
         
         redirect_uri = url_for('authorize', _external=True)
-        return google.authorize_redirect(redirect_uri)
+        # prompt='login' forces Google to re-authenticate rather than silently reusing an
+        # existing Google session. The app cannot verify from a consumer account's ID token
+        # that MFA actually happened, so the next best thing is to make sure the factor is
+        # exercised at each sign-in here instead of riding a months-old session elsewhere.
+        return google.authorize_redirect(redirect_uri, prompt='login')
     
     def authorize():
         """Handle Google OAuth callback"""
