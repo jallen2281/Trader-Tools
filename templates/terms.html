@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Terms of Service — Trader Tools{% endblock %}
+
+{% block head %}
+<style>
+    .pp-wrap { max-width: 860px; margin: 0 auto; padding: 8px 4px 60px; line-height: 1.65; }
+    .pp-wrap h1 { margin: 0 0 4px; font-size: 1.9em; }
+    .pp-wrap h2 { margin: 34px 0 10px; font-size: 1.22em; padding-bottom: 6px;
+                  border-bottom: 1px solid var(--border); }
+    .pp-wrap p, .pp-wrap li { color: var(--text-primary); }
+    .pp-wrap ul { margin: 8px 0 8px 22px; }
+    .pp-wrap li { margin-bottom: 6px; }
+    .pp-meta { color: var(--text-secondary, #888); font-size: 0.9em; margin-bottom: 26px; }
+    .pp-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+               padding: 16px 20px; margin: 18px 0; }
+    .pp-flag { background: #fef3c7; color: #92400e; border-radius: 4px; padding: 1px 6px;
+               font-weight: 600; font-size: 0.92em; }
+    .pp-warn { border-left: 4px solid #f59e0b; background: rgba(245,158,11,0.08);
+               border-radius: 8px; padding: 14px 18px; margin: 18px 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pp-wrap">
+
+    <h1>Terms of Service</h1>
+    <p class="pp-meta">Last updated: September 4, 2026</p>
+
+    <p>
+        Trader Tools is a personal financial dashboard that I built and operate. These terms
+        govern your use of it. By signing in and using the application, you agree to them. If
+        you do not agree, do not use the application.
+    </p>
+
+    <div class="pp-warn">
+        <strong>The most important thing on this page.</strong> Nothing this application
+        produces is financial, investment, tax, or legal advice. It shows you your own numbers
+        and generates analysis on request, including AI-written commentary. Every decision you
+        make with it is yours alone, and you bear the full consequences of it. If money is at
+        stake, consult a licensed professional.
+    </div>
+
+    <h2>1. What the service is</h2>
+    <p>
+        The application aggregates financial information you enter or connect — accounts,
+        balances, debts, income, bills, budgets, spending, tax documents, and investment
+        holdings — and presents summaries, projections, and analysis of it. It includes tools
+        for budgeting, cash-flow projection, tax estimation, portfolio tracking, simulated
+        (paper) trading, and AI-generated commentary.
+    </p>
+    <p>
+        It is a personal project, not a licensed financial institution, broker-dealer,
+        investment adviser, or tax preparation service. It does not hold your money, execute
+        trades, move funds, or file anything on your behalf.
+    </p>
+
+    <h2>2. Not financial, tax, or legal advice</h2>
+    <p>
+        Everything the application shows is informational. Analysis, rankings, prioritizations,
+        projections, and written commentary are outputs of software operating on the data
+        available to it — not recommendations, and not a professional opinion.
+    </p>
+    <p>
+        This applies specifically to the features most likely to look like advice:
+    </p>
+    <ul>
+        <li>
+            <strong>The AI financial advisor and analysis features.</strong> These generate
+            written guidance, including debt-payoff prioritization and financing suggestions.
+            They are software output, not advice from a qualified adviser.
+        </li>
+        <li>
+            <strong>Income-tax estimates.</strong> These are approximations built from the
+            income and withholding you have recorded, using simplified assumptions. They are
+            not a tax return, not a tax opinion, and will differ from your actual liability.
+            Use a qualified preparer to file.
+        </li>
+        <li>
+            <strong>Trading SOP and compliance features.</strong> Codifying your own trading
+            rules and auditing holdings against them is a bookkeeping aid. Compliance with your
+            own policy is not a prediction of outcome and does not make a trade sound.
+        </li>
+        <li>
+            <strong>Paper trading.</strong> Simulated results do not reflect real execution,
+            slippage, fees, liquidity, or the psychology of trading real money. Simulated
+            performance is not indicative of real performance.
+        </li>
+        <li>
+            <strong>Copy trading and following other users.</strong> Any decision to mirror
+            another person's positions is entirely your own risk. No user is vetted, licensed,
+            or endorsed, and past results predict nothing.
+        </li>
+    </ul>
+
+    <h2>3. AI-generated content</h2>
+    <p>
+        Several features send your data to third-party AI providers and display what comes
+        back. This output can be wrong. Language models can produce confident, fluent,
+        plausible statements that are factually incorrect, miscalculate, or misread an uploaded
+        document.
+    </p>
+    <p>
+        Never act on AI-generated output without verifying it against the underlying numbers.
+        In particular, figures extracted automatically from an uploaded tax document should be
+        checked against the document itself before you rely on them. The application provides
+        manual entry for exactly this reason.
+    </p>
+
+    <h2>4. Market and financial data</h2>
+    <p>
+        Prices, fundamentals, news, and related market data come from third-party sources and
+        are provided as-is. They may be delayed, incomplete, inaccurate, or unavailable. Do not
+        treat any figure shown here as a real-time or authoritative quote, and do not rely on
+        it for time-sensitive decisions. Your broker and your financial institution are the
+        authoritative record of your accounts, not this application.
+    </p>
+
+    <h2>5. Eligibility and your account</h2>
+    <p>
+        You must be at least 18 years old. Sign-in is through Google; you are responsible for
+        the security of the Google account you use, and you should have two-factor
+        authentication enabled on it. You are responsible for activity that occurs under your
+        account. Do not share access with anyone else.
+    </p>
+    <p>
+        Access to certain features is granted by permission. Registering an account does not
+        entitle you to any particular feature.
+    </p>
+
+    <h2>6. Connected financial accounts</h2>
+    <p>
+        If you connect a bank or brokerage account, you do so through Plaid, and you authorize
+        the application to retrieve the account information described in the
+        <a href="/privacy">Privacy Policy</a>. Your banking credentials are entered directly
+        into Plaid and are never transmitted to or stored by this application.
+    </p>
+    <p>
+        You may disconnect an institution at any time, which stops further retrieval. You are
+        responsible for ensuring you have the right to connect any account you link.
+    </p>
+
+    <h2>7. Acceptable use</h2>
+    <p>You agree not to:</p>
+    <ul>
+        <li>Attempt to access another user's data, account, or session.</li>
+        <li>Probe, scan, or test the security of the application or its infrastructure, or
+            circumvent any authentication, permission, or rate limit.</li>
+        <li>Automate access in a way that places unreasonable load on the service, or use it to
+            resell, redistribute, or scrape data obtained through it.</li>
+        <li>Upload malware, or content you do not have the right to upload.</li>
+        <li>Use the application for anything unlawful, or to facilitate market manipulation,
+            insider trading, or any other prohibited trading activity.</li>
+    </ul>
+
+    <h2>8. Your data</h2>
+    <p>
+        You retain ownership of the information you enter and the documents you upload. You
+        grant permission to store and process that information solely to operate the features
+        you are using, as described in the <a href="/privacy">Privacy Policy</a>. How long data
+        is kept and how it is disposed of is governed by the published data retention policy.
+    </p>
+    <p>
+        You are responsible for the accuracy of what you enter. Output is only as good as its
+        input.
+    </p>
+
+    <h2>9. Availability and changes</h2>
+    <p>
+        This is a personal project operated on a best-effort basis. There is no uptime
+        commitment, no support commitment, and no guarantee of continued availability. Features
+        may change or be removed, and the service may be suspended or permanently discontinued
+        at any time, with or without notice.
+    </p>
+    <p>
+        Keep your own copies of anything you cannot afford to lose. Export features are
+        provided for this purpose.
+    </p>
+
+    <h2>10. Termination</h2>
+    <p>
+        You may stop using the application and delete your account at any time from within it.
+        Access may be suspended or terminated at any time, particularly for a violation of
+        Section 7. On termination, data is handled according to the retention policy.
+    </p>
+
+    <h2>11. Disclaimer of warranties</h2>
+    <p>
+        The application is provided <strong>&ldquo;as is&rdquo; and &ldquo;as
+        available,&rdquo;</strong> without warranties of any kind, whether express or implied,
+        including any implied warranties of merchantability, fitness for a particular purpose,
+        accuracy, or non-infringement. No warranty is made that the application will be
+        uninterrupted, timely, secure, error-free, or that any calculation, projection, or
+        analysis it produces will be accurate or complete.
+    </p>
+
+    <h2>12. Limitation of liability</h2>
+    <p>
+        To the fullest extent permitted by law, I am not liable for any indirect, incidental,
+        special, consequential, or exemplary damages, or for any loss of profits, trading
+        losses, investment losses, tax penalties, lost data, or lost opportunity, arising out
+        of or relating to your use of the application — whether or not the possibility of such
+        damages was foreseeable.
+    </p>
+    <p>
+        This includes, without limitation, losses resulting from reliance on any analysis,
+        projection, estimate, AI-generated statement, or market data displayed by the
+        application.
+    </p>
+
+    <h2>13. Changes to these terms</h2>
+    <p>
+        These terms may be updated. The revised version will be posted here with a new date at
+        the top. Continuing to use the application after a change means you accept the revised
+        terms.
+    </p>
+
+    <h2>14. Governing law</h2>
+    <p>
+        These terms are governed by the laws of the State of
+        <span class="pp-flag">[YOUR STATE]</span>, United States, without regard to its
+        conflict-of-laws rules.
+    </p>
+
+    <h2>15. Contact</h2>
+    <p>
+        Questions about these terms can be sent to
+        <a href="mailto:admin@kegbot.net">admin@kegbot.net</a>.
+    </p>
+
+</div>
+{% endblock %}

@@ -353,7 +353,8 @@ PRIVACY_POLICY_VERSION = '2026-09-03'
 # Reachable without having accepted the current policy. /privacy and /consent obviously must
 # be, /logout must be so "decline" is always possible, and /login|/authorize must be so the
 # sign-in round-trip can complete before consent is even evaluated.
-CONSENT_EXEMPT_PATHS = {'/consent', '/privacy', '/login', '/authorize', '/logout', '/health'}
+CONSENT_EXEMPT_PATHS = {'/consent', '/privacy', '/terms', '/login', '/authorize',
+                        '/logout', '/health'}
 
 
 @app.route('/privacy')
@@ -361,6 +362,14 @@ def privacy():
     """The privacy policy. Deliberately public — it has to be readable without an account,
     both for people deciding whether to sign up and for Plaid, which fetches the URL."""
     return render_template('privacy.html')
+
+
+@app.route('/terms')
+def terms():
+    """Terms of service. Public for the same reason as /privacy — someone deciding whether to
+    sign up has to be able to read what they would be agreeing to, before they have an
+    account and therefore before the consent gate applies."""
+    return render_template('terms.html')
 
 
 @app.before_request
