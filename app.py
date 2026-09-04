@@ -21,6 +21,7 @@ from tax_analyzer import TaxAnalyzer
 from config import Config
 from datetime import datetime, timedelta, date
 import json
+import csv
 import hashlib
 import traceback
 import pandas as pd
@@ -28,7 +29,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, TaxDocument
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, TaxDocument
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -754,6 +755,128 @@ BUDGET_CATEGORIES = {'housing', 'utilities', 'transportation', 'insurance', 'foo
                      'entertainment', 'personal', 'taxes', 'other'}
 
 
+# Merchant/description keyword -> budget category, first match wins. Deliberately dumb and
+# deterministic: auto-categorizing a 400-row import must not cost an AI call (see the Phase 0
+# cost controls), and a wrong guess is one dropdown away from fixed.
+SPEND_CATEGORY_RULES = [
+    ('housing', ('rent', 'mortgage', 'hoa ', 'property mgmt', 'landlord')),
+    ('utilities', ('electric', 'energy', 'water dept', 'sewer', 'utility', 'comcast', 'xfinity',
+                   'verizon', 'at&t', 'spectrum', 't-mobile', 'internet')),
+    ('transportation', ('shell', 'exxon', 'chevron', 'sunoco', 'wawa', 'speedway', 'uber', 'lyft',
+                        'parking', 'toll', 'e-zpass', 'dmv', 'autozone', 'jiffy lube')),
+    ('insurance', ('insurance', 'geico', 'allstate', 'progressive', 'state farm')),
+    ('food', ('grocer', 'wegmans', 'kroger', 'safeway', 'aldi', 'trader joe', 'whole foods',
+              'costco', 'walmart', 'target', 'restaurant', 'pizza', 'coffee', 'starbucks',
+              'doordash', 'grubhub', 'ubereats', 'chipotle', 'mcdonald')),
+    ('subscriptions', ('netflix', 'spotify', 'hulu', 'disney+', 'patreon', 'adobe', 'github',
+                       'openai', 'anthropic', 'subscription', 'icloud', 'dropbox')),
+    ('healthcare', ('pharmacy', 'cvs', 'walgreens', 'dental', 'medical', 'clinic', 'hospital',
+                    'optometr', 'urgent care')),
+    ('childcare', ('daycare', 'childcare', 'preschool', 'babysit')),
+    ('entertainment', ('cinema', 'theater', 'steam games', 'playstation', 'xbox', 'concert',
+                       'ticketmaster', 'stubhub')),
+    ('debt', ('loan pmt', 'student loan', 'card payment', 'credit card pmt')),
+    ('taxes', ('irs ', 'us treasury', 'tax pmt', 'franchise tax')),
+]
+
+# Date layouts seen in real bank exports, tried in order when no explicit date_format is given.
+CSV_DATE_FORMATS = ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d', '%d-%b-%Y', '%b %d, %Y',
+                    '%m-%d-%Y', '%d/%m/%Y')
+
+
+def _guess_spend_category(text):
+    t = (text or '').lower()
+    for cat, keys in SPEND_CATEGORY_RULES:
+        if any(k in t for k in keys):
+            return cat
+    return 'other'
+
+
+def _parse_csv_date(s, explicit=None):
+    s = (s or '').strip()
+    if not s:
+        return None
+    for fmt in ([explicit] if explicit else []) + list(CSV_DATE_FORMATS):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _parse_csv_amount(s):
+    """Bank exports write money as '$1,234.56', '(45.00)' for negatives, or bare. Returns None
+    if there is no number in there at all."""
+    t = str(s or '').strip()
+    if not t:
+        return None
+    neg = t.startswith('(') and t.endswith(')')
+    t = t.strip('()').replace('$', '').replace(',', '').replace(' ', '')
+    if not t:
+        return None
+    try:
+        v = float(t)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def _month_bounds(month=None):
+    """('YYYY-MM' or None) -> (first_day, last_day). Defaults to the current month."""
+    today = date.today()
+    first = date(today.year, today.month, 1)
+    if month:
+        try:
+            y, m = str(month).split('-')[:2]
+            first = date(int(y), int(m), 1)
+        except (ValueError, TypeError, IndexError):
+            pass
+    nxt = date(first.year + (1 if first.month == 12 else 0), (first.month % 12) + 1, 1)
+    return first, nxt - timedelta(days=1)
+
+
+def _spend_actuals(user_id, start, end):
+    """Actual spend per category over [start, end]. Refunds are negative, so they net out."""
+    rows = SpendTransaction.query.filter(
+        SpendTransaction.user_id == user_id,
+        SpendTransaction.posted_at >= start,
+        SpendTransaction.posted_at <= end).all()
+    out = {}
+    for t in rows:
+        c = t.category or 'other'
+        out[c] = round(out.get(c, 0) + float(t.amount or 0), 2)
+    return out
+
+
+def _apply_spend_fields(x, d):
+    if 'posted_at' in d:
+        s = (d.get('posted_at') or '').strip()
+        pd_ = _parse_csv_date(s)
+        if pd_:
+            x.posted_at = pd_
+    if 'description' in d and (d.get('description') or '').strip():
+        x.description = d['description'].strip()[:200]
+    if 'merchant' in d:
+        x.merchant = (d.get('merchant') or None)
+    if 'category' in d:
+        c = (d.get('category') or 'other').lower()
+        x.category = c if c in BUDGET_CATEGORIES else 'other'
+    if 'amount' in d:
+        try:
+            x.amount = round(float(d.get('amount') or 0), 2)
+        except (TypeError, ValueError):
+            pass
+    if 'account_id' in d:
+        try:
+            x.account_id = int(d['account_id']) if d.get('account_id') not in (None, '') else None
+        except (TypeError, ValueError):
+            x.account_id = None
+    if 'pending' in d:
+        x.pending = bool(d.get('pending'))
+    if 'notes' in d:
+        x.notes = (d.get('notes') or None)
+
+
 def _apply_bill_fields(x, d):
     if 'name' in d and (d.get('name') or '').strip():
         x.name = d['name'].strip()[:120]
@@ -842,7 +965,9 @@ def finance_budgets():
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
     if request.method == 'GET':
-        return jsonify({'budgets': _budget_rollup(uid)})
+        month = request.args.get('month')
+        return jsonify({'budgets': _budget_rollup(uid, month),
+                        'month': _month_bounds(month)[0].strftime('%Y-%m')})
     d = request.get_json() or {}
     cat = (d.get('category') or '').strip().lower()
     if not cat:
@@ -878,30 +1003,281 @@ def finance_delete_budget(bid):
     return jsonify({'success': True})
 
 
-def _budget_rollup(user_id):
-    """Per-category: monthly limit vs committed (recurring bills mapped to that category).
-    Actual spend (receipts / bank sync) fills in later; committed is the known floor now."""
+def _budget_rollup(user_id, month=None):
+    """Per-category: the monthly limit vs what the category actually consumes this month.
+    `actual_monthly` is real spend (SpendTransaction rows), `committed_monthly` is the
+    recurring-bill floor. A bill that has already been paid appears in BOTH, so adding them
+    would double-count it — the honest single number is the larger of the two. That is
+    `projected_monthly`, and it is what `remaining` and `over` are measured against: early in
+    the month committed leads (bills not yet paid), and as real spend lands actual takes over."""
+    start, end = _month_bounds(month)
     budgets = BudgetCategory.query.filter_by(user_id=user_id).all()
     bills = RecurringBill.query.filter_by(user_id=user_id, active=True).all()
+    actual = _spend_actuals(user_id, start, end)
     committed = {}
     for b in bills:
         committed[b.category] = round(committed.get(b.category, 0) + b.monthly_amount(), 2)
-    out = []
-    seen = set()
+
+    def _row(cat, limit, base):
+        com, act = committed.get(cat, 0), actual.get(cat, 0)
+        proj = round(max(com, act), 2)
+        return {**base, 'committed_monthly': com, 'actual_monthly': act,
+                'projected_monthly': proj, 'remaining': round(limit - proj, 2),
+                'over': proj > limit and limit > 0}
+
+    out, seen = [], set()
     for cat in budgets:
         seen.add(cat.category)
-        limit = float(cat.monthly_limit or 0)
-        com = committed.get(cat.category, 0)
-        out.append({**cat.to_dict(), 'committed_monthly': com,
-                    'remaining': round(limit - com, 2),
-                    'over': com > limit and limit > 0})
-    # categories that have bills but no explicit budget row
-    for cat, com in committed.items():
+        out.append(_row(cat.category, float(cat.monthly_limit or 0), cat.to_dict()))
+    # categories that have bills or spend but no explicit budget row
+    for cat in sorted(set(committed) | set(actual)):
         if cat not in seen:
-            out.append({'id': None, 'category': cat, 'monthly_limit': 0, 'kind': 'expense',
-                        'notes': None, 'committed_monthly': com, 'remaining': round(-com, 2), 'over': False})
-    out.sort(key=lambda r: -r['committed_monthly'])
+            out.append(_row(cat, 0, {'id': None, 'category': cat, 'monthly_limit': 0,
+                                     'kind': 'expense', 'notes': None}))
+    out.sort(key=lambda r: -r['projected_monthly'])
     return out
+
+
+@app.route('/api/finance/transactions', methods=['GET', 'POST'])
+@require_api_auth
+def finance_transactions():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    if request.method == 'GET':
+        start, end = _month_bounds(request.args.get('month'))
+        q = SpendTransaction.query.filter(SpendTransaction.user_id == uid,
+                                          SpendTransaction.posted_at >= start,
+                                          SpendTransaction.posted_at <= end)
+        cat = (request.args.get('category') or '').lower()
+        if cat in BUDGET_CATEGORIES:
+            q = q.filter(SpendTransaction.category == cat)
+        src = (request.args.get('source') or '').lower()
+        if src in SpendTransaction.SOURCES:
+            q = q.filter(SpendTransaction.source == src)
+        term = (request.args.get('q') or '').strip()
+        if term:
+            like = '%{}%'.format(term)
+            q = q.filter(db.or_(SpendTransaction.description.ilike(like),
+                                SpendTransaction.merchant.ilike(like)))
+        try:
+            limit = min(max(int(request.args.get('limit', 250)), 1), 1000)
+        except (TypeError, ValueError):
+            limit = 250
+        rows = q.order_by(SpendTransaction.posted_at.desc(),
+                          SpendTransaction.id.desc()).limit(limit).all()
+        by_cat = {}
+        for t in rows:
+            c = t.category or 'other'
+            by_cat[c] = round(by_cat.get(c, 0) + float(t.amount or 0), 2)
+        return jsonify({
+            'month': start.strftime('%Y-%m'),
+            'transactions': [t.to_dict() for t in rows],
+            'total': round(sum(float(t.amount or 0) for t in rows), 2),
+            'count': len(rows),
+            'by_category': sorted([{'category': c, 'amount': a} for c, a in by_cat.items()],
+                                  key=lambda r: -r['amount']),
+        })
+    d = request.get_json() or {}
+    if not (d.get('description') or '').strip():
+        return jsonify({'error': 'description is required'}), 400
+    t = SpendTransaction(user_id=uid, description='', posted_at=date.today(), source='manual')
+    _apply_spend_fields(t, d)
+    if not (d.get('category') or '').strip():
+        t.category = _guess_spend_category('{} {}'.format(d.get('merchant') or '',
+                                                          d.get('description') or ''))
+    db.session.add(t)
+    db.session.commit()
+    return jsonify(t.to_dict()), 201
+
+
+@app.route('/api/finance/transactions/<int:tid>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def finance_modify_transaction(tid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    t = SpendTransaction.query.filter_by(id=tid, user_id=uid).first()
+    if not t:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        db.session.delete(t)
+        db.session.commit()
+        return jsonify({'success': True})
+    _apply_spend_fields(t, request.get_json() or {})
+    db.session.commit()
+    return jsonify(t.to_dict())
+
+
+def _csv_text_from_request():
+    """The CSV can arrive as an uploaded file or as a pasted `csv` string. Bank exports are
+    routinely cp1252 (smart quotes in merchant names), so decoding falls back rather than 500s."""
+    f = request.files.get('file')
+    if f:
+        raw = f.read(4 * 1024 * 1024)
+        for enc in ('utf-8-sig', 'cp1252', 'latin-1'):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode('utf-8', errors='replace')
+    if request.form.get('csv'):
+        return request.form['csv']
+    return ((request.get_json(silent=True) or {}).get('csv') or '')
+
+
+@app.route('/api/finance/transactions/import-csv', methods=['POST'])
+@require_api_auth
+def finance_import_transactions_csv():
+    """Two-step, so no bank's column names have to be known in advance. POST the file with no
+    `mapping` and you get back the detected headers, sample rows, a guessed mapping and the
+    sign the data implies; POST again with a confirmed `mapping` and the rows land.
+
+    Re-importing an overlapping export is safe: each row gets external_id
+    'csv:<sha1 of date|description|amount|account>', so a row already on file is skipped
+    rather than counted twice."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    text_body = _csv_text_from_request()
+    if not (text_body or '').strip():
+        return jsonify({'error': 'No CSV supplied (send a `file` upload or a `csv` string)'}), 400
+
+    try:
+        dialect = csv.Sniffer().sniff(text_body[:8192], delimiters=',;\t|')
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text_body), dialect=dialect)
+    headers = [h for h in (reader.fieldnames or []) if h and h.strip()]
+    if not headers:
+        return jsonify({'error': 'Could not read a header row from that CSV'}), 400
+    rows = list(reader)
+    if not rows:
+        return jsonify({'error': 'That CSV has a header but no data rows'}), 400
+
+    body = request.get_json(silent=True) or {}
+    mapping = body.get('mapping')
+    if not mapping and request.form.get('mapping'):
+        try:
+            mapping = json.loads(request.form['mapping'])
+        except ValueError:
+            return jsonify({'error': 'mapping is not valid JSON'}), 400
+
+    def _pick(*cands):
+        for h in headers:
+            hl = h.strip().lower()
+            for c in cands:
+                if c in hl:
+                    return h
+        return None
+
+    guessed = {'date': _pick('post date', 'posted', 'transaction date', 'date'),
+               'description': _pick('description', 'name', 'memo', 'payee', 'merchant'),
+               'amount': _pick('amount', 'debit'),
+               'category': _pick('category')}
+
+    if not mapping:
+        # Which way does this file express a debit? Most exports write spend as negative, but
+        # plenty write it positive. Decide from the data and let the user override.
+        vals = [v for v in (_parse_csv_amount(r.get(guessed['amount'])) for r in rows[:200])
+                if v is not None]
+        negs = len([v for v in vals if v < 0])
+        sign = 'debit_negative' if vals and negs >= len(vals) * 0.6 else 'debit_positive'
+        return jsonify({
+            'preview': True, 'headers': headers, 'row_count': len(rows),
+            'guessed_mapping': guessed, 'guessed_sign': sign,
+            'sample': [{h: r.get(h) for h in headers} for r in rows[:5]],
+        })
+
+    date_col, desc_col = mapping.get('date'), mapping.get('description')
+    amt_col = mapping.get('amount')
+    if not (date_col and desc_col and amt_col):
+        return jsonify({'error': 'mapping needs at least date, description and amount'}), 400
+    merch_col, cat_col = mapping.get('merchant'), mapping.get('category')
+    date_format = mapping.get('date_format') or None
+    flip = (mapping.get('sign') or 'debit_positive') == 'debit_negative'
+    try:
+        account_id = int(mapping['account_id']) if mapping.get('account_id') not in (None, '') else None
+    except (TypeError, ValueError):
+        account_id = None
+    skip_income = bool(mapping.get('skip_income', True))
+
+    existing = {e for (e,) in db.session.query(SpendTransaction.external_id)
+                .filter(SpendTransaction.user_id == uid,
+                        SpendTransaction.external_id.isnot(None)).all()}
+    imported, dupes, invalid, skipped_income, seen = 0, 0, 0, 0, set()
+    for r in rows:
+        posted = _parse_csv_date(r.get(date_col), date_format)
+        amt = _parse_csv_amount(r.get(amt_col))
+        desc = (r.get(desc_col) or '').strip()
+        if not posted or amt is None or not desc:
+            invalid += 1
+            continue
+        if flip:
+            amt = -amt
+        # After normalization a negative row is money IN (a deposit or a refund). Deposits are
+        # income and belong to the income module, so by default they stay out of spend.
+        if amt < 0 and skip_income:
+            skipped_income += 1
+            continue
+        amt = round(amt, 2)
+        key = 'csv:' + hashlib.sha1('{}|{}|{}|{}'.format(
+            posted.isoformat(), desc.lower(), amt, account_id or '').encode('utf-8')).hexdigest()[:24]
+        if key in existing or key in seen:
+            dupes += 1
+            continue
+        seen.add(key)
+        merchant = (r.get(merch_col) or '').strip()[:160] if merch_col else None
+        cat = (r.get(cat_col) or '').strip().lower() if cat_col else ''
+        if cat not in BUDGET_CATEGORIES:
+            cat = _guess_spend_category('{} {}'.format(merchant or '', desc))
+        db.session.add(SpendTransaction(
+            user_id=uid, posted_at=posted, description=desc[:200], merchant=merchant or None,
+            category=cat, amount=amt, account_id=account_id, source='csv', external_id=key))
+        imported += 1
+    db.session.commit()
+    return jsonify({'imported': imported, 'duplicates_skipped': dupes,
+                    'income_rows_skipped': skipped_income, 'unparseable_rows': invalid,
+                    'total_rows': len(rows)})
+
+
+@app.route('/api/finance/transactions/import-receipts', methods=['POST'])
+@require_api_auth
+def finance_import_receipts():
+    """Turn Phase 3's stored receipts into budget actuals. Only a receipt the AI (or the user)
+    put an amount on can become a transaction; each is tied back to its TaxDocument by
+    external_id 'receipt:<id>', so running this repeatedly only picks up what is new."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    docs = TaxDocument.query.filter_by(user_id=uid, doc_type='receipt').all()
+    existing = {e for (e,) in db.session.query(SpendTransaction.external_id)
+                .filter(SpendTransaction.user_id == uid,
+                        SpendTransaction.external_id.like('receipt:%')).all()}
+    imported, skipped, no_amount = 0, 0, 0
+    for doc in docs:
+        amt = round(float(doc.amount or 0), 2)
+        if amt <= 0:
+            no_amount += 1
+            continue
+        key = 'receipt:{}'.format(doc.id)
+        if key in existing:
+            skipped += 1
+            continue
+        merchant = doc.merchant or doc.issuer
+        cat = (doc.category or '').lower()
+        if cat not in BUDGET_CATEGORIES:
+            cat = _guess_spend_category('{} {}'.format(merchant or '', doc.filename or ''))
+        db.session.add(SpendTransaction(
+            user_id=uid, posted_at=(doc.uploaded_at.date() if doc.uploaded_at else date.today()),
+            description=(merchant or doc.filename or 'Receipt')[:200],
+            merchant=(merchant or None), category=cat, amount=amt, source='receipt',
+            external_id=key, tax_document_id=doc.id,
+            notes='Imported from receipt #{}'.format(doc.id)))
+        imported += 1
+    db.session.commit()
+    return jsonify({'imported': imported, 'already_imported': skipped,
+                    'receipts_without_amount': no_amount, 'receipts_seen': len(docs)})
 
 
 def _finance_cashflow(user_id, days=60, starting_balance=None):

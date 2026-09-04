@@ -94,10 +94,24 @@
         <div id="billsBody"><p class="muted">Loading…</p></div>
     </div>
 
+    <!-- Spending -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Spending <span class="muted" id="spendTotal" style="font-size:0.65em;font-weight:400;"></span></h2>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input type="month" id="spendMonth" class="fin-in" style="padding:4px 8px;" onchange="loadBudgeting()">
+                <button class="btn2" onclick="importReceipts()">&#8615; From receipts</button>
+                <button class="btn2" onclick="openCsvImport()">&#8613; Import CSV</button>
+                <button class="btn2 primary" onclick="openTxn(null)">+ Add</button>
+            </div>
+        </div>
+        <div id="spendBody"><p class="muted">Loading&hellip;</p></div>
+    </div>
+
     <!-- Budget -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
-            <h2 style="margin:0;">Budget <span class="muted" style="font-size:0.65em;font-weight:400;">limit vs committed (bills)</span></h2>
+            <h2 style="margin:0;">Budget <span class="muted" style="font-size:0.65em;font-weight:400;">limit vs actual spend</span></h2>
             <button class="btn2 primary" onclick="openBudget(null)">+ Set Budget</button>
         </div>
         <div id="budgetBody"><p class="muted">Loading…</p></div>
@@ -385,15 +399,20 @@
     async function delAccount(id){ if(!confirm('Delete this account?'))return; await fetch(`/api/finance/accounts/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
 
     /* ===== Bills, Budget & Cash-flow (Phase 2) ===== */
+    function spendMonth(){ const el=document.getElementById('spendMonth'); return (el && el.value) || ''; }
     async function loadBudgeting() {
+        const m = spendMonth(), qs = m ? `?month=${m}` : '';
         try {
-            const [bills, budgets, cash] = await Promise.all([
+            const [bills, budgets, cash, txns] = await Promise.all([
                 fetch('/api/finance/bills',{credentials:'same-origin'}).then(r=>r.json()),
-                fetch('/api/finance/budgets',{credentials:'same-origin'}).then(r=>r.json()),
+                fetch(`/api/finance/budgets${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
                 fetch('/api/finance/cashflow?days=60',{credentials:'same-origin'}).then(r=>r.json()),
+                fetch(`/api/finance/transactions${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
             ]);
             BILLS = bills.bills||[];
-            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash);
+            const mEl=document.getElementById('spendMonth');
+            if(mEl && !mEl.value && txns.month) mEl.value = txns.month;
+            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns);
         } catch(e){ document.getElementById('billsBody').innerHTML='<p class="neg" style="padding:12px;">Could not load budgeting.</p>'; }
     }
     function renderBills(d) {
@@ -412,19 +431,29 @@
     }
     function renderBudgets(rows) {
         const el=document.getElementById('budgetBody');
-        if(!rows.length){ el.innerHTML='<p class="muted" style="padding:12px;">No budget set. Set a monthly limit per category to track it against your bills.</p>'; return; }
+        if(!rows.length){ el.innerHTML='<p class="muted" style="padding:12px;">No budget set. Set a monthly limit per category to track it against your actual spend.</p>'; return; }
         el.innerHTML = rows.map(r=>{
-            const limit=r.monthly_limit||0, com=r.committed_monthly||0;
-            const pct = limit>0 ? Math.min(100, Math.round(com/limit*100)) : (com>0?100:0);
+            const limit=r.monthly_limit||0, act=r.actual_monthly||0, com=r.committed_monthly||0;
+            const proj=r.projected_monthly||0;
+            const pct    = limit>0 ? Math.min(100, Math.round(proj/limit*100)) : (proj>0?100:0);
+            const actPct = limit>0 ? Math.min(100, Math.round(act/limit*100))  : (act>0?100:0);
             const barColor = r.over ? 'var(--neg,#ef4444)' : (pct>=80?'#f59e0b':'#22c55e');
-            const right = limit>0 ? `${fmt(com)} / ${fmt(limit)} <span class="muted">(${pct}%)</span>` : `${fmt(com)} committed <span class="muted">(no limit)</span>`;
-            return `<div style="margin-bottom:10px;">
+            const right = limit>0 ? `${fmt(proj)} / ${fmt(limit)} <span class="muted">(${pct}%)</span>`
+                                  : `${fmt(proj)} <span class="muted">(no limit)</span>`;
+            /* Two-tone bar: solid = money actually spent, ghosted = the bill floor still expected
+               this month. They overlap on purpose — projected is max(actual, committed), never the
+               sum, so a bill that's already been paid isn't counted twice. */
+            return `<div style="margin-bottom:12px;">
                 <div style="display:flex;justify-content:space-between;font-size:0.88em;margin-bottom:3px;">
                   <span><strong>${esc(r.category)}</strong>${r.kind!=='expense'?` <span class="muted">(${esc(r.kind)})</span>`:''}${r.over?' <span class="neg" style="font-size:0.85em;">over</span>':''}</span>
                   <span>${right}</span>
                 </div>
-                <div style="background:var(--bg-tertiary,#eee);border-radius:6px;height:8px;overflow:hidden;"><div style="width:${pct}%;height:100%;background:${barColor};"></div></div>
-                ${r.id?`<div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick='openBudget(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delBudget(${r.id})">✕</button></div>`:`<div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick="openBudget({category:'${esc(r.category)}'})">set limit</button></div>`}
+                <div style="background:var(--bg-tertiary,#eee);border-radius:6px;height:8px;overflow:hidden;position:relative;">
+                  <div style="position:absolute;top:0;left:0;bottom:0;width:${pct}%;background:${barColor};opacity:0.35;"></div>
+                  <div style="position:absolute;top:0;left:0;bottom:0;width:${actPct}%;background:${barColor};"></div>
+                </div>
+                <div class="muted" style="font-size:0.76em;margin-top:3px;">spent ${fmt2(act)} &middot; bills ${fmt2(com)}/mo</div>
+                ${r.id?`<div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick='openBudget(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delBudget(${r.id})">&#10005;</button></div>`:`<div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick="openBudget({category:'${esc(r.category)}'})">set limit</button></div>`}
             </div>`;
         }).join('');
     }
@@ -495,6 +524,115 @@
         }catch(e){ g('buMsg').textContent=e.message; }
     }
     async function delBudget(id){ if(!confirm('Remove this budget limit?'))return; await fetch(`/api/finance/budgets/${id}`,{method:'DELETE',credentials:'same-origin'}); loadBudgeting(); }
+
+    /* ---- spending: the ledger that turns Budget into limit-vs-actual ---- */
+    /* JSON in a single-quoted onclick: esc() handles the HTML, then the apostrophes in
+       merchant names (MCDONALD'S) become entities so they can't close the attribute. */
+    const attrJson = (o) => esc(JSON.stringify(o)).replace(/'/g,'&#39;');
+
+    function renderSpending(d) {
+        const el=document.getElementById('spendBody'), rows=(d&&d.transactions)||[];
+        document.getElementById('spendTotal').textContent =
+            rows.length ? `· ${fmt(d.total)} over ${d.count} txn${d.count===1?'':'s'}` : '';
+        if(!rows.length){ el.innerHTML='<p class="muted" style="padding:12px;">No transactions this month. Add one, import a bank CSV, or pull in your receipts — that’s what turns Budget from limit-vs-bills into limit-vs-actual.</p>'; return; }
+        const cats=(d.by_category||[]).slice(0,8);
+        const chips = cats.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">${cats.map(c=>`<span class="badge b-inv">${esc(c.category)} ${fmt(c.amount)}</span>`).join('')}</div>` : '';
+        el.innerHTML = chips + '<div style="overflow-x:auto;max-height:440px;overflow-y:auto;"><table class="fin-table"><thead><tr><th>Date</th><th>Description</th><th>Category</th><th style="text-align:right;">Amount</th><th></th></tr></thead><tbody>'+
+            rows.map(t=>`<tr>
+                <td style="white-space:nowrap;">${t.posted_at||''}</td>
+                <td><strong>${esc(t.description)}</strong>${t.source!=='manual'?` <span class="badge b-inv" style="font-size:0.72em;">${esc(t.source)}</span>`:''}${t.merchant&&t.merchant!==t.description?`<div class="muted" style="font-size:0.8em;">${esc(t.merchant)}</div>`:''}</td>
+                <td>${esc(t.category)}</td>
+                <td style="text-align:right;" class="${t.amount<0?'pos':''}">${t.amount<0?'+'+fmt2(Math.abs(t.amount)):fmt2(t.amount)}</td>
+                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openTxn(${attrJson(t)})'>edit</button> <button class="link-btn danger" onclick="delTxn(${t.id})">&#10005;</button></td>
+            </tr>`).join('')+'</tbody></table></div>';
+    }
+    /* transaction modal */
+    function openTxn(t) {
+        const e=t||{posted_at:new Date().toISOString().slice(0,10),category:'',amount:0};
+        const accts=(OUTLOOK&&OUTLOOK.accounts)||[];
+        showModal(`<h2 style="margin:0 0 8px;">${t?'Edit':'Add'} Transaction</h2>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Date</label><input id="tDate" type="date" class="fin-in" style="width:100%;" value="${e.posted_at||''}"></div>
+              <div style="flex:1;"><label class="fld">Amount $ <span class="muted" style="font-weight:400;">(negative = refund)</span></label><input id="tAmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.amount||0}"></div>
+            </div>
+            <label class="fld">Description</label><input id="tDesc" class="fin-in" style="width:100%;" value="${esc(e.description||'')}" placeholder="e.g. Wegmans, Shell, Amazon">
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Merchant (optional)</label><input id="tMerch" class="fin-in" style="width:100%;" value="${esc(e.merchant||'')}"></div>
+              <div style="flex:1;"><label class="fld">Category</label><select id="tCat" class="fin-in" style="width:100%;"><option value="">auto-detect</option>${BUDGET_CATS.map(c=>`<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+            </div>
+            <label class="fld">Paid from (optional)</label><select id="tAcct" class="fin-in" style="width:100%;"><option value="">&mdash;</option>${accts.map(a=>`<option value="${a.id}" ${e.account_id===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveTxn(${t?t.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="tMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function saveTxn(id) {
+        const g=i=>document.getElementById(i);
+        const body={posted_at:g('tDate').value,amount:parseFloat(g('tAmt').value)||0,
+            description:g('tDesc').value.trim(),merchant:g('tMerch').value.trim(),
+            category:g('tCat').value,account_id:g('tAcct').value};
+        if(!body.description){ g('tMsg').textContent='Description required'; return; }
+        try{ const r=await fetch(id?`/api/finance/transactions/${id}`:'/api/finance/transactions',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
+            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadBudgeting();
+        }catch(e){ g('tMsg').textContent=e.message; }
+    }
+    async function delTxn(id){ if(!confirm('Delete this transaction?'))return; await fetch(`/api/finance/transactions/${id}`,{method:'DELETE',credentials:'same-origin'}); loadBudgeting(); }
+    /* CSV import — step 1 pick the file, step 2 map its columns */
+    let CSV_FILE=null;
+    function openCsvImport() {
+        CSV_FILE=null;
+        showModal(`<h2 style="margin:0 0 4px;">Import bank CSV</h2>
+            <p class="muted" style="margin:0 0 12px;font-size:0.85em;">Any bank's export works &mdash; you'll map its columns on the next step. Re-importing an overlapping date range is safe: rows already on file are skipped, not double-counted.</p>
+            <input type="file" id="csvFile" accept=".csv,text/csv" class="fin-in" style="width:100%;">
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="csvPreview()">Next</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="csvMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function csvPreview() {
+        const msg=document.getElementById('csvMsg'), f=document.getElementById('csvFile').files[0];
+        if(!f){ msg.textContent='Choose a file first'; return; }
+        CSV_FILE=f; msg.textContent='Reading…';
+        const fd=new FormData(); fd.append('file',f);
+        try{
+            const r=await fetch('/api/finance/transactions/import-csv',{method:'POST',credentials:'same-origin',body:fd});
+            const d=await r.json(); if(!r.ok) throw new Error(d.error||'fail');
+            showCsvMapping(d);
+        }catch(e){ msg.textContent=e.message; }
+    }
+    function showCsvMapping(d) {
+        const H=d.headers||[], g=d.guessed_mapping||{};
+        const sel=(id,val)=>`<select id="${id}" class="fin-in" style="width:100%;"><option value="">&mdash;</option>${H.map(h=>`<option ${val===h?'selected':''}>${esc(h)}</option>`).join('')}</select>`;
+        showModal(`<h2 style="margin:0 0 4px;">Map columns</h2>
+            <p class="muted" style="margin:0 0 12px;font-size:0.85em;">${d.row_count} rows found. Category is optional &mdash; anything unmapped is guessed from the description.</p>
+            <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Date *</label>${sel('mDate',g.date)}</div><div style="flex:1;"><label class="fld">Description *</label>${sel('mDesc',g.description)}</div></div>
+            <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Amount *</label>${sel('mAmt',g.amount)}</div><div style="flex:1;"><label class="fld">Category</label>${sel('mCat',g.category)}</div></div>
+            <label class="fld">How does this file write a purchase?</label>
+            <select id="mSign" class="fin-in" style="width:100%;">
+              <option value="debit_negative" ${d.guessed_sign==='debit_negative'?'selected':''}>As a negative amount</option>
+              <option value="debit_positive" ${d.guessed_sign==='debit_positive'?'selected':''}>As a positive amount</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:0.88em;"><input type="checkbox" id="mSkipInc" checked> Skip deposits (income is tracked in Income &amp; Pay)</label>
+            <details style="margin-bottom:8px;"><summary class="muted" style="font-size:0.85em;cursor:pointer;">Sample rows</summary><div style="overflow-x:auto;font-size:0.75em;margin-top:6px;"><table class="fin-table"><thead><tr>${H.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${(d.sample||[]).map(r=>`<tr>${H.map(h=>`<td>${esc(r[h])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details>
+            <div style="display:flex;gap:10px;margin-top:6px;"><button class="btn2 primary" onclick="csvImport()">Import</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="csvMsg2" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function csvImport() {
+        const g=i=>document.getElementById(i), msg=g('csvMsg2');
+        const mapping={date:g('mDate').value,description:g('mDesc').value,amount:g('mAmt').value,
+            category:g('mCat').value,sign:g('mSign').value,skip_income:g('mSkipInc').checked};
+        if(!mapping.date||!mapping.description||!mapping.amount){ msg.textContent='Date, description and amount are required'; return; }
+        if(!CSV_FILE){ msg.textContent='File lost — start over'; return; }
+        msg.textContent='Importing…';
+        const fd=new FormData(); fd.append('file',CSV_FILE); fd.append('mapping',JSON.stringify(mapping));
+        try{
+            const r=await fetch('/api/finance/transactions/import-csv',{method:'POST',credentials:'same-origin',body:fd});
+            const d=await r.json(); if(!r.ok) throw new Error(d.error||'fail');
+            closeModal(); loadBudgeting();
+            alert(`Imported ${d.imported} of ${d.total_rows} rows.\n\n${d.duplicates_skipped} already on file\n${d.income_rows_skipped} deposits skipped\n${d.unparseable_rows} unreadable`);
+        }catch(e){ msg.textContent=e.message; }
+    }
+    async function importReceipts() {
+        try{
+            const r=await fetch('/api/finance/transactions/import-receipts',{method:'POST',credentials:'same-origin'});
+            const d=await r.json(); if(!r.ok) throw new Error(d.error||'fail');
+            loadBudgeting();
+            alert(`Imported ${d.imported} receipt${d.imported===1?'':'s'} as transactions.\n\n${d.already_imported} already imported\n${d.receipts_without_amount} have no amount read yet`);
+        }catch(e){ alert('Could not import receipts: '+e.message); }
+    }
 
     function showModal(html){ const r=document.getElementById('modalRoot'); r.innerHTML=`<div class="modal-back" id="_mb"><div class="modal-box">${html}</div></div>`; document.getElementById('_mb').addEventListener('click',e=>{if(e.target.id==='_mb')closeModal();}); }
     function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }

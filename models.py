@@ -1144,6 +1144,54 @@ class BudgetCategory(db.Model):
         }
 
 
+class SpendTransaction(db.Model):
+    """One actual spend (or refund). This is what turns the Budget card from
+    limit-vs-committed into limit-vs-actual: _budget_rollup sums these per category for the
+    month. Rows arrive three ways today — typed in by hand, imported from a bank CSV export,
+    or pulled from a Phase 3 receipt (TaxDocument) — and a bank sync is the obvious fourth,
+    which is why `source` and `external_id` exist now rather than later: external_id is the
+    provider's own id (or, for CSV, a hash of the row) and is what stops a re-import from
+    double-counting. Amount is positive for money out and negative for a refund/credit, so a
+    category total is just a sum."""
+    __tablename__ = 'spend_transactions'
+
+    SOURCES = ('manual', 'csv', 'receipt', 'plaid')
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    posted_at = db.Column(db.Date, nullable=False, index=True)
+    description = db.Column(db.String(200), nullable=False)
+    merchant = db.Column(db.String(160))
+    category = db.Column(db.String(50), default='other', index=True)
+    amount = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)  # + = out, - = refund
+    account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
+    source = db.Column(db.String(10), default='manual')     # manual|csv|receipt|plaid
+    external_id = db.Column(db.String(120), index=True)     # dedupe key; NULL for manual rows
+    tax_document_id = db.Column(db.Integer, db.ForeignKey('tax_documents.id'))
+    pending = db.Column(db.Boolean, default=False)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Postgres treats NULLs as distinct, so hand-entered rows (external_id NULL) never collide
+    # with each other while an imported row can only land once per user.
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'external_id', name='uq_spend_user_external'),
+        db.Index('ix_spend_user_posted', 'user_id', 'posted_at'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'posted_at': self.posted_at.isoformat() if self.posted_at else None,
+            'description': self.description, 'merchant': self.merchant,
+            'category': self.category, 'amount': float(self.amount or 0),
+            'account_id': self.account_id, 'source': self.source,
+            'external_id': self.external_id, 'tax_document_id': self.tax_document_id,
+            'pending': bool(self.pending), 'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class TaxDocument(db.Model):
     """A stored tax document or receipt. File bytes live in Postgres (bytea) rather than a
     filesystem because the app's PVC is ReadWriteOnce — a shared disk across the 3 pods is
