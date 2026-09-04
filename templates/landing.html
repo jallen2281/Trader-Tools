@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trader Tools — Personal finance and portfolio dashboard</title>
+<meta name="description" content="A personal dashboard for budgeting, debt payoff, cash-flow projection, tax records and investment portfolio tracking.">
+<link rel="icon" type="image/png" href="{{ url_for('static', filename='logo-64.png') }}">
+<style>
+    :root{
+        --ink:#e8edf7; --dim:#98a3ba; --line:rgba(255,255,255,.10);
+        --card:rgba(255,255,255,.035); --green:#4ade80; --green-d:#22c55e;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+        background:#0b1120;
+        background-image:radial-gradient(1100px 600px at 72% -8%,rgba(34,197,94,.11),transparent 62%),
+                         linear-gradient(180deg,#0b1120 0%,#111a30 55%,#0b1120 100%);
+        background-attachment:fixed;
+        color:var(--ink); line-height:1.6; -webkit-font-smoothing:antialiased;
+    }
+    .wrap{max-width:1000px;margin:0 auto;padding:0 22px}
+    header{padding:26px 0 0;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+    .brand{display:flex;align-items:center;gap:13px;font-weight:700;font-size:1.12rem;letter-spacing:-.01em}
+    .brand img{width:40px;height:40px;border-radius:11px;display:block}
+    .brand span i{font-style:normal;color:var(--green)}
+    .nav-a{color:var(--dim);text-decoration:none;font-size:.9rem;margin-left:20px}
+    .nav-a:hover{color:var(--ink)}
+
+    .hero{padding:74px 0 58px;text-align:center}
+    .hero img.tile{width:104px;height:104px;border-radius:26px;margin-bottom:26px;
+                   box-shadow:0 18px 50px rgba(0,0,0,.55)}
+    h1{font-size:clamp(2rem,5.4vw,3.15rem);line-height:1.12;letter-spacing:-.025em;font-weight:700}
+    h1 em{font-style:normal;color:var(--green)}
+    .sub{color:var(--dim);font-size:clamp(1rem,2.1vw,1.16rem);max-width:610px;margin:20px auto 0}
+
+    .cta{display:inline-flex;align-items:center;gap:11px;margin-top:34px;
+         background:#fff;color:#1f2430;text-decoration:none;font-weight:600;font-size:1rem;
+         padding:13px 26px;border-radius:11px;transition:transform .12s ease,box-shadow .12s ease;
+         box-shadow:0 8px 26px rgba(0,0,0,.4)}
+    .cta:hover{transform:translateY(-1px);box-shadow:0 12px 32px rgba(0,0,0,.5)}
+    .cta svg{width:19px;height:19px;flex:0 0 19px}
+    .cta-note{color:var(--dim);font-size:.83rem;margin-top:14px}
+
+    h2{font-size:1.42rem;letter-spacing:-.015em;margin-bottom:8px}
+    .sec{padding:52px 0;border-top:1px solid var(--line)}
+    .sec > p.lead{color:var(--dim);margin-bottom:26px;max-width:640px}
+
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:15px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 21px}
+    .card h3{font-size:1rem;margin-bottom:6px;display:flex;align-items:center;gap:9px}
+    .card p{color:var(--dim);font-size:.91rem}
+    .ic{font-size:1.05rem;line-height:1}
+
+    .disc{background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.28);
+          border-radius:14px;padding:19px 22px;color:#f7d9a4;font-size:.93rem}
+    .disc strong{color:#fde3b2}
+
+    ul.plain{list-style:none;display:grid;gap:11px;max-width:660px}
+    ul.plain li{color:var(--dim);font-size:.94rem;padding-left:26px;position:relative}
+    ul.plain li::before{content:'';position:absolute;left:5px;top:.62em;width:7px;height:7px;
+                        border-radius:50%;background:var(--green-d)}
+    ul.plain b{color:var(--ink);font-weight:600}
+
+    footer{border-top:1px solid var(--line);padding:30px 0 46px;text-align:center;
+           color:var(--dim);font-size:.87rem}
+    footer a{color:var(--dim);text-decoration:none}
+    footer a:hover{color:var(--ink);text-decoration:underline}
+    .dot{opacity:.4;margin:0 10px}
+    @media (max-width:560px){ .hero{padding:52px 0 42px} .nav-a{margin-left:14px} }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+    <header>
+        <div class="brand">
+            <img src="{{ url_for('static', filename='logo-128.png') }}" alt="Trader Tools logo">
+            <span>Trader<i>Tools</i></span>
+        </div>
+        <nav>
+            <a class="nav-a" href="/privacy">Privacy</a>
+            <a class="nav-a" href="/terms">Terms</a>
+            <a class="nav-a" href="/login">Sign in</a>
+        </nav>
+    </header>
+
+    <section class="hero">
+        <img class="tile" src="{{ url_for('static', filename='logo-256.png') }}" alt="">
+        <h1>Your money and your portfolio,<br><em>in one place</em></h1>
+        <p class="sub">
+            A personal dashboard that pulls budgeting, debt payoff, cash-flow projection, tax
+            records and investment tracking together, so the whole picture is on one screen
+            instead of six.
+        </p>
+        <a class="cta" href="/login">
+            <svg viewBox="0 0 48 48" aria-hidden="true">
+                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24s.92 7.54 2.56 10.78l7.97-6.19z"/>
+                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+            </svg>
+            Sign in with Google
+        </a>
+        <p class="cta-note">Sign-in is handled by Google. No password is ever created or stored.</p>
+    </section>
+
+    <section class="sec">
+        <h2>What it does</h2>
+        <p class="lead">Everything below works on figures you enter yourself, or that you choose
+            to connect from a financial institution.</p>
+        <div class="grid">
+            <div class="card">
+                <h3><span class="ic">💰</span> Net worth &amp; debt</h3>
+                <p>Assets and liabilities in one view, with debts ranked by interest rate so the
+                   most expensive balance is obvious.</p>
+            </div>
+            <div class="card">
+                <h3><span class="ic">📅</span> Bills &amp; cash flow</h3>
+                <p>Recurring bills and paychecks projected forward on a running balance, so a
+                   shortfall shows up before it happens.</p>
+            </div>
+            <div class="card">
+                <h3><span class="ic">🧾</span> Spending vs budget</h3>
+                <p>A spending ledger — entered by hand, imported from a bank CSV, or read from
+                   receipts — measured against the limits you set.</p>
+            </div>
+            <div class="card">
+                <h3><span class="ic">📄</span> Tax records</h3>
+                <p>W-2s, 1099s and receipts stored in one place, with an approximate federal
+                   income-tax estimate built from them.</p>
+            </div>
+            <div class="card">
+                <h3><span class="ic">📈</span> Portfolio tracking</h3>
+                <p>Holdings, cost basis, dividends and realized gains, with market data pulled
+                   from public sources.</p>
+            </div>
+            <div class="card">
+                <h3><span class="ic">🤖</span> AI analysis</h3>
+                <p>Optional written analysis of your own numbers, generated on request. Never
+                   automatic, and never a substitute for professional advice.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="sec">
+        <h2>What signing in gives the app</h2>
+        <p class="lead">Google sign-in is used only to create and identify your account.</p>
+        <ul class="plain">
+            <li><b>Your name, email address and profile picture</b>, from your Google profile —
+                used to identify your account and nothing else.</li>
+            <li><b>No password is created or stored.</b> Authentication happens entirely on
+                Google's side.</li>
+            <li><b>No access to your Gmail, Drive, Calendar or contacts</b> is requested, at any
+                point.</li>
+            <li><b>Your financial data is never sold</b>, never used for advertising, and never
+                shared with anyone for their own purposes. The
+                <a href="/privacy" style="color:var(--green)">Privacy Policy</a> names every
+                service provider that receives any of it.</li>
+        </ul>
+    </section>
+
+    <section class="sec">
+        <h2>Before you rely on it</h2>
+        <div class="disc">
+            <strong>This is not financial, investment, tax, or legal advice.</strong>
+            Trader Tools is a personal project, not a licensed broker, adviser or tax
+            preparer. It holds no money, executes no trades and files nothing on your behalf.
+            Analysis and estimates — including anything written by AI — can be wrong, and
+            market data may be delayed or inaccurate. Every decision you make with it is your
+            own. See the <a href="/terms" style="color:#fbbf24">Terms of Service</a>.
+        </div>
+    </section>
+</div>
+
+<footer>
+    <div class="wrap">
+        <a href="/privacy">Privacy Policy</a>
+        <span class="dot">·</span>
+        <a href="/terms">Terms of Service</a>
+        <span class="dot">·</span>
+        <a href="mailto:admin@kegbot.net">admin@kegbot.net</a>
+        <p style="margin-top:12px;opacity:.65">© 2026 Trader Tools</p>
+    </div>
+</footer>
+
+</body>
+</html>

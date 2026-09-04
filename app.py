@@ -427,12 +427,23 @@ def consent():
 
 @app.route('/')
 def index():
-    """Render the main dashboard."""
-    logger.debug("Rendering dashboard.html as main page")
+    """Public landing page for signed-out visitors; the dashboard for everyone else.
+
+    This used to redirect anonymous visitors to /login, which immediately redirected
+    off-domain to Google — so a visitor never saw a single page hosted here. Google OAuth
+    verification requires a home page on the verified domain that describes what the app
+    does and links the privacy policy, and a reviewer landing on a Google sign-in screen
+    can see neither. The landing page is what they (and anyone deciding whether to sign up)
+    actually get to read.
+    """
     if PHASE2_ENABLED:
-        # Require login for Phase 2
-        if not current_user.is_authenticated:
-            return redirect(url_for('login'))
+        try:
+            authed = current_user.is_authenticated
+        except Exception:
+            authed = False
+        if not authed:
+            return render_template('landing.html')
+    logger.debug("Rendering dashboard.html as main page")
     return render_template('dashboard.html')
 
 
