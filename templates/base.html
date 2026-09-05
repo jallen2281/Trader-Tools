@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Trader Tools{% endblock %}</title>
-    <link rel="icon" type="image/svg+xml" href="/static/robot-icon.svg">
+    <link rel="icon" type="image/png" sizes="64x64" href="/static/logo-64.png">
+    <link rel="apple-touch-icon" sizes="256x256" href="/static/logo-256.png">
     <!-- Flash-free theme: apply the saved preference to <html> before first paint. -->
     <script>
         (function () {
@@ -46,7 +47,7 @@
 </head>
 <body>
     <nav class="app-topnav">
-        <a class="app-brand" href="/dashboard">🤖 Trader&nbsp;Tools</a>
+        <a class="app-brand" href="/dashboard" style="display:inline-flex;align-items:center;gap:9px;"><img src="/static/logo-64.png" alt="" width="26" height="26" style="border-radius:7px;display:block;">Trader&nbsp;Tools</a>
         <div class="app-navlinks">
             <a href="/dashboard" class="app-navlink">📊 Dashboard</a>
             <a href="/portfolio" class="app-navlink">💼 Portfolio</a>

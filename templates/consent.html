@@ -31,8 +31,9 @@
         <h1>Before you continue</h1>
         <p class="cs-lead">
             This application stores financial information you provide, and sends some of it to
-            named service providers in order to work. Please review what that involves and
-            confirm you consent.
+            named service providers in order to work. Please review what that involves, then
+            agree to the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>
+            and confirm your consent.
         </p>
 
         {% if error %}<div class="cs-err">{{ error }}</div>{% endif %}
@@ -80,8 +81,9 @@
         <form method="POST" action="/consent">
             <label class="cs-accept" for="acceptBox">
                 <input type="checkbox" name="accept" id="acceptBox" value="1">
-                <span>I consent to the collection, processing, and storage of my data as
-                described in the <a href="/privacy" target="_blank" rel="noopener">Privacy
+                <span>I agree to the <a href="/terms" target="_blank" rel="noopener">Terms of
+                Service</a>, and I consent to the collection, processing, and storage of my
+                data as described in the <a href="/privacy" target="_blank" rel="noopener">Privacy
                 Policy</a>, including the AI processing described above.</span>
             </label>
 
@@ -91,7 +93,7 @@
             </div>
         </form>
 
-        <div class="cs-ver">Privacy policy version {{ version }}</div>
+        <div class="cs-ver">Privacy policy and terms version {{ version }}</div>
     </div>
 </div>
 {% endblock %}

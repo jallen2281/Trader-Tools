@@ -345,10 +345,14 @@ def log_response(response):
     return response
 
 
-# The privacy-policy version a signed-in user must have accepted. Bump this string whenever
-# the policy changes materially: every user is re-prompted on their next request, and the
-# version they accepted is recorded, so consent is auditable per policy revision.
-PRIVACY_POLICY_VERSION = '2026-09-03'
+# The consent version a signed-in user must have accepted. It covers BOTH documents shown
+# on the consent page — the privacy policy and the terms of service — which is why it is
+# not named after either one. Bump it whenever what a user is agreeing to changes
+# materially: everyone is re-prompted on their next request, and the version they accepted
+# is recorded, so consent stays auditable per revision.
+#
+# 2026-09-05: consent extended to cover the terms of service, not the privacy policy alone.
+CONSENT_VERSION = '2026-09-05'
 
 # Reachable without having accepted the current policy. /privacy and /consent obviously must
 # be, /logout must be so "decline" is always possible, and /login|/authorize must be so the
@@ -390,7 +394,7 @@ def require_privacy_consent():
     try:
         if not current_user.is_authenticated:
             return None
-        if getattr(current_user, 'privacy_consent_version', None) == PRIVACY_POLICY_VERSION:
+        if getattr(current_user, 'privacy_consent_version', None) == CONSENT_VERSION:
             return None
     except Exception:
         # Auth stack unavailable — fail open rather than locking the app on a hook error.
@@ -398,7 +402,7 @@ def require_privacy_consent():
     if request.path.startswith('/api/') or request.headers.get('Authorization', '').startswith('Bearer '):
         return jsonify({'error': 'Privacy policy acceptance required',
                         'code': 'consent_required',
-                        'policy_version': PRIVACY_POLICY_VERSION}), 403
+                        'policy_version': CONSENT_VERSION}), 403
     return redirect(url_for('consent'))
 
 
@@ -414,15 +418,15 @@ def consent():
         return redirect(url_for('login'))
     if request.method == 'POST':
         if not request.form.get('accept'):
-            return render_template('consent.html', version=PRIVACY_POLICY_VERSION,
+            return render_template('consent.html', version=CONSENT_VERSION,
                                    error='You must accept the privacy policy to continue.'), 400
         current_user.privacy_consent_at = datetime.utcnow()
-        current_user.privacy_consent_version = PRIVACY_POLICY_VERSION
+        current_user.privacy_consent_version = CONSENT_VERSION
         db.session.commit()
         logger.info("Privacy consent recorded for user %s (version %s)",
-                    current_user.id, PRIVACY_POLICY_VERSION)
+                    current_user.id, CONSENT_VERSION)
         return redirect(url_for('index'))
-    return render_template('consent.html', version=PRIVACY_POLICY_VERSION, error=None)
+    return render_template('consent.html', version=CONSENT_VERSION, error=None)
 
 
 @app.route('/')
