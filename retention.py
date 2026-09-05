@@ -42,7 +42,7 @@ def purge_user_record(db, user):
     from models import (PaperTrade, TradingSOP, Notification, ThreadVote, ThreadReply,
                         DiscussionThread, CopyTradingFollow, FinanceAccount, Debt,
                         IncomeSource, IncomeEvent, RecurringBill, BudgetCategory,
-                        SpendTransaction, TaxDocument, AIInsight)
+                        SpendTransaction, TaxDocument, AIInsight, PlaidItem)
     uid = user.id
     user.groups = []
 
@@ -59,6 +59,7 @@ def purge_user_record(db, user):
         Debt,
         FinanceAccount,
         AIInsight,
+        PlaidItem,          # bank access tokens die with the account, per the retention policy
         PaperTrade,
         TradingSOP,
         Notification,

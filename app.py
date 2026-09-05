@@ -29,7 +29,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, TaxDocument
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, PlaidItem, TaxDocument
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -303,6 +303,26 @@ def _can_use_ai():
     if not uid:
         return False
     return user_has_permission(User.query.get(uid), 'ai_analysis')
+
+
+def require_perm(perm):
+    """Call-time permission gate, for routes defined above the RBAC block.
+
+    Same import-order constraint as require_ai_permission: decorators run at module load,
+    and @require_permission is defined over a thousand lines further down.
+    """
+    def wrapper(f):
+        @wraps(f)
+        def inner(*args, **kwargs):
+            uid = _get_current_user_id()
+            user = User.query.get(uid) if uid else None
+            if not user:
+                return jsonify({'error': 'Authentication required'}), 401
+            if not user_has_permission(user, perm):
+                return jsonify({'error': 'Permission denied', 'missing_permission': perm}), 403
+            return f(*args, **kwargs)
+        return inner
+    return wrapper
 
 
 def require_ai_permission(f):
@@ -1127,6 +1147,252 @@ def finance_delete_budget(bid):
     db.session.delete(row)
     db.session.commit()
     return jsonify({'success': True})
+
+
+# ===================== PLAID: connected bank / brokerage accounts =====================
+# Every route here is gated on 'plaid_link'. A newly registered account holds no
+# permissions, so open registration can never reach anyone's banking data.
+
+def _plaid():
+    from plaid_client import PlaidClient
+    return PlaidClient(Config.PLAID_CLIENT_ID, Config.PLAID_SECRET, Config.PLAID_ENV)
+
+
+def _plaid_item_or_404(uid, iid):
+    return PlaidItem.query.filter_by(id=iid, user_id=uid).first()
+
+
+@app.route('/api/plaid/status', methods=['GET'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_status():
+    """Whether Plaid is usable, without exposing which credentials are set."""
+    import plaid_client as pc
+    c = _plaid()
+    return jsonify({
+        'configured': c.available(),
+        'environment': c.env,
+        'encryption_ready': pc.encryption_ready(),
+        'products': Config.PLAID_PRODUCTS,
+    })
+
+
+@app.route('/api/plaid/link-token', methods=['POST'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_link_token():
+    """Mint a short-lived link_token for Plaid Link in the browser.
+
+    Refuses up front when the encryption key is missing: better to fail before the user
+    hands their bank credentials to Link than to succeed and discover afterwards that the
+    resulting access token cannot be stored safely.
+    """
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    if not pc.encryption_ready():
+        return jsonify({'error': 'PLAID_ENCRYPTION_KEY is not configured; refusing to start '
+                                 'a connection whose access token could not be encrypted.'}), 503
+    d = request.get_json(silent=True) or {}
+    access_token = None
+    if d.get('item_id'):
+        # Update mode — re-authenticate an item Plaid has flagged as login_required.
+        item = _plaid_item_or_404(uid, d['item_id'])
+        if not item:
+            return jsonify({'error': 'Not found'}), 404
+        access_token = pc.decrypt_token(item.access_token_enc)
+    try:
+        out = _plaid().link_token_create(uid, Config.PLAID_PRODUCTS, access_token=access_token)
+    except pc.PlaidError as e:
+        return jsonify({'error': str(e), 'code': e.code}), 502
+    return jsonify({'link_token': out.get('link_token'), 'expiration': out.get('expiration')})
+
+
+@app.route('/api/plaid/exchange', methods=['POST'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_exchange():
+    """Trade the browser's public_token for a long-lived access_token and store it encrypted."""
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    d = request.get_json(silent=True) or {}
+    public_token = (d.get('public_token') or '').strip()
+    if not public_token:
+        return jsonify({'error': 'public_token is required'}), 400
+    client = _plaid()
+    try:
+        ex = client.exchange_public_token(public_token)
+        access_token = ex['access_token']
+        item_id = ex['item_id']
+        inst_id, inst_name = None, None
+        try:
+            inst_id = ((client.item_get(access_token) or {}).get('item') or {}).get('institution_id')
+            if inst_id:
+                inst_name = ((client.institution_get(inst_id) or {}).get('institution') or {}).get('name')
+        except pc.PlaidError:
+            pass          # naming the institution is cosmetic; never fail the connect over it
+    except pc.PlaidError as e:
+        return jsonify({'error': str(e), 'code': e.code}), 502
+    except KeyError:
+        return jsonify({'error': 'Unexpected response from Plaid'}), 502
+
+    item = PlaidItem.query.filter_by(user_id=uid, item_id=item_id).first()
+    if not item:
+        item = PlaidItem(user_id=uid, item_id=item_id)
+        db.session.add(item)
+    item.access_token_enc = pc.encrypt_token(access_token)
+    item.institution_id = inst_id
+    item.institution_name = inst_name
+    item.status = 'active'
+    item.last_error = None
+    db.session.commit()
+    logger.info("Plaid item connected for user %s (%s)", uid, inst_name or item_id)
+    return jsonify(item.to_dict()), 201
+
+
+@app.route('/api/plaid/items', methods=['GET'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_items():
+    uid = _get_current_user_id()
+    rows = PlaidItem.query.filter_by(user_id=uid).order_by(PlaidItem.created_at).all()
+    return jsonify({'items': [i.to_dict() for i in rows]})
+
+
+def _plaid_sync_item(item, client=None):
+    """Pull everything new for one item into the spending ledger.
+
+    Plaid's amount sign already matches SpendTransaction's: positive when money leaves the
+    account. Income and transfers-in are skipped, exactly as the CSV importer skips deposits
+    — money coming in belongs to the income module. Dedupe is by external_id
+    'plaid:<transaction_id>', which is also what makes `removed` and `modified` resolvable.
+    """
+    import plaid_client as pc
+    client = client or _plaid()
+    token = pc.decrypt_token(item.access_token_enc)
+    added = updated = removed = skipped = 0
+    cursor = item.cursor
+    for _ in range(50):                     # bounded: 50 * 500 transactions is plenty
+        out = client.transactions_sync(token, cursor=cursor)
+        for txn in out.get('added', []) + out.get('modified', []):
+            if pc.is_income(txn):
+                skipped += 1
+                continue
+            ext = 'plaid:%s' % txn.get('transaction_id')
+            cat = pc.category_for(txn)
+            if not cat:
+                cat = _guess_spend_category('%s %s' % (txn.get('merchant_name') or '',
+                                                       txn.get('name') or ''))
+            posted = _parse_csv_date(txn.get('date'))
+            if not posted:
+                skipped += 1
+                continue
+            row = SpendTransaction.query.filter_by(user_id=item.user_id, external_id=ext).first()
+            if row is None:
+                row = SpendTransaction(user_id=item.user_id, external_id=ext, source='plaid')
+                db.session.add(row)
+                added += 1
+            else:
+                updated += 1
+            row.posted_at = posted
+            row.description = (txn.get('name') or 'Transaction')[:200]
+            row.merchant = (txn.get('merchant_name') or None)
+            row.category = cat
+            row.amount = round(float(txn.get('amount') or 0), 2)
+            row.pending = bool(txn.get('pending'))
+        for txn in out.get('removed', []):
+            ext = 'plaid:%s' % txn.get('transaction_id')
+            n = SpendTransaction.query.filter_by(user_id=item.user_id, external_id=ext).delete(
+                synchronize_session=False)
+            removed += n
+        cursor = out.get('next_cursor') or cursor
+        if not out.get('has_more'):
+            break
+    item.cursor = cursor
+    item.last_synced_at = datetime.utcnow()
+    item.status = 'active'
+    item.last_error = None
+    db.session.commit()
+    return {'added': added, 'updated': updated, 'removed': removed, 'skipped_income': skipped}
+
+
+@app.route('/api/plaid/items/<int:iid>/sync', methods=['POST'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_sync(iid):
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    item = _plaid_item_or_404(uid, iid)
+    if not item:
+        return jsonify({'error': 'Not found'}), 404
+    try:
+        return jsonify(_plaid_sync_item(item))
+    except pc.PlaidError as e:
+        db.session.rollback()
+        # ITEM_LOGIN_REQUIRED is not a failure to retry — the user must re-authenticate
+        # through Link in update mode, so surface it as its own state.
+        item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
+        item.last_error = str(e)[:255]
+        db.session.commit()
+        return jsonify({'error': str(e), 'code': e.code, 'status': item.status}), 502
+
+
+@app.route('/api/plaid/sync', methods=['POST'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_sync_all():
+    """Sync every connected item. One failing institution must not abort the others."""
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    results, totals = [], {'added': 0, 'updated': 0, 'removed': 0, 'skipped_income': 0}
+    for item in PlaidItem.query.filter_by(user_id=uid).all():
+        try:
+            r = _plaid_sync_item(item)
+            for k in totals:
+                totals[k] += r[k]
+            results.append({'item': item.to_dict(), **r})
+        except pc.PlaidError as e:
+            db.session.rollback()
+            item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
+            item.last_error = str(e)[:255]
+            db.session.commit()
+            results.append({'item': item.to_dict(), 'error': str(e), 'code': e.code})
+    return jsonify({'totals': totals, 'results': results})
+
+
+@app.route('/api/plaid/items/<int:iid>', methods=['DELETE'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_disconnect(iid):
+    """Disconnect an institution.
+
+    /item/remove is called first so the credential is dead on Plaid's side too, not merely
+    deleted on ours — the retention policy promises the token is destroyed on disconnect.
+    If that call fails the local row is still removed: keeping a token we can no longer use
+    would be worse than orphaning one at Plaid.
+
+    Transactions already imported are deliberately kept. They are the user's spending
+    history and deleting them would silently rewrite past budgets; ?purge=1 removes them.
+    """
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    item = _plaid_item_or_404(uid, iid)
+    if not item:
+        return jsonify({'error': 'Not found'}), 404
+    remote = True
+    try:
+        _plaid().item_remove(pc.decrypt_token(item.access_token_enc))
+    except Exception as e:
+        remote = False
+        logger.warning("Plaid item_remove failed for item %s: %s", item.id, e)
+    purged = 0
+    if request.args.get('purge') == '1':
+        purged = SpendTransaction.query.filter(
+            SpendTransaction.user_id == uid,
+            SpendTransaction.source == 'plaid',
+            SpendTransaction.external_id.like('plaid:%')).delete(synchronize_session=False)
+    db.session.delete(item)
+    db.session.commit()
+    return jsonify({'success': True, 'revoked_at_plaid': remote, 'transactions_purged': purged})
 
 
 def _budget_rollup(user_id, month=None):

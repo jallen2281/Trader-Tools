@@ -1198,6 +1198,47 @@ class SpendTransaction(db.Model):
         }
 
 
+class PlaidItem(db.Model):
+    """A financial institution the user has connected through Plaid.
+
+    The access_token is a long-lived bearer credential for someone's bank account, so it is
+    stored ONLY as ciphertext (plaid_client.encrypt_token) with the key held in the
+    environment rather than the database — losing a dump therefore does not hand over
+    anyone's bank connection. `to_dict` never returns it in any form.
+
+    `cursor` is the /transactions/sync cursor. It is what makes syncing incremental: Plaid
+    returns only what changed since the cursor, so a re-sync is cheap and cannot
+    double-count.
+    """
+    __tablename__ = 'plaid_items'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    item_id = db.Column(db.String(80), nullable=False, index=True)      # Plaid's item id
+    institution_id = db.Column(db.String(60))
+    institution_name = db.Column(db.String(160))
+    access_token_enc = db.Column(db.LargeBinary, nullable=False)        # Fernet ciphertext
+    cursor = db.Column(db.Text)                                         # transactions/sync
+    status = db.Column(db.String(30), default='active')  # active | login_required | error
+    last_error = db.Column(db.String(255))
+    last_synced_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (db.UniqueConstraint('user_id', 'item_id', name='uq_plaid_user_item'),)
+
+    def to_dict(self):
+        """Metadata only — the access token never leaves the server in any form."""
+        return {
+            'id': self.id, 'item_id': self.item_id,
+            'institution_id': self.institution_id,
+            'institution_name': self.institution_name or 'Connected account',
+            'status': self.status, 'last_error': self.last_error,
+            'has_cursor': bool(self.cursor),
+            'last_synced_at': self.last_synced_at.isoformat() if self.last_synced_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class TaxDocument(db.Model):
     """A stored tax document or receipt. File bytes live in Postgres (bytea) rather than a
     filesystem because the app's PVC is ReadWriteOnce — a shared disk across the 3 pods is

@@ -98,6 +98,13 @@ persistence:
 config:
   flaskEnv: production
   logLevel: INFO
+
+  # Plaid: 'sandbox' or 'production'. plaidProducts is a comma-separated list — put
+  # anything you might enable later in Plaid's additional_consented_products instead,
+  # because adding a product here after the fact forces every connected user back
+  # through Link to re-authorize.
+  plaidEnv: sandbox
+  plaidProducts: "transactions"
   
   # LLM Provider: ollama or rkllm
   llmProvider: rkllm
@@ -147,6 +154,13 @@ secrets:
   alphaVantageApiKey: ""
   newsApiKey: ""
   quandlApiKey: ""
+  # Plaid. plaidEncryptionKey is a Fernet key that encrypts stored access tokens at rest;
+  # without it the app refuses to start a bank connection at all. Generate one with:
+  #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  # Rotating it makes every stored token undecryptable — users would have to reconnect.
+  plaidClientId: ""
+  plaidSecret: ""
+  plaidEncryptionKey: ""
   # ollamaBaseUrl moved to config (not sensitive)
 
 nodeSelector: {}

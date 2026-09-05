@@ -94,6 +94,18 @@
         <div id="billsBody"><p class="muted">Loading…</p></div>
     </div>
 
+    <!-- Connected accounts (Plaid). Hidden entirely without the plaid_link permission. -->
+    <div class="fin-card" id="plaidCard" style="display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Connected accounts <span class="muted" id="plaidEnv" style="font-size:0.6em;font-weight:400;"></span></h2>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn2" onclick="syncPlaid(null)">&#8635; Sync all</button>
+                <button class="btn2 primary" onclick="connectPlaid(null)">+ Connect a bank</button>
+            </div>
+        </div>
+        <div id="plaidBody"><p class="muted">Loading&hellip;</p></div>
+    </div>
+
     <!-- Spending -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
@@ -131,6 +143,7 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 <script>
     const fmt = (n) => (Number(n) < 0 ? '-$' : '$') + Math.abs(Number(n)||0).toLocaleString('en-US',{maximumFractionDigits:0});
     const fmt2 = (n) => (Number(n) < 0 ? '-$' : '$') + Math.abs(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -634,9 +647,104 @@
         }catch(e){ alert('Could not import receipts: '+e.message); }
     }
 
+    /* ---- Plaid: connected bank / brokerage accounts ---- */
+    async function loadPlaid() {
+        const card = document.getElementById('plaidCard');
+        try {
+            const r = await fetch('/api/plaid/items', {credentials:'same-origin'});
+            // 403 = this account has no plaid_link permission. Hide the feature rather than
+            // showing a card that can only ever produce an error.
+            if (r.status === 403) { card.style.display = 'none'; return; }
+            if (!r.ok) throw new Error('load failed');
+            card.style.display = '';
+            const d = await r.json();
+            renderPlaid(d.items || []);
+            fetch('/api/plaid/status', {credentials:'same-origin'})
+                .then(x => x.ok ? x.json() : null)
+                .then(st => { if (st) document.getElementById('plaidEnv').textContent =
+                    st.configured ? `· ${st.environment}` : '· not configured'; })
+                .catch(()=>{});
+        } catch(e) { card.style.display = 'none'; }
+    }
+    function renderPlaid(items) {
+        const el = document.getElementById('plaidBody');
+        if (!items.length) {
+            el.innerHTML = '<p class="muted" style="padding:12px;">No accounts connected. Connecting a bank imports transactions automatically, so Budget measures against real spend without a CSV.</p>';
+            return;
+        }
+        el.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Institution</th><th>Status</th><th>Last synced</th><th></th></tr></thead><tbody>' +
+            items.map(i => {
+                const bad = i.status !== 'active';
+                const status = i.status === 'login_required'
+                    ? '<span class="neg">needs re-authentication</span>'
+                    : (bad ? `<span class="neg">${esc(i.status)}</span>` : '<span class="pos">active</span>');
+                return `<tr>
+                    <td><strong>${esc(i.institution_name)}</strong>${i.last_error?`<div class="muted" style="font-size:0.78em;">${esc(i.last_error)}</div>`:''}</td>
+                    <td>${status}</td>
+                    <td>${i.last_synced_at ? i.last_synced_at.replace('T',' ').slice(0,16) : '<span class="muted">never</span>'}</td>
+                    <td style="text-align:right;white-space:nowrap;">
+                        ${i.status === 'login_required'
+                            ? `<button class="link-btn" onclick="connectPlaid(${i.id})">reconnect</button>`
+                            : `<button class="link-btn" onclick="syncPlaid(${i.id})">sync</button>`}
+                        <button class="link-btn danger" onclick="disconnectPlaid(${i.id},'${esc(i.institution_name)}')">disconnect</button>
+                    </td>
+                </tr>`;
+            }).join('') + '</tbody></table></div>';
+    }
+    /* itemId set => Link opens in update mode to repair an existing connection. */
+    async function connectPlaid(itemId) {
+        try {
+            const r = await fetch('/api/plaid/link-token', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                credentials:'same-origin',
+                body: JSON.stringify(itemId ? {item_id: itemId} : {})});
+            const d = await r.json();
+            if (!r.ok) { alert(d.error || 'Could not start a Plaid connection.'); return; }
+            if (typeof Plaid === 'undefined') {
+                alert('Plaid Link failed to load. Check that cdn.plaid.com is reachable.');
+                return;
+            }
+            Plaid.create({
+                token: d.link_token,
+                onSuccess: async (public_token) => {
+                    // Update mode returns no new token to exchange — the existing item is repaired.
+                    if (!itemId) {
+                        const x = await fetch('/api/plaid/exchange', {
+                            method:'POST', headers:{'Content-Type':'application/json'},
+                            credentials:'same-origin', body: JSON.stringify({public_token})});
+                        if (!x.ok) { alert(((await x.json())||{}).error || 'Could not save the connection.'); return; }
+                    }
+                    await loadPlaid();
+                    syncPlaid(itemId || null);
+                },
+                onExit: (err) => { if (err) console.warn('Plaid Link exit:', err); },
+            }).open();
+        } catch(e) { alert('Could not start a Plaid connection: ' + e.message); }
+    }
+    async function syncPlaid(itemId) {
+        const url = itemId ? `/api/plaid/items/${itemId}/sync` : '/api/plaid/sync';
+        try {
+            const r = await fetch(url, {method:'POST', credentials:'same-origin'});
+            const d = await r.json();
+            if (!r.ok) { alert(d.error || 'Sync failed.'); await loadPlaid(); return; }
+            const t = d.totals || d;
+            alert(`Synced.\n\n${t.added||0} new · ${t.updated||0} updated · ${t.removed||0} removed\n${t.skipped_income||0} deposits skipped (income is tracked separately)`);
+            await loadPlaid(); loadBudgeting();
+        } catch(e) { alert('Sync failed: ' + e.message); }
+    }
+    async function disconnectPlaid(id, name) {
+        if (!confirm(`Disconnect ${name}?\n\nThe stored access token is destroyed immediately. Transactions already imported are kept.`)) return;
+        const purge = confirm('Also delete the transactions already imported from this institution?\n\nOK = delete them.  Cancel = keep them (recommended — they are your spending history).');
+        try {
+            await fetch(`/api/plaid/items/${id}${purge ? '?purge=1' : ''}`,
+                        {method:'DELETE', credentials:'same-origin'});
+            await loadPlaid(); loadBudgeting();
+        } catch(e) { alert('Could not disconnect: ' + e.message); }
+    }
+
     function showModal(html){ const r=document.getElementById('modalRoot'); r.innerHTML=`<div class="modal-back" id="_mb"><div class="modal-box">${html}</div></div>`; document.getElementById('_mb').addEventListener('click',e=>{if(e.target.id==='_mb')closeModal();}); }
     function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
-    document.addEventListener('DOMContentLoaded', loadOutlook);  // loadOutlook chains loadBudgeting()
+    document.addEventListener('DOMContentLoaded', function(){ loadOutlook(); loadPlaid(); });  // loadOutlook chains loadBudgeting()
 </script>
 {% endblock %}

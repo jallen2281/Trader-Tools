@@ -188,8 +188,13 @@ def category_for(txn):
     if primary in SKIP_PFC:
         return None
     if primary == 'RENT_AND_UTILITIES':
+        # Plaid's detailed values are prefixed with the primary category, e.g.
+        # RENT_AND_UTILITIES_GAS_AND_ELECTRICITY. Substring-matching 'RENT' therefore hits
+        # the prefix on EVERY value in this group and would file the electric bill as
+        # housing — compare the suffix, not the whole string.
         detailed = (pfc.get('detailed') or '').upper()
-        return 'housing' if ('RENT' in detailed or 'MORTGAGE' in detailed) else 'utilities'
+        suffix = detailed[len('RENT_AND_UTILITIES_'):] if detailed.startswith('RENT_AND_UTILITIES_') else detailed
+        return 'housing' if suffix in ('RENT', 'MORTGAGE') else 'utilities'
     return PFC_TO_BUDGET.get(primary)
 
 

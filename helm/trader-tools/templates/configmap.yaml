@@ -56,5 +56,9 @@ data:
   RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
   RATE_LIMIT_DEFAULT: {{ .Values.config.rateLimitDefault | quote }}
   
+  # Plaid (non-sensitive; client id, secret and encryption key live in the secret)
+  PLAID_ENV: {{ .Values.config.plaidEnv | quote }}
+  PLAID_PRODUCTS: {{ .Values.config.plaidProducts | quote }}
+
   # Database (non-sensitive)
   SQL_DEBUG: "False"

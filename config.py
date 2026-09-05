@@ -40,6 +40,20 @@ class Config:
     # discovered model if this ever 404s.
     GOOGLE_AI_MODEL = os.getenv('GOOGLE_AI_MODEL', 'gemini-flash-latest')
 
+    # Plaid — bank/brokerage connections. PLAID_ENV is 'sandbox' or 'production'.
+    # PLAID_ENCRYPTION_KEY is a Fernet key used to encrypt stored access tokens; it is
+    # deliberately separate from SECRET_KEY so rotating the session key cannot orphan every
+    # bank connection. Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    PLAID_CLIENT_ID = os.getenv('PLAID_CLIENT_ID', '')
+    PLAID_SECRET = os.getenv('PLAID_SECRET', '')
+    PLAID_ENV = os.getenv('PLAID_ENV', 'sandbox')
+    PLAID_ENCRYPTION_KEY = os.getenv('PLAID_ENCRYPTION_KEY', '')
+    # Products requested at Link time. Anything you might enable later belongs in
+    # PLAID_OPTIONAL_PRODUCTS instead — adding a product to `products` after the fact forces
+    # every connected user back through Link to re-authorize.
+    PLAID_PRODUCTS = [p.strip() for p in os.getenv('PLAID_PRODUCTS', 'transactions').split(',') if p.strip()]
+
     # Flask settings
     FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
     # Debug defaults OFF. Enabling it exposes the Werkzeug debugger (an RCE behind a PIN),
