@@ -1872,6 +1872,447 @@ def finance_ai_read():
         return jsonify({'error': str(e), 'empty': True, 'message': 'AI advisor temporarily unavailable'}), 200
 
 
+# ============ PHASE 6: whole-picture financial overview + active AI integration ============
+# The AI advisor previously saw net worth, income, DTI and a debt list — nothing from the
+# bills, budget, spending, cash-flow or tax modules. It could not tell you that you are over
+# budget on food or that your projected balance goes negative in twelve days, because it was
+# never shown either fact. _finance_full_picture is the fix: one assembler over every module.
+#
+# The observations engine below is deliberately NOT the model's job. Detecting "this category
+# is over its limit" or "the balance goes negative on the 14th" is arithmetic — doing it in
+# code makes it exact, free, and available on every page load, and it turns the AI call from
+# "find the problems in this pile of numbers" into "here are the problems, now advise."
+
+
+def _months_of_runway(liquid, monthly_outflow):
+    if monthly_outflow <= 0:
+        return None
+    return round(liquid / monthly_outflow, 1)
+
+
+def _finance_full_picture(user_id, month=None, days=60):
+    """Every financial fact the app knows about one person, in one structure.
+
+    Each module is wrapped: a failure in the tax estimate must not blank out the whole
+    overview, since a partial picture is still worth far more than an error page.
+    """
+    start, end = _month_bounds(month)
+    picture = {
+        'generated_at': datetime.utcnow().isoformat(),
+        'month': start.strftime('%Y-%m'),
+    }
+
+    picture['outlook'] = _finance_outlook(user_id)
+
+    accounts = FinanceAccount.query.filter_by(user_id=user_id).all()
+    LIQUID = ('checking', 'savings', 'cash')
+    picture['accounts'] = [a.to_dict() for a in accounts]
+    picture['liquid_total'] = round(sum(float(a.balance or 0) for a in accounts
+                                        if a.type in LIQUID), 2)
+
+    bills = RecurringBill.query.filter_by(user_id=user_id, active=True).all()
+    picture['bills'] = {
+        'rows': [b.to_dict() for b in bills],
+        'total_monthly': round(sum(b.monthly_amount() for b in bills), 2),
+        'count': len(bills),
+    }
+
+    try:
+        picture['budgets'] = _budget_rollup(user_id, month)
+    except Exception as e:
+        logger.warning('overview: budget rollup failed: %s', e)
+        picture['budgets'] = []
+
+    txns = SpendTransaction.query.filter(
+        SpendTransaction.user_id == user_id,
+        SpendTransaction.posted_at >= start,
+        SpendTransaction.posted_at <= end).all()
+    by_cat, by_merchant = {}, {}
+    for t in txns:
+        c = t.category or 'other'
+        by_cat[c] = round(by_cat.get(c, 0) + float(t.amount or 0), 2)
+        m = (t.merchant or t.description or '').strip()[:60]
+        if m:
+            by_merchant[m] = round(by_merchant.get(m, 0) + float(t.amount or 0), 2)
+    picture['spending'] = {
+        'month_total': round(sum(float(t.amount or 0) for t in txns), 2),
+        'count': len(txns),
+        'by_category': sorted(({'category': c, 'amount': a} for c, a in by_cat.items()),
+                              key=lambda r: -r['amount']),
+        'top_merchants': sorted(({'merchant': m, 'amount': a} for m, a in by_merchant.items()),
+                                key=lambda r: -r['amount'])[:8],
+        'sources': sorted({t.source for t in txns}),
+    }
+
+    try:
+        picture['cashflow'] = _finance_cashflow(user_id, days=days)
+    except Exception as e:
+        logger.warning('overview: cashflow failed: %s', e)
+        picture['cashflow'] = None
+
+    try:
+        picture['tax'] = _income_tax_estimate(user_id)
+    except Exception as e:
+        logger.warning('overview: tax estimate failed: %s', e)
+        picture['tax'] = None
+
+    try:
+        picture['connections'] = [i.to_dict() for i in
+                                  PlaidItem.query.filter_by(user_id=user_id).all()]
+    except Exception:
+        picture['connections'] = []
+
+    monthly_outflow = picture['bills']['total_monthly'] + picture['outlook'].get('monthly_debt_service', 0)
+    picture['runway_months'] = _months_of_runway(picture['liquid_total'], monthly_outflow)
+    picture['monthly_outflow'] = round(monthly_outflow, 2)
+
+    # The outlook's `dti` counts only Debt.min_payment, so rent — a RecurringBill, not a
+    # Debt — is excluded, and someone paying $1,750/mo in rent can show a comfortable-looking
+    # 14% DTI. Lenders measure the front-end ratio including housing. Compute that separately
+    # rather than redefining `dti`, which existing screens already display.
+    gross = picture['outlook'].get('monthly_gross_income') or 0
+    housing = round(sum(b.monthly_amount() for b in bills if b.category == 'housing'), 2)
+    picture['housing_monthly'] = housing
+    # Housing + debt service only, matching the lender definition the 36%/43% thresholds
+    # come from. Utilities, groceries and subscriptions are real outflow but are NOT in a
+    # back-end DTI, so folding them in here would overstate the ratio against its own
+    # benchmark. Total outflow is tracked separately as monthly_outflow for runway.
+    picture['obligations_ratio'] = (
+        round((housing + (picture['outlook'].get('monthly_debt_service') or 0)) / gross * 100, 1)
+        if gross else None)
+    return picture
+
+
+def _obs(out, severity, key, title, detail, amount=None):
+    out.append({'severity': severity, 'key': key, 'title': title,
+                'detail': detail, 'amount': amount})
+
+
+def _finance_observations(p):
+    """Deterministic findings across the whole picture. No AI, no cost, always current.
+
+    Ordered by severity so the caller can render (and the model can read) the worst first.
+    Every rule states a number, because "you are spending too much" is not actionable and
+    "food is $182 over a $400 limit with 9 days left" is.
+    """
+    out = []
+    o = p.get('outlook') or {}
+    cash = p.get('cashflow') or {}
+    tax = p.get('tax') or {}
+    spend = p.get('spending') or {}
+
+    # --- cash flow: the most urgent thing that can be wrong ---
+    low = cash.get('lowest_balance')
+    if low is not None and low < 0:
+        _obs(out, 'critical', 'cashflow_negative',
+             'Projected balance goes negative',
+             'Over the next %d days the running balance bottoms out at %s. A bill lands '
+             'before enough pay arrives.' % (cash.get('days', 60), _money(low)), low)
+    elif low is not None and p.get('monthly_outflow') and low < p['monthly_outflow'] / 4.0:
+        _obs(out, 'warning', 'cashflow_thin',
+             'Cash buffer is thin',
+             'Lowest projected balance is %s — under a week of outflow. Any surprise '
+             'expense goes negative.' % _money(low), low)
+
+    # --- budget vs actual (this is what Phase 4 made knowable) ---
+    for b in (p.get('budgets') or []):
+        if b.get('over') and b.get('monthly_limit'):
+            overage = round(b['projected_monthly'] - b['monthly_limit'], 2)
+            _obs(out, 'warning', 'budget_over:%s' % b['category'],
+                 '%s is over budget' % b['category'].title(),
+                 '%s against a %s limit — %s over.' % (
+                     _money(b['projected_monthly']), _money(b['monthly_limit']), _money(overage)),
+                 overage)
+    unbudgeted = [b for b in (p.get('budgets') or [])
+                  if not b.get('monthly_limit') and (b.get('actual_monthly') or 0) > 0]
+    if unbudgeted:
+        worst = max(unbudgeted, key=lambda b: b['actual_monthly'])
+        _obs(out, 'note', 'unbudgeted',
+             'Spending in categories with no limit',
+             '%d categor%s have spend but no budget — biggest is %s at %s.' % (
+                 len(unbudgeted), 'y' if len(unbudgeted) == 1 else 'ies',
+                 worst['category'], _money(worst['actual_monthly'])))
+
+    # --- spending vs income ---
+    net_income = o.get('monthly_net_income') or o.get('monthly_gross_income') or 0
+    if spend.get('month_total', 0) > 0 and net_income and spend['month_total'] > net_income:
+        _obs(out, 'warning', 'spend_over_income',
+             'Spending exceeds income this month',
+             '%s spent against %s of monthly net income.' % (
+                 _money(spend['month_total']), _money(net_income)),
+             round(spend['month_total'] - net_income, 2))
+
+    # --- debt ---
+    worst_debt = o.get('worst_debt')
+    if worst_debt and float(worst_debt.get('apr') or 0) >= 15:
+        _obs(out, 'warning', 'high_apr_debt',
+             'High-rate debt is the most expensive balance',
+             '%s at %s%% APR. Every dollar sent here beats almost any other use.' % (
+                 worst_debt.get('name'), worst_debt.get('apr')),
+             float(worst_debt.get('balance') or 0))
+    gross_annual = (o.get('monthly_gross_income') or 0) * 12
+    annual_interest = o.get('annual_interest') or 0
+    if gross_annual and annual_interest > gross_annual * 0.05:
+        _obs(out, 'warning', 'interest_drain',
+             'Interest is eating a large share of income',
+             '%s a year in interest — %.0f%% of gross income, before any principal.' % (
+                 _money(annual_interest), annual_interest / gross_annual * 100),
+             annual_interest)
+    # Measured on total obligations (housing + debt service), not the outlook's debt-only
+    # DTI — the debt-only figure omits rent and can read as healthy while half of gross
+    # income is already committed.
+    ratio = p.get('obligations_ratio')
+    if ratio is not None:
+        detail_tail = ('%s/mo of housing plus %s/mo of debt service against %s/mo gross.' % (
+            _money(p.get('housing_monthly')), _money(o.get('monthly_debt_service')),
+            _money(o.get('monthly_gross_income'))))
+        if ratio > 43:
+            _obs(out, 'critical', 'obligations_critical',
+                 'Committed obligations are above lending limits',
+                 '%.1f%% of gross income is already spoken for. Above ~43%% most lenders '
+                 'decline and refinancing options narrow sharply. %s' % (ratio, detail_tail),
+                 ratio)
+        elif ratio > 36:
+            _obs(out, 'warning', 'obligations_high',
+                 'Committed obligations are elevated',
+                 '%.1f%% of gross income is committed before any spending. Above ~36%% '
+                 'starts limiting borrowing terms. %s' % (ratio, detail_tail), ratio)
+
+    # --- taxes ---
+    if tax:
+        due = tax.get('balance_due') or 0
+        if due > 1000:
+            _obs(out, 'warning', 'tax_due',
+                 'Estimated tax owed at filing',
+                 'Roughly %s owed beyond what is withheld. Over $1,000 is where '
+                 'underpayment penalties start.' % _money(due), due)
+        if o.get('has_irregular_income') and not (o.get('monthly_tax_setaside') or 0):
+            _obs(out, 'warning', 'no_tax_setaside',
+                 'Irregular income with no tax set-aside',
+                 '1099/commission income is not withheld. Without a reserve, quarterly '
+                 'estimates come out of spending money.')
+
+    # --- liquidity ---
+    runway = p.get('runway_months')
+    if runway is not None and runway < 3:
+        _obs(out, 'warning', 'thin_runway',
+             'Emergency fund is under three months',
+             'Liquid savings cover %.1f months of bills and debt payments.' % runway, runway)
+
+    # --- data quality: advice on stale or missing data is worse than no advice ---
+    for c in (p.get('connections') or []):
+        if c.get('status') == 'login_required':
+            _obs(out, 'warning', 'connection_broken',
+                 '%s needs re-authentication' % c.get('institution_name'),
+                 'Transactions are not syncing, so spending figures are stale.')
+    if spend.get('count', 0) == 0:
+        _obs(out, 'note', 'no_spend_data',
+             'No spending recorded this month',
+             'Budget is measured against recurring bills only. Import a CSV, connect a '
+             'bank, or add transactions to compare against real spend.')
+
+    rank = {'critical': 0, 'warning': 1, 'note': 2}
+    out.sort(key=lambda r: rank.get(r['severity'], 3))
+    return out
+
+
+def _money(n):
+    """Format for the briefing the model reads. None becomes $0 rather than the string
+    'None', which would otherwise appear verbatim in the facts and get reasoned about."""
+    if n is None:
+        return '$0'
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    return ('-$%s' if n < 0 else '$%s') % format(abs(n), ',.0f')
+
+
+@app.route('/api/finance/overview', methods=['GET'])
+@require_api_auth
+def finance_overview():
+    """The whole picture plus deterministic findings. Costs nothing and is always current —
+    no AI call is involved, which is why it can render on every page load."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        days = min(max(int(request.args.get('days', 60)), 7), 365)
+    except (TypeError, ValueError):
+        days = 60
+    picture = _finance_full_picture(uid, month=request.args.get('month'), days=days)
+    obs = _finance_observations(picture)
+    return jsonify({
+        'picture': picture,
+        'observations': obs,
+        'counts': {
+            'critical': len([o for o in obs if o['severity'] == 'critical']),
+            'warning': len([o for o in obs if o['severity'] == 'warning']),
+            'note': len([o for o in obs if o['severity'] == 'note']),
+        },
+    })
+
+
+def _overview_facts(p, obs):
+    """Render the picture as the text the model reads.
+
+    Written as a briefing rather than a JSON dump: models reason better over prose with
+    concrete figures than over nested objects, and it keeps the token count honest.
+    """
+    o = p.get('outlook') or {}
+    cash = p.get('cashflow') or {}
+    tax = p.get('tax') or {}
+    spend = p.get('spending') or {}
+    L = []
+
+    L.append("== NET WORTH ==")
+    L.append("Net worth %s: assets %s (liquid %s, investments %s) minus debt %s." % (
+        _money(o.get('net_worth')), _money(o.get('total_assets')),
+        _money(p.get('liquid_total')), _money(o.get('investment_assets')),
+        _money(o.get('total_debt'))))
+    if p.get('runway_months') is not None:
+        L.append("Liquid savings cover %.1f months of bills + debt payments (%s/mo outflow)." % (
+            p['runway_months'], _money(p.get('monthly_outflow'))))
+
+    L.append("\n== INCOME ==")
+    L.append("Gross %s/mo. Debt-only DTI %s; total committed obligations %s of gross "
+             "(housing %s/mo + debt service %s/mo) — the second figure is the one lenders "
+             "use, and the one to reason from." % (
+                 _money(o.get('monthly_gross_income')),
+                 ('%s%%' % o['dti']) if o.get('dti') is not None else 'n/a',
+                 ('%.1f%%' % p['obligations_ratio']) if p.get('obligations_ratio') is not None else 'n/a',
+                 _money(p.get('housing_monthly')), _money(o.get('monthly_debt_service'))))
+    if o.get('has_irregular_income'):
+        L.append("Some income is irregular 1099/commission — not withheld and lumpy. "
+                 "Tax set-aside %s/mo, net after set-aside %s/mo." % (
+                     _money(o.get('monthly_tax_setaside')), _money(o.get('monthly_net_income'))))
+    for pd in (o.get('upcoming_paydates') or [])[:4]:
+        L.append("  paycheck %s: %s (%s)" % (pd.get('date'), _money(pd.get('amount')), pd.get('source')))
+
+    L.append("\n== DEBTS (highest rate first) ==")
+    for d in (o.get('debts') or []):
+        L.append("  %s: %s @ %s%%%s, min %s/mo" % (
+            d.get('name'), _money(d.get('balance')), d.get('apr'),
+            ' (secured)' if d.get('secured') else '', _money(d.get('min_payment'))))
+    L.append("Debt service %s/mo; interest drain %s/yr at a blended %s%% APR." % (
+        _money(o.get('monthly_debt_service')), _money(o.get('annual_interest')),
+        o.get('blended_apr')))
+
+    L.append("\n== RECURRING BILLS ==")
+    L.append("%d active bills totalling %s/mo." % (
+        p['bills']['count'], _money(p['bills']['total_monthly'])))
+    for b in p['bills']['rows'][:12]:
+        L.append("  %s (%s): %s/mo, next due %s" % (
+            b.get('name'), b.get('category'), _money(b.get('monthly_amount')),
+            (b.get('upcoming_due_dates') or ['n/a'])[0]))
+
+    L.append("\n== BUDGET vs ACTUAL (%s) ==" % p.get('month'))
+    if p.get('budgets'):
+        for b in p['budgets'][:14]:
+            L.append("  %s: spent %s, bills committed %s, limit %s%s" % (
+                b.get('category'), _money(b.get('actual_monthly')),
+                _money(b.get('committed_monthly')),
+                _money(b.get('monthly_limit')) if b.get('monthly_limit') else 'none',
+                '  <-- OVER' if b.get('over') else ''))
+    else:
+        L.append("  no budget categories set")
+
+    L.append("\n== SPENDING THIS MONTH ==")
+    L.append("%s across %d transactions (sources: %s)." % (
+        _money(spend.get('month_total')), spend.get('count', 0),
+        ', '.join(spend.get('sources') or []) or 'none recorded'))
+    for m in (spend.get('top_merchants') or [])[:6]:
+        L.append("  %s: %s" % (m['merchant'], _money(m['amount'])))
+
+    if cash:
+        L.append("\n== CASH FLOW (next %d days) ==" % cash.get('days', 60))
+        L.append("Start %s -> end %s. Lowest point %s. In %s, out %s." % (
+            _money(cash.get('starting_balance')), _money(cash.get('ending_balance')),
+            _money(cash.get('lowest_balance')), _money(cash.get('total_in')),
+            _money(cash.get('total_out'))))
+
+    if tax:
+        L.append("\n== TAX ESTIMATE (%s, %s) ==" % (tax.get('year'), tax.get('filing_status')))
+        L.append("W2 wages %s, 1099 income %s. Estimated federal tax %s (income %s + SE %s). "
+                 "Withheld %s. %s %s. Quarterly estimate %s." % (
+                     _money(tax.get('w2_wages')), _money(tax.get('se_income')),
+                     _money(tax.get('total_federal_tax')), _money(tax.get('federal_income_tax')),
+                     _money(tax.get('self_employment_tax')), _money(tax.get('withheld')),
+                     'Balance due' if (tax.get('balance_due') or 0) > 0 else 'Refund',
+                     _money(abs(tax.get('balance_due') or 0)), _money(tax.get('quarterly_estimate'))))
+
+    if obs:
+        L.append("\n== FLAGGED BY THE SYSTEM (already computed — do not re-derive) ==")
+        for x in obs:
+            L.append("  [%s] %s — %s" % (x['severity'].upper(), x['title'], x['detail']))
+
+    return '\n'.join(L)
+
+
+OVERVIEW_SYSTEM = (
+    "You are a sharp, plain-spoken personal finance advisor reading someone's complete "
+    "financial picture: net worth, income, debts, recurring bills, budget-vs-actual "
+    "spending, a cash-flow projection and a federal tax estimate.\n\n"
+    "The briefing ends with findings the system already computed deterministically. Trust "
+    "them — do not recompute or contradict the arithmetic. Your job is judgment: what "
+    "matters most, what it will cost to ignore, and precisely what to do next.\n\n"
+    "Write for someone who wants the truth, not reassurance:\n"
+    "- Lead with the single most consequential problem and say why it beats the others.\n"
+    "- Use their actual numbers in every claim. Never say 'consider reducing spending' "
+    "without naming the category and the dollar amount.\n"
+    "- Connect modules the person may not have connected themselves: a thin cash buffer "
+    "against a bill due before the next paycheck, an over-budget category against the "
+    "interest that money could have killed, irregular income against an unfunded tax bill.\n"
+    "- Rank actions by dollars saved, and be explicit about order and timing.\n"
+    "- Say when something is FINE. If the picture is healthy, say so plainly rather than "
+    "manufacturing a concern.\n"
+    "- If the data is thin (no spending recorded, no budget set), say what to add and why "
+    "it would change the answer, rather than guessing.\n\n"
+    "8-14 sentences, no headers, no bullet lists, no preamble. End with exactly one line: "
+    "this is general education, not licensed financial advice."
+)
+
+
+@app.route('/api/finance/ai-overview', methods=['POST'])
+@require_api_auth
+@require_ai_permission
+def finance_ai_overview():
+    """Deep AI read across the entire financial picture.
+
+    Distinct from /api/finance/ai-read, which sees debts and net worth only. This one is
+    handed everything, plus the deterministic findings, so its advice can span modules.
+    Cached like every other read (Phase 0 cost controls); `deep` opts into the high-tier
+    model for a genuinely consequential question.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        d = request.get_json(silent=True) or {}
+        picture = _finance_full_picture(uid, month=d.get('month'))
+        obs = _finance_observations(picture)
+        facts = _overview_facts(picture, obs)
+        question = (d.get('question') or '').strip()
+        if question:
+            facts += "\n\n== THE PERSON'S QUESTION ==\n%s\nAnswer it directly, in the " \
+                     "context of everything above." % question
+        out = cached_ai_read(uid, 'finance_overview', OVERVIEW_SYSTEM, facts,
+                             ttl_minutes=180, max_tokens=900,
+                             tier='high' if d.get('deep') else 'default',
+                             refresh=bool(d.get('refresh')))
+        if out.get('empty'):
+            return jsonify({'empty': True, 'observations': obs,
+                            'message': 'AI advisor is unavailable right now — the findings '
+                                       'below are computed locally and still accurate.'}), 200
+        out['observations'] = obs
+        out['month'] = picture.get('month')
+        return jsonify(out), 200
+    except Exception as e:
+        logger.error('finance ai-overview failed: %s', e, exc_info=True)
+        return jsonify({'error': str(e), 'empty': True,
+                        'message': 'Overview temporarily unavailable'}), 200
+
+
 # ===================== TRADING SOP (Standard Operating Procedure) =====================
 
 # Canonical, engine-readable SOP knobs. Phase 1 stores/edits/displays these; a later

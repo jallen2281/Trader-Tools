@@ -55,11 +55,17 @@
     </div>
 
     <!-- AI advisor -->
+    <!-- Financial Overview. The findings list is computed server-side with no AI call, so
+         it renders on every load and stays accurate even when the model is unavailable. -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
-            <h2 style="margin:0;font-size:1.05em;">🤖 AI Financial Read</h2>
-            <button class="btn2 primary" onclick="askAdvisor('')">Generate</button>
+            <h2 style="margin:0;font-size:1.05em;">Financial Overview <span class="muted" id="obsCount" style="font-size:0.78em;font-weight:400;"></span></h2>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn2" onclick="askAdvisor('', true)" title="Uses the higher-tier model — slower and more expensive">Deep read</button>
+                <button class="btn2 primary" onclick="askAdvisor('')">🤖 AI read</button>
+            </div>
         </div>
+        <div id="obsBody"><p class="muted" style="margin:10px 0 0;">Loading&hellip;</p></div>
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
             <input id="advQ" class="fin-in" style="flex:1;min-width:220px;" placeholder="Ask a question — e.g. 'best way to finance a $20k trailer?'">
             <button class="btn2" onclick="askAdvisor(document.getElementById('advQ').value)">Ask</button>
@@ -359,15 +365,68 @@
     }
 
     /* AI advisor */
-    async function askAdvisor(q) {
-        const box = document.getElementById('advBody');
-        box.innerHTML = '<div class="ai-box">🤖 Analyzing your finances…</div>';
+    /* ---- whole-picture overview: deterministic findings, then the AI read ---- */
+    const SEV = {
+        critical: {ic:'⚠', color:'var(--neg,#ef4444)', bg:'rgba(239,68,68,.09)'},
+        warning:  {ic:'●', color:'#f59e0b',            bg:'rgba(245,158,11,.09)'},
+        note:     {ic:'○', color:'var(--text-secondary,#8b93a7)', bg:'transparent'},
+    };
+    async function loadOverview() {
+        const box = document.getElementById('obsBody');
         try {
-            const r = await fetch('/api/finance/ai-read',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({question:q||''})});
+            const r = await fetch('/api/finance/overview', {credentials:'same-origin'});
+            if (!r.ok) throw new Error('failed');
             const d = await r.json();
-            if (d.empty || !d.read){ box.innerHTML=`<div class="ai-box muted">${esc(d.message||'Unavailable.')}</div>`; return; }
-            box.innerHTML = `<div class="ai-box"><strong>🤖 Advisor${d.engine?' · '+d.engine:''}</strong>\n\n${esc(d.read)}</div>`;
-        } catch(e){ box.innerHTML='<div class="ai-box neg">Advisor failed.</div>'; }
+            renderObservations(d.observations || [], d.counts || {});
+        } catch(e) {
+            box.innerHTML = '<p class="muted" style="margin:10px 0 0;">Could not load the overview.</p>';
+        }
+    }
+    function renderObservations(obs, counts) {
+        const box = document.getElementById('obsBody');
+        const cnt = document.getElementById('obsCount');
+        const bits = [];
+        if (counts.critical) bits.push(`${counts.critical} critical`);
+        if (counts.warning)  bits.push(`${counts.warning} to watch`);
+        cnt.textContent = bits.length ? '· ' + bits.join(' · ') : '';
+        if (!obs.length) {
+            box.innerHTML = '<p class="muted" style="margin:10px 0 0;">Nothing flagged — no negative cash-flow projection, no category over budget, no high-rate balance. Add bills, budgets and spending for a sharper read.</p>';
+            return;
+        }
+        box.innerHTML = '<div style="margin-top:10px;display:grid;gap:7px;">' + obs.map(o => {
+            const s = SEV[o.severity] || SEV.note;
+            return `<div style="display:flex;gap:10px;padding:9px 11px;border-radius:9px;background:${s.bg};border-left:3px solid ${s.color};">
+                <span style="color:${s.color};font-size:0.85em;line-height:1.5;">${s.ic}</span>
+                <div style="font-size:0.9em;line-height:1.5;">
+                    <strong>${esc(o.title)}</strong>
+                    <div class="muted" style="font-size:0.93em;">${esc(o.detail)}</div>
+                </div>
+            </div>`;
+        }).join('') + '</div>';
+    }
+    /* deep=true uses the higher-tier model — offered explicitly rather than by default,
+       because it costs materially more per call (see the Phase 0 cost controls). */
+    async function askAdvisor(q, deep) {
+        const box = document.getElementById('advBody');
+        box.innerHTML = `<div class="ai-box">🤖 Reading your full financial picture${deep?' (deep)':''}…</div>`;
+        try {
+            const r = await fetch('/api/finance/ai-overview', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                credentials:'same-origin',
+                body: JSON.stringify({question: q || '', deep: !!deep})});
+            const d = await r.json();
+            if (r.status === 403) {
+                box.innerHTML = `<div class="ai-box muted">${esc(d.error || 'AI features are not enabled for this account.')}</div>`;
+                return;
+            }
+            if (d.observations) renderObservations(d.observations, {});
+            if (d.empty || !d.read) {
+                box.innerHTML = `<div class="ai-box muted">${esc(d.message||'Unavailable.')}</div>`;
+                return;
+            }
+            const tag = [d.engine, d.cached ? 'cached' : null].filter(Boolean).join(' · ');
+            box.innerHTML = `<div class="ai-box"><strong>🤖 Advisor${tag?' · '+tag:''}</strong>\n\n${esc(d.read)}</div>`;
+        } catch(e) { box.innerHTML = '<div class="ai-box neg">Advisor failed.</div>'; }
     }
 
     /* debt modal */
@@ -745,6 +804,6 @@
     function showModal(html){ const r=document.getElementById('modalRoot'); r.innerHTML=`<div class="modal-back" id="_mb"><div class="modal-box">${html}</div></div>`; document.getElementById('_mb').addEventListener('click',e=>{if(e.target.id==='_mb')closeModal();}); }
     function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
-    document.addEventListener('DOMContentLoaded', function(){ loadOutlook(); loadPlaid(); });  // loadOutlook chains loadBudgeting()
+    document.addEventListener('DOMContentLoaded', function(){ loadOutlook(); loadPlaid(); loadOverview(); });  // loadOutlook chains loadBudgeting()
 </script>
 {% endblock %}
