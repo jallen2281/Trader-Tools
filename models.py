@@ -1281,6 +1281,75 @@ class TaxDocument(db.Model):
         }
 
 
+class TaxProfile(db.Model):
+    """The household facts a tax estimate needs and income alone cannot supply.
+
+    Without this the estimator assumed married-filing-jointly, no dependents, no pre-tax
+    retirement, no credits and no state tax — so it produced a number that was wrong for
+    almost everyone. One row per user; absent means "assume the defaults below".
+
+    `ytd_federal_withheld` + `ytd_as_of` exist because during the tax year there is no W-2:
+    a September estimate has no document to read withholding from, so it reported $0
+    withheld and claimed the entire year's tax was owed. A YTD figure off a recent paystub
+    is the only ground truth available mid-year.
+    """
+    __tablename__ = 'tax_profiles'
+
+    FILING_STATUSES = ('single', 'mfj', 'mfs', 'hoh', 'qss')
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False,
+                        unique=True, index=True)
+    filing_status = db.Column(db.String(10), default='single')
+
+    # Dependents drive the child tax credit ($2k+ each) and the other-dependent credit
+    # ($500 each) — between them the single largest omission in the old estimate.
+    dependents_under_17 = db.Column(db.Integer, default=0)
+    dependents_other = db.Column(db.Integer, default=0)
+
+    # Pre-tax payroll deductions reduce taxable wages before any bracket applies.
+    pretax_retirement_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    pretax_other_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+
+    itemized_deductions = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    other_credits_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+
+    state = db.Column(db.String(2), default='MI')
+    state_tax_rate = db.Column(db.Numeric(5, 3, asdecimal=False), default=4.25)
+    state_exemption_per_person = db.Column(db.Numeric(10, 2, asdecimal=False), default=5600)
+
+    # Mid-year ground truth, read off a paystub.
+    ytd_federal_withheld = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    ytd_state_withheld = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    ytd_as_of = db.Column(db.Date)
+
+    notes = db.Column(db.Text)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def household_size(self):
+        filers = 2 if self.filing_status in ('mfj', 'qss') else 1
+        return filers + int(self.dependents_under_17 or 0) + int(self.dependents_other or 0)
+
+    def to_dict(self):
+        return {
+            'filing_status': self.filing_status or 'single',
+            'dependents_under_17': int(self.dependents_under_17 or 0),
+            'dependents_other': int(self.dependents_other or 0),
+            'pretax_retirement_annual': float(self.pretax_retirement_annual or 0),
+            'pretax_other_annual': float(self.pretax_other_annual or 0),
+            'itemized_deductions': float(self.itemized_deductions or 0),
+            'other_credits_annual': float(self.other_credits_annual or 0),
+            'state': self.state or 'MI',
+            'state_tax_rate': float(self.state_tax_rate or 0),
+            'state_exemption_per_person': float(self.state_exemption_per_person or 0),
+            'ytd_federal_withheld': float(self.ytd_federal_withheld or 0),
+            'ytd_state_withheld': float(self.ytd_state_withheld or 0),
+            'ytd_as_of': self.ytd_as_of.isoformat() if self.ytd_as_of else None,
+            'household_size': self.household_size(),
+            'notes': self.notes,
+        }
+
+
 class AIInsight(db.Model):
     """Cached AI read. Keyed by (user_id, kind, input_hash) where input_hash covers the
     model + system + facts, so an unchanged request within its TTL is served from here

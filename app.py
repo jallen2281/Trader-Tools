@@ -29,7 +29,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, PlaidItem, TaxDocument
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, PlaidItem, TaxDocument, TaxProfile
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -1952,9 +1952,13 @@ def _finance_full_picture(user_id, month=None, days=60):
 
     try:
         picture['tax'] = _income_tax_estimate(user_id)
+        picture['tax_profile'] = _tax_profile(user_id).to_dict()
+        picture['tax_profile_saved'] = TaxProfile.query.filter_by(user_id=user_id).first() is not None
     except Exception as e:
         logger.warning('overview: tax estimate failed: %s', e)
         picture['tax'] = None
+        picture['tax_profile'] = None
+        picture['tax_profile_saved'] = False
 
     try:
         picture['connections'] = [i.to_dict() for i in
@@ -2080,12 +2084,30 @@ def _finance_observations(p):
 
     # --- taxes ---
     if tax:
-        due = tax.get('balance_due') or 0
-        if due > 1000:
-            _obs(out, 'warning', 'tax_due',
-                 'Estimated tax owed at filing',
-                 'Roughly %s owed beyond what is withheld. Over $1,000 is where '
-                 'underpayment penalties start.' % _money(due), due)
+        # A balance is only meaningful once withholding is known. Mid-year there is no W-2,
+        # so without a paystub figure the "balance due" is really the whole year's tax and
+        # alarming about it is just wrong.
+        if not tax.get('withholding_known'):
+            _obs(out, 'note', 'withholding_unknown',
+                 'Tax estimate has no withholding figure',
+                 'Nothing on file shows what has been withheld this year, so what you still '
+                 'owe cannot be computed — the estimate shows total tax for the year, not a '
+                 'balance. Enter federal tax withheld year-to-date from a recent paystub.')
+        else:
+            due = tax.get('balance_due') or 0
+            if due > 1000:
+                _obs(out, 'warning', 'tax_due',
+                     'Estimated tax owed at filing',
+                     'Roughly %s owed beyond the %s withheld (%s). Over $1,000 is where '
+                     'underpayment penalties start.' % (
+                         _money(due), _money(tax.get('withheld')),
+                         tax.get('withholding_source')), due)
+    if not p.get('tax_profile_saved'):
+        _obs(out, 'note', 'no_tax_profile',
+             'No household profile set',
+             'Filing status, dependents and pre-tax contributions are unset, so the tax '
+             'estimate assumes a single filer with no children and no 401(k). Setting them '
+             'can move the number by thousands.')
         if o.get('has_irregular_income') and not (o.get('monthly_tax_setaside') or 0):
             _obs(out, 'warning', 'no_tax_setaside',
                  'Irregular income with no tax set-aside',
@@ -2232,14 +2254,45 @@ def _overview_facts(p, obs):
             _money(cash.get('total_out'))))
 
     if tax:
-        L.append("\n== TAX ESTIMATE (%s, %s) ==" % (tax.get('year'), tax.get('filing_status')))
-        L.append("W2 wages %s, 1099 income %s. Estimated federal tax %s (income %s + SE %s). "
-                 "Withheld %s. %s %s. Quarterly estimate %s." % (
+        prof = p.get('tax_profile') or {}
+        L.append("\n== HOUSEHOLD ==")
+        L.append("Filing %s, household of %s: %s dependent(s) under 17, %s other. "
+                 "Pre-tax retirement %s/yr, other pre-tax %s/yr. Deduction used: %s (%s). "
+                 "State %s at %s%%." % (
+                     tax.get('filing_status'), tax.get('household_size'),
+                     tax.get('dependents_under_17'), tax.get('dependents_other'),
+                     _money(prof.get('pretax_retirement_annual')),
+                     _money(prof.get('pretax_other_annual')),
+                     _money(tax.get('deduction_used')), tax.get('deduction_basis'),
+                     tax.get('state'), tax.get('state_tax_rate')))
+        if not p.get('tax_profile_saved'):
+            L.append("NOTE: no household profile has been saved — the figures below assume a "
+                     "single filer with no dependents and no pre-tax contributions. Say so "
+                     "rather than treating them as settled.")
+        L.append("\n== TAX ESTIMATE (%s, %s; %s brackets) ==" % (
+            tax.get('year'), tax.get('filing_status'), tax.get('constants_vintage')))
+        L.append("W2 wages %s, 1099 income %s. Taxable income %s after a %s deduction. "
+                 "Federal tax %s before credits, less %s of credits (child %s + other %s) = "
+                 "%s income tax, plus %s self-employment tax = %s total." % (
                      _money(tax.get('w2_wages')), _money(tax.get('se_income')),
-                     _money(tax.get('total_federal_tax')), _money(tax.get('federal_income_tax')),
-                     _money(tax.get('self_employment_tax')), _money(tax.get('withheld')),
-                     'Balance due' if (tax.get('balance_due') or 0) > 0 else 'Refund',
-                     _money(abs(tax.get('balance_due') or 0)), _money(tax.get('quarterly_estimate'))))
+                     _money(tax.get('taxable_income')), _money(tax.get('deduction_used')),
+                     _money(tax.get('federal_income_tax_before_credits')),
+                     _money(tax.get('credits')), _money(tax.get('child_tax_credit')),
+                     _money(tax.get('other_dependent_credit')),
+                     _money(tax.get('federal_income_tax')),
+                     _money(tax.get('self_employment_tax')),
+                     _money(tax.get('total_federal_tax'))))
+        if tax.get('withholding_known'):
+            bd = tax.get('balance_due') or 0
+            L.append("Withheld %s (%s). %s %s." % (
+                _money(tax.get('withheld')), tax.get('withholding_source'),
+                'Balance due' if bd > 0 else 'Refund expected', _money(abs(bd))))
+        else:
+            L.append("Withholding: %s Do NOT present the total tax as a balance owed — the "
+                     "amount already withheld is simply unknown." % tax.get('withholding_source'))
+        if tax.get('state_tax'):
+            L.append("Estimated %s state tax %s (flat %s%% approximation)." % (
+                tax.get('state'), _money(tax.get('state_tax')), tax.get('state_tax_rate')))
 
     if obs:
         L.append("\n== FLAGGED BY THE SYSTEM (already computed — do not re-derive) ==")
@@ -3418,13 +3471,75 @@ def tax_document_extract(did):
     return jsonify({'extracted': data, 'document': doc.to_dict()}), 200
 
 
-# --- Income-tax estimate (approximate; 2025 MFJ figures) ---
+# ============================== FEDERAL TAX CONSTANTS ==============================
+# VERIFY THESE ANNUALLY. They are 2025 figures and the IRS reindexes every one of them
+# each year. TAX_CONSTANTS_VINTAGE is returned by the estimate endpoint so the UI can
+# say out loud which year's numbers produced a figure — a tax estimate that silently
+# uses stale brackets is worse than one that admits its vintage.
+TAX_CONSTANTS_VINTAGE = 2025
+
 _FED_BRACKETS_MFJ = [(0, 0.10), (23850, 0.12), (96950, 0.22), (206700, 0.24),
                      (394600, 0.32), (501050, 0.35), (751600, 0.37)]
 _FED_BRACKETS_SINGLE = [(0, 0.10), (11925, 0.12), (48475, 0.22), (103350, 0.24),
                         (197300, 0.32), (250525, 0.35), (626350, 0.37)]
-_STD_DEDUCTION = {'mfj': 30000, 'single': 15000}
+_FED_BRACKETS_HOH = [(0, 0.10), (17000, 0.12), (64850, 0.22), (103350, 0.24),
+                     (197300, 0.32), (250500, 0.35), (626350, 0.37)]
+# Married filing separately tracks single closely at the rates most people hit.
+_FED_BRACKETS = {
+    'mfj': _FED_BRACKETS_MFJ, 'qss': _FED_BRACKETS_MFJ,
+    'single': _FED_BRACKETS_SINGLE, 'mfs': _FED_BRACKETS_SINGLE,
+    'hoh': _FED_BRACKETS_HOH,
+}
+_STD_DEDUCTION = {'mfj': 30000, 'qss': 30000, 'single': 15000, 'mfs': 15000, 'hoh': 22500}
 _SS_WAGE_BASE = 176100
+_CTC_PER_CHILD = 2200        # child tax credit, dependents under 17
+_ODC_PER_DEPENDENT = 500     # other-dependent credit
+
+
+def _tax_profile(user_id):
+    """The user's TaxProfile, or an unsaved default. Never returns None so callers do not
+    have to branch; the defaults are the same assumptions the estimator used to hardcode,
+    except filing status, which now defaults to single rather than silently assuming MFJ."""
+    prof = TaxProfile.query.filter_by(user_id=user_id).first()
+    if prof:
+        return prof
+    # Column defaults are applied by SQLAlchemy at INSERT, not on construction, so an
+    # unsaved instance would have state=None and read 'State None' in the AI briefing.
+    # Spell the defaults out so an unsaved profile behaves exactly like a saved one.
+    return TaxProfile(user_id=user_id, filing_status='single',
+                      dependents_under_17=0, dependents_other=0,
+                      pretax_retirement_annual=0, pretax_other_annual=0,
+                      itemized_deductions=0, other_credits_annual=0,
+                      state='MI', state_tax_rate=4.25, state_exemption_per_person=5600,
+                      ytd_federal_withheld=0, ytd_state_withheld=0)
+
+
+def _project_withholding(prof, user_id, yr):
+    """Best available figure for federal withholding this year, plus how it was obtained.
+
+    Order matters. Mid-year there is no W-2, so a YTD paystub figure annualized is the only
+    real signal; documents only exist for closed years. When neither is available the answer
+    is UNKNOWN, not zero — reporting zero is what made a September estimate claim the whole
+    year's tax was owed.
+    """
+    today = date.today()
+    ytd = float(getattr(prof, 'ytd_federal_withheld', 0) or 0)
+    as_of = getattr(prof, 'ytd_as_of', None)
+    if ytd > 0 and as_of and as_of.year == yr:
+        elapsed = (as_of - date(yr, 1, 1)).days + 1
+        if elapsed > 0:
+            return round(ytd * 365.0 / elapsed, 2), True, (
+                'projected from %s withheld year-to-date as of %s' % (
+                    _money(ytd), as_of.isoformat()))
+    docs = round(sum(float(d.fed_withheld or 0) for d in
+                     TaxDocument.query.filter_by(user_id=user_id, tax_year=yr).all()), 2)
+    if docs > 0:
+        return docs, True, 'from W-2/1099 documents on file for %d' % yr
+    if yr >= today.year:
+        return 0.0, False, (
+            'UNKNOWN — no year-to-date figure entered and no %d W-2 exists yet. Enter '
+            'federal tax withheld from a recent paystub to make the balance meaningful.' % yr)
+    return 0.0, False, 'UNKNOWN — no W-2 on file for %d' % yr
 
 
 def _bracket_tax(taxable, brackets):
@@ -3438,43 +3553,131 @@ def _bracket_tax(taxable, brackets):
     return round(tax, 2)
 
 
-def _income_tax_estimate(user_id, year=None, filing='mfj'):
-    """Rough federal income + self-employment tax estimate from tracked income sources and
-    any W2/1099 withholding on file. Clearly an estimate — not tax advice."""
-    filing = filing if filing in _STD_DEDUCTION else 'mfj'
+def _income_tax_estimate(user_id, year=None, filing=None):
+    """Approximate federal (and flat-rate state) tax from tracked income and the household
+    profile. Still an estimate — no itemization beyond a supplied total, no phase-outs, no
+    AMT, no credits beyond CTC/ODC/a manual total. It is now at least aware of who the
+    person is, which the previous version was not."""
+    prof = _tax_profile(user_id)
+    filing = (filing or prof.filing_status or 'single').lower()
+    if filing not in _STD_DEDUCTION:
+        filing = 'single'
+    yr = year or datetime.now().year
+
     srcs = IncomeSource.query.filter_by(user_id=user_id, active=True).all()
-    w2_wages = round(sum(s.gross_annual() for s in srcs if s.tax_form == 'W2'), 2)
-    se_income = round(sum(s.gross_annual() for s in srcs if s.tax_form == '1099'), 2)
+    # A single/HoH/MFS filer does not report a spouse's income on their return.
+    if filing in ('single', 'hoh', 'mfs'):
+        srcs = [x for x in srcs if (x.owner or 'me') != 'spouse']
+
+    w2_gross = round(sum(x.gross_annual() for x in srcs if x.tax_form == 'W2'), 2)
+    se_income = round(sum(x.gross_annual() for x in srcs if x.tax_form == '1099'), 2)
+
+    pretax = round(float(prof.pretax_retirement_annual or 0) +
+                   float(prof.pretax_other_annual or 0), 2)
+    w2_taxable = max(0.0, w2_gross - pretax)
 
     se_net = round(se_income * 0.9235, 2)
-    ss_room = max(0.0, _SS_WAGE_BASE - w2_wages)
+    ss_room = max(0.0, _SS_WAGE_BASE - w2_gross)
     se_tax = round(min(se_net, ss_room) * 0.124 + se_net * 0.029, 2)
     half_se = round(se_tax / 2.0, 2)
 
     std = _STD_DEDUCTION[filing]
-    taxable = max(0.0, w2_wages + se_net - half_se - std)
-    brackets = _FED_BRACKETS_MFJ if filing == 'mfj' else _FED_BRACKETS_SINGLE
-    fed_income_tax = _bracket_tax(taxable, brackets)
+    itemized = float(prof.itemized_deductions or 0)
+    deduction = max(std, itemized)
+    taxable = max(0.0, w2_taxable + se_net - half_se - deduction)
+    fed_before_credits = _bracket_tax(taxable, _FED_BRACKETS[filing])
 
-    # Withholding already remitted (from W2/1099 docs on file for the year).
-    yr = year or datetime.now().year
-    withheld = round(sum(float(d.fed_withheld or 0) for d in
-                         TaxDocument.query.filter_by(user_id=user_id, tax_year=yr).all()), 2)
+    kids = int(prof.dependents_under_17 or 0)
+    others = int(prof.dependents_other or 0)
+    ctc = kids * _CTC_PER_CHILD
+    odc = others * _ODC_PER_DEPENDENT
+    manual_credits = float(prof.other_credits_annual or 0)
+    credits = round(ctc + odc + manual_credits, 2)
+    # Credits offset income tax, not self-employment tax. Floored at zero: the refundable
+    # portion of the CTC can exceed liability in reality, which this does not model.
+    fed_income_tax = round(max(0.0, fed_before_credits - credits), 2)
 
-    total_tax = round(fed_income_tax + se_tax, 2)
-    balance_due = round(total_tax - withheld, 2)
-    gross = w2_wages + se_income
+    total_fed = round(fed_income_tax + se_tax, 2)
+    withheld, withholding_known, withholding_source = _project_withholding(prof, user_id, yr)
+    balance_due = round(total_fed - withheld, 2)
+
+    rate = float(prof.state_tax_rate or 0)
+    exempt = float(prof.state_exemption_per_person or 0) * prof.household_size()
+    state_taxable = max(0.0, w2_gross + se_income - pretax - exempt)
+    state_tax = round(state_taxable * rate / 100.0, 2) if rate else 0.0
+
+    gross = w2_gross + se_income
     return {
         'year': yr, 'filing_status': filing,
-        'w2_wages': w2_wages, 'se_income': se_income, 'se_net': se_net,
-        'standard_deduction': std, 'taxable_income': round(taxable, 2),
+        'constants_vintage': TAX_CONSTANTS_VINTAGE,
+        'household_size': prof.household_size(),
+        'dependents_under_17': kids, 'dependents_other': others,
+        'w2_wages': w2_gross, 'se_income': se_income, 'se_net': se_net,
+        'pretax_deductions': pretax,
+        'standard_deduction': std, 'itemized_deductions': itemized,
+        'deduction_used': deduction,
+        'deduction_basis': 'itemized' if itemized > std else 'standard',
+        'taxable_income': round(taxable, 2),
+        'federal_income_tax_before_credits': fed_before_credits,
+        'credits': credits, 'child_tax_credit': ctc, 'other_dependent_credit': odc,
         'federal_income_tax': fed_income_tax, 'self_employment_tax': se_tax,
-        'total_federal_tax': total_tax, 'withheld': withheld,
-        'balance_due': balance_due, 'refund': round(-balance_due, 2) if balance_due < 0 else 0,
-        'effective_rate': round(total_tax / gross * 100, 1) if gross else 0,
-        'quarterly_estimate': round(max(0.0, se_tax + (fed_income_tax if withheld == 0 else 0)) / 4.0, 2),
-        'note': 'Approximate: 2025 federal brackets, standard deduction, no state/credits. Not tax advice.',
+        'total_federal_tax': total_fed,
+        'withheld': withheld,
+        'withholding_known': withholding_known,
+        'withholding_source': withholding_source,
+        'balance_due': balance_due if withholding_known else None,
+        'refund': round(-balance_due, 2) if (withholding_known and balance_due < 0) else 0,
+        'state': prof.state, 'state_tax_rate': rate, 'state_tax': state_tax,
+        'effective_rate': round(total_fed / gross * 100, 1) if gross else 0,
+        'quarterly_estimate': round(max(0.0, se_tax + (fed_income_tax if not withholding_known else 0)) / 4.0, 2),
+        'note': 'Approximate: %d federal brackets, no phase-outs, no AMT, flat-rate state '
+                'approximation. Not tax advice.' % TAX_CONSTANTS_VINTAGE,
     }
+
+
+@app.route('/api/finance/tax-profile', methods=['GET', 'PUT'])
+@require_api_auth
+def finance_tax_profile():
+    """The household facts behind the tax estimate. Everything here is user-supplied; none
+    of it can be inferred from transactions."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    prof = TaxProfile.query.filter_by(user_id=uid).first()
+    if request.method == 'GET':
+        return jsonify({'profile': (prof or _tax_profile(uid)).to_dict(),
+                        'saved': prof is not None,
+                        'filing_statuses': list(TaxProfile.FILING_STATUSES),
+                        'constants_vintage': TAX_CONSTANTS_VINTAGE})
+    d = request.get_json() or {}
+    if not prof:
+        prof = TaxProfile(user_id=uid)
+        db.session.add(prof)
+    fs = (d.get('filing_status') or '').lower()
+    if fs in TaxProfile.FILING_STATUSES:
+        prof.filing_status = fs
+    for f in ('dependents_under_17', 'dependents_other'):
+        if f in d:
+            try:
+                setattr(prof, f, max(0, int(d[f] or 0)))
+            except (TypeError, ValueError):
+                pass
+    for f in ('pretax_retirement_annual', 'pretax_other_annual', 'itemized_deductions',
+              'other_credits_annual', 'state_tax_rate', 'state_exemption_per_person',
+              'ytd_federal_withheld', 'ytd_state_withheld'):
+        if f in d:
+            try:
+                setattr(prof, f, max(0.0, float(d[f] or 0)))
+            except (TypeError, ValueError):
+                pass
+    if 'state' in d:
+        prof.state = ((d.get('state') or 'MI').strip().upper()[:2] or 'MI')
+    if 'ytd_as_of' in d:
+        prof.ytd_as_of = _parse_csv_date((d.get('ytd_as_of') or '').strip())
+    if 'notes' in d:
+        prof.notes = (d.get('notes') or None)
+    db.session.commit()
+    return jsonify({'profile': prof.to_dict(), 'saved': True})
 
 
 @app.route('/api/tax/income-estimate', methods=['GET'])

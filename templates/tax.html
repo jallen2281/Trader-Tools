@@ -45,14 +45,52 @@
         <div id="taxAiBody" style="margin-top:12px;"></div>
     </div>
 
+    <!-- Household profile. The estimate below is only as good as this. -->
+    <div class="tax-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Household <span class="muted" style="font-size:0.58em;font-weight:400;">filing status, dependents, pre-tax contributions &amp; withholding</span></h2>
+            <button class="btn2 primary" onclick="saveTaxProfile()">Save</button>
+        </div>
+        <div id="tpMsg" class="muted" style="font-size:0.82em;margin-top:6px;"></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:12px;">
+            <div>
+                <label class="fld">Filing status</label>
+                <select id="tpFiling" class="fin-in" style="width:100%;">
+                    <option value="single">Single</option>
+                    <option value="mfj">Married filing jointly</option>
+                    <option value="mfs">Married filing separately</option>
+                    <option value="hoh">Head of household</option>
+                    <option value="qss">Qualifying surviving spouse</option>
+                </select>
+            </div>
+            <div><label class="fld">Children under 17</label><input id="tpKids" type="number" min="0" class="fin-in" style="width:100%;"></div>
+            <div><label class="fld">Other dependents</label><input id="tpOther" type="number" min="0" class="fin-in" style="width:100%;"></div>
+            <div><label class="fld">401(k)/403(b) per year $</label><input id="tpRet" type="number" min="0" step="100" class="fin-in" style="width:100%;"></div>
+            <div><label class="fld">HSA / other pre-tax $</label><input id="tpPre" type="number" min="0" step="100" class="fin-in" style="width:100%;"></div>
+            <div><label class="fld">Itemized deductions $ <span class="muted" style="font-weight:400;">(0 = standard)</span></label><input id="tpItem" type="number" min="0" step="100" class="fin-in" style="width:100%;"></div>
+            <div><label class="fld">Other credits $/yr</label><input id="tpCred" type="number" min="0" step="50" class="fin-in" style="width:100%;"></div>
+            <div><label class="fld">State</label><input id="tpState" maxlength="2" class="fin-in" style="width:100%;text-transform:uppercase;"></div>
+            <div><label class="fld">State rate %</label><input id="tpRate" type="number" min="0" step="0.05" class="fin-in" style="width:100%;"></div>
+        </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+            <div class="muted" style="font-size:0.82em;margin-bottom:8px;">
+                <strong>Withholding to date.</strong> Mid-year there is no W-2 yet, so without
+                this the estimate cannot tell what you still owe — it can only show the whole
+                year's tax. Copy "Federal income tax withheld" year-to-date off a recent paystub.
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;">
+                <div><label class="fld">Federal withheld YTD $</label><input id="tpYtdFed" type="number" min="0" step="10" class="fin-in" style="width:100%;"></div>
+                <div><label class="fld">State withheld YTD $</label><input id="tpYtdState" type="number" min="0" step="10" class="fin-in" style="width:100%;"></div>
+                <div><label class="fld">As of (paystub date)</label><input id="tpAsOf" type="date" class="fin-in" style="width:100%;"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Income-Tax Estimate -->
     <div class="tax-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
             <h2 style="margin:0;">Income-Tax Estimate <span class="muted" style="font-size:0.58em;font-weight:400;">approximate · from your income sources + W2/1099 withholding</span></h2>
-            <select id="filingStatus" onchange="loadIncomeEstimate()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);">
-                <option value="mfj">Married filing jointly</option>
-                <option value="single">Single</option>
-            </select>
+            <span class="muted" id="incEstStatus" style="font-size:0.8em;"></span>
         </div>
         <div class="summary-grid" id="incEstSummary" style="margin-top:14px;"><div class="summary-tile"><div class="lbl muted">Loading…</div></div></div>
         <div id="incEstNote" class="muted" style="margin-top:10px;font-size:0.8em;"></div>
@@ -248,30 +286,79 @@
         loadRealized();
         loadHarvest();
         loadLtThreshold();
+        loadTaxProfile();
         loadIncomeEstimate();
         loadTaxDocs();
+    }
+
+    /* ===== Household tax profile ===== */
+    const TP = {tpFiling:'filing_status', tpKids:'dependents_under_17', tpOther:'dependents_other',
+                tpRet:'pretax_retirement_annual', tpPre:'pretax_other_annual',
+                tpItem:'itemized_deductions', tpCred:'other_credits_annual',
+                tpState:'state', tpRate:'state_tax_rate',
+                tpYtdFed:'ytd_federal_withheld', tpYtdState:'ytd_state_withheld',
+                tpAsOf:'ytd_as_of'};
+    async function loadTaxProfile() {
+        try {
+            const r = await fetch('/api/finance/tax-profile', {credentials:'same-origin'});
+            if (!r.ok) return;
+            const d = await r.json();
+            const p = d.profile || {};
+            for (const [id, key] of Object.entries(TP)) {
+                const el = document.getElementById(id);
+                if (el) el.value = (p[key] === null || p[key] === undefined) ? '' : p[key];
+            }
+            document.getElementById('tpMsg').textContent = d.saved
+                ? '' : 'Not set yet — the estimate below assumes a single filer with no dependents.';
+        } catch(e) {}
+    }
+    async function saveTaxProfile() {
+        const msg = document.getElementById('tpMsg');
+        const body = {};
+        for (const [id, key] of Object.entries(TP)) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            body[key] = (key === 'filing_status' || key === 'state' || key === 'ytd_as_of')
+                ? el.value : (parseFloat(el.value) || 0);
+        }
+        msg.textContent = 'Saving…';
+        try {
+            const r = await fetch('/api/finance/tax-profile', {
+                method:'PUT', headers:{'Content-Type':'application/json'},
+                credentials:'same-origin', body: JSON.stringify(body)});
+            if (!r.ok) throw new Error(((await r.json())||{}).error || 'save failed');
+            msg.textContent = 'Saved.';
+            loadIncomeEstimate();
+            setTimeout(()=>{ msg.textContent=''; }, 2500);
+        } catch(e) { msg.textContent = e.message; }
     }
 
     /* ===== Income-Tax Estimate (Phase 3) ===== */
     async function loadIncomeEstimate() {
         const grid = document.getElementById('incEstSummary'), note = document.getElementById('incEstNote');
         try {
-            const filing = document.getElementById('filingStatus').value;
-            const res = await fetch('/api/tax/income-estimate?filing=' + filing, { credentials: 'same-origin' });
+            const res = await fetch('/api/tax/income-estimate', { credentials: 'same-origin' });
             const d = await res.json();
             if (d.error) { grid.innerHTML = '<div class="summary-tile"><div class="lbl gain-neg">Error</div></div>'; return; }
-            const dueLbl = d.balance_due >= 0 ? 'Est. Balance Due' : 'Est. Refund';
-            const dueVal = d.balance_due >= 0 ? d.balance_due : d.refund;
+            // balance_due is null when withholding is unknown — showing the full year's tax
+            // as a "balance due" is exactly the thing that made this screen misleading.
+            const known = d.withholding_known;
+            const dueLbl = !known ? 'Balance' : (d.balance_due >= 0 ? 'Est. Balance Due' : 'Est. Refund');
+            const dueVal = !known ? null : (d.balance_due >= 0 ? d.balance_due : d.refund);
             const tiles = [
                 ['Gross Income', fmt(d.w2_wages + d.se_income), '', `W2 ${fmt(d.w2_wages)} · 1099 ${fmt(d.se_income)}`],
                 ['Federal Income Tax', fmt(d.federal_income_tax), '', `taxable ${fmt(d.taxable_income)}`],
                 ['Self-Employment Tax', fmt(d.self_employment_tax), d.self_employment_tax>0?'gain-neg':'', 'on 1099 income'],
                 ['Total Federal Tax', fmt(d.total_federal_tax), '', `~${d.effective_rate}% effective`],
-                [dueLbl, fmt(dueVal), d.balance_due>0?'gain-neg':'gain-pos', `withheld ${fmt(d.withheld)}`],
+                [dueLbl, known ? fmt(dueVal) : 'unknown',
+                 !known ? '' : (d.balance_due>0?'gain-neg':'gain-pos'),
+                 known ? `withheld ${fmt(d.withheld)}` : 'enter withholding above'],
                 ['Quarterly Estimate', fmt(d.quarterly_estimate), '', 'set aside per quarter'],
             ];
             grid.innerHTML = tiles.map(t=>`<div class="summary-tile"><div class="lbl">${t[0]}</div><div class="val ${t[2]}">${t[1]}</div><div class="sub">${t[3]}</div></div>`).join('');
-            note.textContent = d.note || '';
+            const st = document.getElementById('incEstStatus');
+            if (st) st.textContent = `${d.filing_status} · household of ${d.household_size} · ${d.constants_vintage} brackets`;
+            note.textContent = (d.note || '') + (d.withholding_source ? '  Withholding: ' + d.withholding_source : '');
         } catch(e) { grid.innerHTML = '<div class="summary-tile"><div class="lbl gain-neg">Could not load estimate.</div></div>'; }
     }
 
