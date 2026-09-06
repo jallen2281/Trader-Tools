@@ -29,7 +29,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, PlaidItem, TaxDocument, TaxProfile
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, PlaidItem, TaxDocument, TaxProfile, Household, HouseholdMember, Entity
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -593,7 +593,8 @@ def _finance_income(user):
     """Monthly gross income: sum of the user's active IncomeSource rows, falling back to
     the legacy preferences.monthlyGrossIncome number for users who haven't added sources."""
     try:
-        rows = IncomeSource.query.filter_by(user_id=user.id, active=True).all()
+        rows = IncomeSource.query.filter(_visible(IncomeSource, user.id),
+                                         IncomeSource.active.is_(True)).all()
         if rows:
             return round(sum(r.gross_monthly() for r in rows), 2)
     except Exception as e:
@@ -628,7 +629,7 @@ def finance_list_accounts():
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    rows = FinanceAccount.query.filter_by(user_id=uid).order_by(FinanceAccount.balance.desc()).all()
+    rows = FinanceAccount.query.filter(_visible(FinanceAccount, uid)).order_by(FinanceAccount.balance.desc()).all()
     return jsonify({'accounts': [a.to_dict() for a in rows]})
 
 
@@ -657,7 +658,7 @@ def finance_modify_account(aid):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    a = FinanceAccount.query.filter_by(id=aid, user_id=uid).first()
+    a = _get_editable(FinanceAccount, aid, uid)
     if not a:
         return jsonify({'error': 'Not found'}), 404
     if request.method == 'DELETE':
@@ -684,7 +685,7 @@ def finance_list_debts():
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    rows = Debt.query.filter_by(user_id=uid).order_by(Debt.apr.desc()).all()
+    rows = Debt.query.filter(_visible(Debt, uid)).order_by(Debt.apr.desc()).all()
     return jsonify({'debts': [x.to_dict() for x in rows]})
 
 
@@ -714,7 +715,7 @@ def finance_modify_debt(did):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    x = Debt.query.filter_by(id=did, user_id=uid).first()
+    x = _get_editable(Debt, did, uid)
     if not x:
         return jsonify({'error': 'Not found'}), 404
     if request.method == 'DELETE':
@@ -804,7 +805,7 @@ def finance_list_incomes():
         return jsonify({'error': 'Authentication required'}), 401
     user = User.query.get(uid)
     _seed_income_from_prefs(user)  # one-time migration of the legacy single number
-    rows = IncomeSource.query.filter_by(user_id=uid).order_by(IncomeSource.created_at).all()
+    rows = IncomeSource.query.filter(_visible(IncomeSource, uid)).order_by(IncomeSource.created_at).all()
     active = [r for r in rows if r.active]
     return jsonify({
         'incomes': [r.to_dict(include_events=True) for r in rows],
@@ -838,7 +839,7 @@ def finance_modify_income(iid):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    x = IncomeSource.query.filter_by(id=iid, user_id=uid).first()
+    x = _get_editable(IncomeSource, iid, uid)
     if not x:
         return jsonify({'error': 'Not found'}), 404
     if request.method == 'DELETE':
@@ -857,7 +858,7 @@ def finance_income_events(iid):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    src = IncomeSource.query.filter_by(id=iid, user_id=uid).first()
+    src = _get_editable(IncomeSource, iid, uid)
     if not src:
         return jsonify({'error': 'Not found'}), 404
     if request.method == 'GET':
@@ -984,7 +985,7 @@ def _month_bounds(month=None):
 def _spend_actuals(user_id, start, end):
     """Actual spend per category over [start, end]. Refunds are negative, so they net out."""
     rows = SpendTransaction.query.filter(
-        SpendTransaction.user_id == user_id,
+        _visible(SpendTransaction, user_id),
         SpendTransaction.posted_at >= start,
         SpendTransaction.posted_at <= end).all()
     out = {}
@@ -1071,7 +1072,7 @@ def finance_bills():
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
     if request.method == 'GET':
-        rows = RecurringBill.query.filter_by(user_id=uid).order_by(RecurringBill.category, RecurringBill.name).all()
+        rows = RecurringBill.query.filter(_visible(RecurringBill, uid)).order_by(RecurringBill.category, RecurringBill.name).all()
         return jsonify({
             'bills': [b.to_dict() for b in rows],
             'total_monthly': round(sum(b.monthly_amount() for b in rows if b.active), 2),
@@ -1092,7 +1093,7 @@ def finance_modify_bill(bid):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    b = RecurringBill.query.filter_by(id=bid, user_id=uid).first()
+    b = _get_editable(RecurringBill, bid, uid)
     if not b:
         return jsonify({'error': 'Not found'}), 404
     if request.method == 'DELETE':
@@ -1141,12 +1142,278 @@ def finance_delete_budget(bid):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    row = BudgetCategory.query.filter_by(id=bid, user_id=uid).first()
+    row = _get_editable(BudgetCategory, bid, uid)
     if not row:
         return jsonify({'error': 'Not found'}), 404
     db.session.delete(row)
     db.session.commit()
     return jsonify({'success': True})
+
+
+# ===================== HOUSEHOLDS: shared finances between partners =====================
+# Sharing is per-record (share_level on each model), not all-or-nothing, because "my spouse
+# sees the joint checking but not my personal card" is the normal case. Two levels: 'view'
+# lets a partner see a record and have it roll into household totals; 'edit' also lets them
+# change it. Anything left 'none' stays private even inside a household.
+#
+# PlaidItem and TaxProfile are deliberately NOT shareable: a bank access token stays
+# owner-only regardless of what the household agrees to share, and a tax profile describes
+# one filer's return rather than a joint asset.
+
+SHARE_LEVELS = ('none', 'view', 'edit')
+
+
+def _household_ids(user_id):
+    """Households this user is an ACTIVE member of. Pending invitations grant nothing."""
+    rows = HouseholdMember.query.filter_by(user_id=user_id, status='active').all()
+    return [r.household_id for r in rows]
+
+
+def _household_partner_ids(user_id):
+    """Other active members of this user's households — whose shared records they may see."""
+    hids = _household_ids(user_id)
+    if not hids:
+        return []
+    rows = HouseholdMember.query.filter(HouseholdMember.household_id.in_(hids),
+                                        HouseholdMember.status == 'active',
+                                        HouseholdMember.user_id.isnot(None),
+                                        HouseholdMember.user_id != user_id).all()
+    return sorted({r.user_id for r in rows})
+
+
+def _visible(model, user_id, partner_ids=None):
+    """Filter clause for rows this user may SEE: their own, plus partners' shared rows.
+
+    Returned as a clause rather than a query so callers can compose it with their own
+    filters (month ranges, categories) instead of each re-deriving the sharing rules.
+    """
+    partner_ids = _household_partner_ids(user_id) if partner_ids is None else partner_ids
+    own = (model.user_id == user_id)
+    if not partner_ids:
+        return own
+    return db.or_(own, db.and_(model.user_id.in_(partner_ids),
+                               model.share_level.in_(('view', 'edit'))))
+
+
+def _visible_user_ids(user_id):
+    """User ids whose records may contribute to this user's household totals."""
+    return [user_id] + _household_partner_ids(user_id)
+
+
+def _can_edit(record, user_id):
+    """Owner always; a partner only when the record is explicitly shared as editable."""
+    if record is None:
+        return False
+    if record.user_id == user_id:
+        return True
+    return (getattr(record, 'share_level', 'none') == 'edit'
+            and record.user_id in _household_partner_ids(user_id))
+
+
+def _get_editable(model, rid, user_id):
+    """Fetch a record this user may MODIFY: their own, or a partner's shared as 'edit'.
+
+    Returns None both when the record does not exist and when it exists but is only shared
+    for viewing — the caller 404s either way, so a partner cannot probe for the existence
+    of records they may not touch.
+    """
+    rec = model.query.filter(model.id == rid, _visible(model, user_id)).first()
+    return rec if _can_edit(rec, user_id) else None
+
+
+def _get_viewable(model, rid, user_id):
+    """Fetch a record this user may READ — their own, or a partner's shared at any level.
+    Used where viewing is the whole point (opening a shared document) and requiring 'edit'
+    would defeat view-level sharing."""
+    return model.query.filter(model.id == rid, _visible(model, user_id)).first()
+
+
+def _claim_household_invites(user):
+    """Attach any pending invitations addressed to this user's email.
+
+    Invitations are stored against an email because the invitee may not have an account
+    yet; they are claimed here on sign-in, matched against the address Google returned.
+    That means membership can never be obtained by guessing an id.
+    """
+    if not user or not user.email:
+        return 0
+    pending = HouseholdMember.query.filter(
+        HouseholdMember.status == 'invited',
+        HouseholdMember.user_id.is_(None),
+        db.func.lower(HouseholdMember.invited_email) == user.email.lower()).all()
+    claimed = 0
+    for m in pending:
+        if HouseholdMember.query.filter_by(household_id=m.household_id,
+                                           user_id=user.id).first():
+            continue          # already a member by another route
+        m.user_id = user.id
+        claimed += 1
+    if claimed:
+        db.session.commit()
+    return claimed
+
+
+@app.route('/api/household', methods=['GET', 'POST'])
+@require_api_auth
+def household_index():
+    """GET: the household this user belongs to, plus any pending invitations addressed to
+    them. POST: create a household (the creator becomes its owner)."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    user = User.query.get(uid)
+    if request.method == 'GET':
+        _claim_household_invites(user)
+        out = []
+        for hid in _household_ids(uid):
+            h = db.session.get(Household, hid)
+            if not h:
+                continue
+            members = HouseholdMember.query.filter_by(household_id=hid).all()
+            users = {u.id: u for u in User.query.filter(
+                User.id.in_([m.user_id for m in members if m.user_id])).all()} if members else {}
+            out.append(h.to_dict(members=None) | {
+                'members': [m.to_dict(users.get(m.user_id)) for m in members]})
+        pending = [m.to_dict() for m in HouseholdMember.query.filter_by(
+            user_id=uid, status='invited').all()]
+        return jsonify({'households': out, 'pending_invitations': pending,
+                        'share_levels': list(SHARE_LEVELS)})
+
+    d = request.get_json() or {}
+    if _household_ids(uid):
+        return jsonify({'error': 'You already belong to a household'}), 400
+    h = Household(name=(d.get('name') or 'Our household').strip()[:120], created_by=uid)
+    db.session.add(h)
+    db.session.flush()
+    db.session.add(HouseholdMember(household_id=h.id, user_id=uid, role='owner',
+                                   status='active', joined_at=datetime.utcnow()))
+    db.session.commit()
+    return jsonify(h.to_dict()), 201
+
+
+@app.route('/api/household/<int:hid>/invite', methods=['POST'])
+@require_api_auth
+def household_invite(hid):
+    """Invite someone by email. Only an owner may invite."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    me = HouseholdMember.query.filter_by(household_id=hid, user_id=uid, status='active').first()
+    if not me or me.role != 'owner':
+        return jsonify({'error': 'Only a household owner can invite'}), 403
+    d = request.get_json() or {}
+    email = (d.get('email') or '').strip().lower()
+    if '@' not in email:
+        return jsonify({'error': 'A valid email address is required'}), 400
+    existing = HouseholdMember.query.filter(
+        HouseholdMember.household_id == hid,
+        db.func.lower(HouseholdMember.invited_email) == email).first()
+    if existing:
+        return jsonify({'error': 'Already invited'}), 400
+    invitee = User.query.filter(db.func.lower(User.email) == email).first()
+    m = HouseholdMember(household_id=hid, invited_email=email,
+                        user_id=(invitee.id if invitee else None),
+                        relationship=(d.get('relationship') or 'partner')[:30],
+                        role='member', status='invited')
+    db.session.add(m)
+    db.session.commit()
+    logger.info('Household %s invited %s', hid, email)
+    return jsonify(m.to_dict(invitee)), 201
+
+
+@app.route('/api/household/invitations/<int:mid>', methods=['POST', 'DELETE'])
+@require_api_auth
+def household_respond(mid):
+    """Accept (POST) or decline (DELETE) an invitation addressed to you."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    user = User.query.get(uid)
+    m = HouseholdMember.query.filter_by(id=mid).first()
+    ok = m and m.status == 'invited' and (
+        m.user_id == uid or (m.invited_email and user.email
+                             and m.invited_email.lower() == user.email.lower()))
+    if not ok:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        m.status = 'declined'
+        db.session.commit()
+        return jsonify({'success': True, 'status': 'declined'})
+    if _household_ids(uid):
+        return jsonify({'error': 'You already belong to a household'}), 400
+    m.user_id = uid
+    m.status = 'active'
+    m.joined_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify(m.to_dict(user))
+
+
+@app.route('/api/household/members/<int:mid>', methods=['DELETE'])
+@require_api_auth
+def household_remove_member(mid):
+    """Remove a member, or leave the household yourself.
+
+    Records are never deleted with the membership — they belong to whoever created them.
+    Everything they shared simply stops being visible to the others.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    m = HouseholdMember.query.filter_by(id=mid).first()
+    if not m:
+        return jsonify({'error': 'Not found'}), 404
+    me = HouseholdMember.query.filter_by(household_id=m.household_id, user_id=uid,
+                                         status='active').first()
+    if not me or (me.role != 'owner' and m.user_id != uid):
+        return jsonify({'error': 'Not permitted'}), 403
+    db.session.delete(m)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+# Model name -> class, for the generic share endpoint. Only these are shareable; anything
+# absent here cannot be shared through the API at all.
+SHAREABLE_MODELS = {
+    'account': ('FinanceAccount', None),
+    'debt': ('Debt', None),
+    'income': ('IncomeSource', None),
+    'bill': ('RecurringBill', None),
+    'budget': ('BudgetCategory', None),
+    'transaction': ('SpendTransaction', None),
+    'document': ('TaxDocument', None),
+}
+
+
+def _shareable_class(kind):
+    name = (SHAREABLE_MODELS.get(kind) or (None, None))[0]
+    return {'FinanceAccount': FinanceAccount, 'Debt': Debt, 'IncomeSource': IncomeSource,
+            'RecurringBill': RecurringBill, 'BudgetCategory': BudgetCategory,
+            'SpendTransaction': SpendTransaction, 'TaxDocument': TaxDocument}.get(name)
+
+
+@app.route('/api/household/share/<kind>/<int:rid>', methods=['PUT'])
+@require_api_auth
+def household_share(kind, rid):
+    """Set a record's share level. Only the record's OWNER may change it — a partner with
+    'edit' can modify the record's contents but cannot widen who else sees it."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    model = _shareable_class(kind)
+    if not model:
+        return jsonify({'error': 'That kind of record cannot be shared',
+                        'shareable': sorted(SHAREABLE_MODELS)}), 400
+    rec = model.query.filter_by(id=rid, user_id=uid).first()
+    if not rec:
+        return jsonify({'error': 'Not found'}), 404
+    level = ((request.get_json() or {}).get('share_level') or '').lower()
+    if level not in SHARE_LEVELS:
+        return jsonify({'error': 'share_level must be one of %s' % (SHARE_LEVELS,)}), 400
+    if level != 'none' and not _household_ids(uid):
+        return jsonify({'error': 'Create a household before sharing anything'}), 400
+    rec.share_level = level
+    db.session.commit()
+    return jsonify({'id': rec.id, 'kind': kind, 'share_level': rec.share_level})
 
 
 # ===================== PLAID: connected bank / brokerage accounts =====================
@@ -1403,8 +1670,9 @@ def _budget_rollup(user_id, month=None):
     `projected_monthly`, and it is what `remaining` and `over` are measured against: early in
     the month committed leads (bills not yet paid), and as real spend lands actual takes over."""
     start, end = _month_bounds(month)
-    budgets = BudgetCategory.query.filter_by(user_id=user_id).all()
-    bills = RecurringBill.query.filter_by(user_id=user_id, active=True).all()
+    budgets = BudgetCategory.query.filter(_visible(BudgetCategory, user_id)).all()
+    bills = RecurringBill.query.filter(_visible(RecurringBill, user_id),
+                                       RecurringBill.active.is_(True)).all()
     actual = _spend_actuals(user_id, start, end)
     committed = {}
     for b in bills:
@@ -1438,7 +1706,7 @@ def finance_transactions():
         return jsonify({'error': 'Authentication required'}), 401
     if request.method == 'GET':
         start, end = _month_bounds(request.args.get('month'))
-        q = SpendTransaction.query.filter(SpendTransaction.user_id == uid,
+        q = SpendTransaction.query.filter(_visible(SpendTransaction, uid),
                                           SpendTransaction.posted_at >= start,
                                           SpendTransaction.posted_at <= end)
         cat = (request.args.get('category') or '').lower()
@@ -1489,7 +1757,7 @@ def finance_modify_transaction(tid):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    t = SpendTransaction.query.filter_by(id=tid, user_id=uid).first()
+    t = _get_editable(SpendTransaction, tid, uid)
     if not t:
         return jsonify({'error': 'Not found'}), 404
     if request.method == 'DELETE':
@@ -1678,14 +1946,16 @@ def _finance_cashflow(user_id, days=60, starting_balance=None):
     today = date.today()
     horizon = today + timedelta(days=days)
     events = []
-    for src in IncomeSource.query.filter_by(user_id=user_id, active=True).all():
+    for src in IncomeSource.query.filter(_visible(IncomeSource, user_id),
+                                         IncomeSource.active.is_(True)).all():
         amt = src.paycheck_estimate()
         if src.irregular or amt <= 0:
             continue
         for pd in src.upcoming_paydates(12):
             if today <= pd <= horizon:
                 events.append({'date': pd.isoformat(), 'label': src.name, 'amount': round(amt, 2), 'type': 'income'})
-    for b in RecurringBill.query.filter_by(user_id=user_id, active=True).all():
+    for b in RecurringBill.query.filter(_visible(RecurringBill, user_id),
+                                        RecurringBill.active.is_(True)).all():
         for dd in b.upcoming_due_dates(12):
             if today <= dd <= horizon:
                 events.append({'date': dd.isoformat(), 'label': b.name, 'amount': -round(float(b.amount or 0), 2), 'type': 'bill'})
@@ -1693,7 +1963,7 @@ def _finance_cashflow(user_id, days=60, starting_balance=None):
 
     # Starting balance: caller-provided, else sum of liquid manual accounts (checking/savings/cash).
     if starting_balance is None:
-        liquid = FinanceAccount.query.filter_by(user_id=user_id).all()
+        liquid = FinanceAccount.query.filter(_visible(FinanceAccount, user_id)).all()
         starting_balance = round(sum(float(a.balance or 0) for a in liquid
                                      if a.type in ('checking', 'savings', 'cash')), 2)
     bal = float(starting_balance)
@@ -1731,8 +2001,8 @@ def _finance_outlook(user_id):
     """Assemble the whole-picture outlook: assets (manual + investment accounts),
     debts, net worth, DTI, monthly debt service, blended APR, and interest drain."""
     user = User.query.get(user_id)
-    manual = FinanceAccount.query.filter_by(user_id=user_id).all()
-    debts = Debt.query.filter_by(user_id=user_id).order_by(Debt.apr.desc()).all()
+    manual = FinanceAccount.query.filter(_visible(FinanceAccount, user_id)).all()
+    debts = Debt.query.filter(_visible(Debt, user_id)).order_by(Debt.apr.desc()).all()
 
     manual_assets = sum(float(a.balance or 0) for a in manual)
 
@@ -1765,7 +2035,8 @@ def _finance_outlook(user_id):
     dti = round(monthly_debt_service / income * 100, 1) if income else None
 
     # Income sources + upcoming pay dates (merged across sources, soonest first).
-    income_rows = IncomeSource.query.filter_by(user_id=user_id, active=True).all()
+    income_rows = IncomeSource.query.filter(_visible(IncomeSource, user_id),
+                                            IncomeSource.active.is_(True)).all()
     paydates = []
     for r in income_rows:
         for d in r.upcoming_paydates(4):
@@ -1904,13 +2175,14 @@ def _finance_full_picture(user_id, month=None, days=60):
 
     picture['outlook'] = _finance_outlook(user_id)
 
-    accounts = FinanceAccount.query.filter_by(user_id=user_id).all()
+    accounts = FinanceAccount.query.filter(_visible(FinanceAccount, user_id)).all()
     LIQUID = ('checking', 'savings', 'cash')
     picture['accounts'] = [a.to_dict() for a in accounts]
     picture['liquid_total'] = round(sum(float(a.balance or 0) for a in accounts
                                         if a.type in LIQUID), 2)
 
-    bills = RecurringBill.query.filter_by(user_id=user_id, active=True).all()
+    bills = RecurringBill.query.filter(_visible(RecurringBill, user_id),
+                                       RecurringBill.active.is_(True)).all()
     picture['bills'] = {
         'rows': [b.to_dict() for b in bills],
         'total_monthly': round(sum(b.monthly_amount() for b in bills), 2),
@@ -1924,7 +2196,7 @@ def _finance_full_picture(user_id, month=None, days=60):
         picture['budgets'] = []
 
     txns = SpendTransaction.query.filter(
-        SpendTransaction.user_id == user_id,
+        _visible(SpendTransaction, user_id),
         SpendTransaction.posted_at >= start,
         SpendTransaction.posted_at <= end).all()
     by_cat, by_merchant = {}, {}
@@ -3385,7 +3657,7 @@ def tax_documents():
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
     if request.method == 'GET':
-        q = TaxDocument.query.filter_by(user_id=uid)
+        q = TaxDocument.query.filter(_visible(TaxDocument, uid))
         yr = request.args.get('year', type=int)
         if yr:
             q = q.filter_by(tax_year=yr)
@@ -3433,7 +3705,7 @@ def tax_document_modify(did):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    doc = TaxDocument.query.filter_by(id=did, user_id=uid).first()
+    doc = _get_editable(TaxDocument, did, uid)
     if not doc:
         return jsonify({'error': 'Not found'}), 404
     if request.method == 'DELETE':
@@ -3469,7 +3741,7 @@ def tax_document_download(did):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    doc = TaxDocument.query.filter_by(id=did, user_id=uid).first()
+    doc = _get_viewable(TaxDocument, did, uid)
     if not doc or not doc.data:
         return jsonify({'error': 'Not found'}), 404
     return Response(doc.data, mimetype=doc.content_type or 'application/octet-stream',
@@ -3483,7 +3755,7 @@ def tax_document_extract(did):
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
-    doc = TaxDocument.query.filter_by(id=did, user_id=uid).first()
+    doc = _get_editable(TaxDocument, did, uid)
     if not doc:
         return jsonify({'error': 'Not found'}), 404
     data = _tax_doc_extract(doc)

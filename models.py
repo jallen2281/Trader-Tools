@@ -838,6 +838,97 @@ class TradingSOP(db.Model):
         }
 
 
+class Household(db.Model):
+    """A household — two or more people who share some of their finances.
+
+    Deliberately separate from Group (RBAC): Group answers "what features may this person
+    use", Household answers "whose data may this person see". Conflating them would mean a
+    permission grant could leak someone's bank balances.
+    """
+    __tablename__ = 'households'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, default='Our household')
+    created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self, members=None):
+        d = {'id': self.id, 'name': self.name, 'created_by': self.created_by,
+             'created_at': self.created_at.isoformat() if self.created_at else None}
+        if members is not None:
+            d['members'] = [m.to_dict() for m in members]
+        return d
+
+
+class HouseholdMember(db.Model):
+    """Membership, including invitations that have not been accepted yet.
+
+    An invite is stored against the email address rather than a user id, because the person
+    being invited may not have an account. It is claimed on their first sign-in, matched by
+    the email Google returns — so nobody can join a household by guessing an id.
+    """
+    __tablename__ = 'household_members'
+
+    ROLES = ('owner', 'member')
+    STATUSES = ('invited', 'active', 'declined')
+
+    id = db.Column(db.Integer, primary_key=True)
+    household_id = db.Column(db.Integer, db.ForeignKey('households.id'), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), index=True)   # null until accepted
+    invited_email = db.Column(db.String(255), index=True)
+    role = db.Column(db.String(10), default='member')
+    status = db.Column(db.String(10), default='invited')
+    relationship = db.Column(db.String(30))       # spouse | partner | family | other
+    invited_at = db.Column(db.DateTime, default=datetime.utcnow)
+    joined_at = db.Column(db.DateTime)
+
+    __table_args__ = (
+        db.UniqueConstraint('household_id', 'user_id', name='uq_household_user'),
+        db.Index('ix_household_invite', 'household_id', 'invited_email'),
+    )
+
+    def to_dict(self, user=None):
+        return {
+            'id': self.id, 'household_id': self.household_id, 'user_id': self.user_id,
+            'invited_email': self.invited_email, 'role': self.role, 'status': self.status,
+            'relationship': self.relationship,
+            'name': (user.name if user else None),
+            'email': (user.email if user else self.invited_email),
+            'invited_at': self.invited_at.isoformat() if self.invited_at else None,
+            'joined_at': self.joined_at.isoformat() if self.joined_at else None,
+        }
+
+
+class Entity(db.Model):
+    """A set of books a record belongs to — personal, the household, or a business such as
+    the farm.
+
+    Created now, ahead of the reporting that will use it, so `entity_id` on the shareable
+    models is a real foreign key from day one rather than a loose integer to be migrated
+    later. Sharing (who may SEE a record) and entity (whose BOOKS it belongs to) are
+    orthogonal: a farm receipt can be visible to a spouse and still belong to the farm's
+    Schedule F, and collapsing them would make per-entity totals impossible to compute.
+    """
+    __tablename__ = 'entities'
+
+    KINDS = ('personal', 'household', 'business', 'farm', 'rental', 'other')
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    household_id = db.Column(db.Integer, db.ForeignKey('households.id'), index=True)
+    name = db.Column(db.String(120), nullable=False)
+    kind = db.Column(db.String(20), default='personal')
+    tax_form = db.Column(db.String(20))    # e.g. 'Schedule F', 'Schedule C'
+    active = db.Column(db.Boolean, default=True)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {'id': self.id, 'name': self.name, 'kind': self.kind,
+                'tax_form': self.tax_form, 'household_id': self.household_id,
+                'active': bool(self.active), 'notes': self.notes}
+
+
 class FinanceAccount(db.Model):
     """A manually-tracked ASSET account for the net-worth / finances module — bank,
     cash, property, vehicle, etc. Investment accounts are tracked separately
@@ -846,6 +937,14 @@ class FinanceAccount(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
+    # members see it; 'edit' lets them change it. Per-record rather than all-or-nothing,
+    # because "my spouse sees the joint checking but not my personal card" is the normal
+    # case, not the exotic one.
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    # Which set of books this belongs to (personal / household / the farm). Nullable and
+    # unused by reporting yet — see Entity.
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
     name = db.Column(db.String(120), nullable=False)
     type = db.Column(db.String(30), default='cash')  # checking|savings|cash|brokerage|retirement|property|vehicle|other
     balance = db.Column(db.Numeric(15, 2, asdecimal=False), default=0)
@@ -869,6 +968,14 @@ class Debt(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
+    # members see it; 'edit' lets them change it. Per-record rather than all-or-nothing,
+    # because "my spouse sees the joint checking but not my personal card" is the normal
+    # case, not the exotic one.
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    # Which set of books this belongs to (personal / household / the farm). Nullable and
+    # unused by reporting yet — see Entity.
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
     name = db.Column(db.String(120), nullable=False)
     type = db.Column(db.String(30), default='other')  # mortgage|heloc|home_equity|credit_card|auto|personal|student|home_improvement|other
     lender = db.Column(db.String(120))
@@ -903,6 +1010,14 @@ class IncomeSource(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
+    # members see it; 'edit' lets them change it. Per-record rather than all-or-nothing,
+    # because "my spouse sees the joint checking but not my personal card" is the normal
+    # case, not the exotic one.
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    # Which set of books this belongs to (personal / household / the farm). Nullable and
+    # unused by reporting yet — see Entity.
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
     name = db.Column(db.String(120), nullable=False)
     owner = db.Column(db.String(20), default='me')     # me|spouse|joint|other
     type = db.Column(db.String(20), default='salary')  # salary|hourly|self_employed|other
@@ -1061,6 +1176,14 @@ class RecurringBill(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
+    # members see it; 'edit' lets them change it. Per-record rather than all-or-nothing,
+    # because "my spouse sees the joint checking but not my personal card" is the normal
+    # case, not the exotic one.
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    # Which set of books this belongs to (personal / household / the farm). Nullable and
+    # unused by reporting yet — see Entity.
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
     name = db.Column(db.String(120), nullable=False)
     payee = db.Column(db.String(120))
     category = db.Column(db.String(50), default='other', index=True)
@@ -1136,6 +1259,14 @@ class BudgetCategory(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
+    # members see it; 'edit' lets them change it. Per-record rather than all-or-nothing,
+    # because "my spouse sees the joint checking but not my personal card" is the normal
+    # case, not the exotic one.
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    # Which set of books this belongs to (personal / household / the farm). Nullable and
+    # unused by reporting yet — see Entity.
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
     category = db.Column(db.String(50), nullable=False)
     monthly_limit = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
     kind = db.Column(db.String(15), default='expense')  # expense | savings | income
@@ -1165,6 +1296,14 @@ class SpendTransaction(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
+    # members see it; 'edit' lets them change it. Per-record rather than all-or-nothing,
+    # because "my spouse sees the joint checking but not my personal card" is the normal
+    # case, not the exotic one.
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    # Which set of books this belongs to (personal / household / the farm). Nullable and
+    # unused by reporting yet — see Entity.
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
     posted_at = db.Column(db.Date, nullable=False, index=True)
     description = db.Column(db.String(200), nullable=False)
     merchant = db.Column(db.String(160))
@@ -1249,6 +1388,14 @@ class TaxDocument(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
+    # members see it; 'edit' lets them change it. Per-record rather than all-or-nothing,
+    # because "my spouse sees the joint checking but not my personal card" is the normal
+    # case, not the exotic one.
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    # Which set of books this belongs to (personal / household / the farm). Nullable and
+    # unused by reporting yet — see Entity.
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
     tax_year = db.Column(db.Integer, index=True)
     doc_type = db.Column(db.String(20), default='other')  # W2|1099-*|1098|receipt|other
     issuer = db.Column(db.String(160))       # employer / payer / merchant

@@ -61,6 +61,37 @@ def _revoke_plaid_items(user_id):
     return revoked, failed, None
 
 
+def _detach_household(db, user_id):
+    """Remove a user from their household without destroying it for everyone else.
+
+    A household outlives any one member. Deleting it because its creator left would strip
+    the remaining partner of shared visibility they still rely on, so ownership is handed
+    over instead; the household is only removed once nobody is left in it.
+    """
+    from models import Household, HouseholdMember
+    memberships = HouseholdMember.query.filter_by(user_id=user_id).all()
+    for m in memberships:
+        hid = m.household_id
+        db.session.delete(m)
+        db.session.flush()
+        remaining = HouseholdMember.query.filter(HouseholdMember.household_id == hid,
+                                                 HouseholdMember.user_id != user_id).all()
+        household = db.session.get(Household, hid)
+        if not household:
+            continue
+        if not remaining:
+            db.session.delete(household)
+            continue
+        if household.created_by == user_id:
+            # Prefer an existing owner, else promote the longest-standing member.
+            heir = next((r for r in remaining if r.role == 'owner' and r.user_id), None)                 or next((r for r in remaining if r.user_id), None)
+            if heir:
+                household.created_by = heir.user_id
+                heir.role = 'owner'
+                logger.info('retention: household %s ownership transferred to user %s',
+                            hid, heir.user_id)
+
+
 def purge_user_record(db, user):
     """Permanently delete a user and every row they own. Irreversible.
 
@@ -82,8 +113,10 @@ def purge_user_record(db, user):
     from models import (PaperTrade, TradingSOP, Notification, ThreadVote, ThreadReply,
                         DiscussionThread, CopyTradingFollow, FinanceAccount, Debt,
                         IncomeSource, IncomeEvent, RecurringBill, BudgetCategory,
-                        SpendTransaction, TaxDocument, AIInsight, PlaidItem, TaxProfile)
+                        SpendTransaction, TaxDocument, AIInsight, PlaidItem, TaxProfile,
+                        Household, HouseholdMember, Entity)
     uid = user.id
+    _detach_household(db, uid)
     # Revoke at Plaid first: once the rows are gone we no longer hold the tokens needed
     # to do it, so this cannot be deferred to after the delete.
     _revoke_plaid_items(uid)
@@ -104,6 +137,7 @@ def purge_user_record(db, user):
         AIInsight,
         PlaidItem,          # bank access tokens die with the account, per the retention policy
         TaxProfile,
+        Entity,             # after the records that reference entities.id
         PaperTrade,
         TradingSOP,
         Notification,

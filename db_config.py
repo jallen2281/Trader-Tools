@@ -202,6 +202,18 @@ def init_database(app):
             if _add_column_if_missing(db, inspector, 'users', 'privacy_consent_version', 'VARCHAR(20)'):
                 logger.info("✓ Added privacy-consent columns to users table")
 
+        # Migrate: household sharing columns. create_all makes the new households/
+        # household_members/entities tables, but never ALTERs an existing one.
+        for _t in ('finance_accounts', 'debts', 'income_sources', 'recurring_bills',
+                   'budget_categories', 'spend_transactions', 'tax_documents'):
+            inspector = inspect(db.engine)
+            if _t not in inspector.get_table_names():
+                continue
+            _add_column_if_missing(db, inspector, _t, 'share_level', "VARCHAR(10)", "'none'")
+            inspector = inspect(db.engine)
+            _add_column_if_missing(db, inspector, _t, 'entity_id', 'INTEGER')
+        logger.info("✓ Household sharing columns present on finance tables")
+
         # Create dividends table if it doesn't exist
         if 'dividends' not in inspector.get_table_names():
             if is_pg:
