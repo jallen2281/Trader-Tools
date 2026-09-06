@@ -83,7 +83,17 @@ spec:
           llmProvider: rkllm  # Use RKLLM server on Turing Pi
           rkllmBaseUrl: http://node1:8000
           ollamaBaseUrl: http://node1:11434
+          plaidEnv: sandbox
         
+        # Plaid environment. Non-sensitive, so it lives here rather than in a secret.
+        # The credentials themselves come from the out-of-band `plaid-keys` secret:
+        #   kubectl -n trader-tools create secret generic plaid-keys \
+        #     --from-literal=PLAID_CLIENT_ID='...' \
+        #     --from-literal=PLAID_SECRET='...' \
+        #     --from-literal=PLAID_ENCRYPTION_KEY='<fernet key>'
+        # Switch plaidEnv to "production" only after sandbox is verified.
+        # (config: above is merged key-by-key, so this adds to it rather than replacing it.)
+
         # SECRETS - Pass via Helm values
         # IMPORTANT: Helm will create the secret automatically
 #        secrets:

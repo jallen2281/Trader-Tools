@@ -51,6 +51,11 @@ spec:
                     name: {{ include "trader-tools.fullname" . }}
                 - secretRef:
                     name: {{ include "trader-tools.fullname" . }}
+                # Purging an account revokes its bank connections at Plaid before deleting
+                # the stored tokens, so this job needs the credentials too.
+                - secretRef:
+                    name: {{ .Values.plaidKeysSecret | default "plaid-keys" }}
+                    optional: true
               env:
                 - name: RETENTION_ACCOUNT_DAYS
                   value: {{ .Values.retention.accountDays | quote }}

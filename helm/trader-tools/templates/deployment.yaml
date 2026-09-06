@@ -55,6 +55,14 @@ spec:
             - secretRef:
                 name: {{ .Values.aiKeysSecret | default "ai-keys" }}
                 optional: true
+            # Plaid credentials (PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENCRYPTION_KEY) in
+            # their own secret, same reasoning as the AI keys: bank credentials should not
+            # share a rotation cycle or a blast radius with the app's own secret. optional
+            # so the pod still starts without them — the app just refuses to open a bank
+            # connection, which is the correct behaviour when the encryption key is absent.
+            - secretRef:
+                name: {{ .Values.plaidKeysSecret | default "plaid-keys" }}
+                optional: true
           volumeMounts:
             - name: data
               mountPath: /data

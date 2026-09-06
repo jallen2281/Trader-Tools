@@ -21,6 +21,46 @@ SESSION_PURGE_AFTER_DAYS = int(os.getenv('RETENTION_SESSION_DAYS', '7'))
 AI_CACHE_PURGE_AFTER_DAYS = int(os.getenv('RETENTION_AI_CACHE_DAYS', '30'))
 
 
+def _revoke_plaid_items(user_id):
+    """Revoke this user's bank connections at Plaid before the local rows are deleted.
+
+    Deleting our stored token only removes our ability to use it — the item keeps existing
+    on Plaid's side until /item/remove is called. The retention policy promises the
+    credential is destroyed on account deletion, and that is only true if we tell Plaid.
+
+    Best effort by design: a failure here never blocks the purge, because keeping a token
+    we can no longer reach would be strictly worse than orphaning one at Plaid. Returns
+    (revoked, failed, skipped_reason).
+    """
+    from models import PlaidItem
+    items = PlaidItem.query.filter_by(user_id=user_id).all()
+    if not items:
+        return 0, 0, None
+    try:
+        import plaid_client as pc
+        client = pc.PlaidClient()
+        if not client.available():
+            logger.warning('retention: %d Plaid item(s) for user %s deleted WITHOUT '
+                           'revocation — Plaid is not configured in this environment',
+                           len(items), user_id)
+            return 0, 0, 'plaid_not_configured'
+    except Exception as e:
+        logger.warning('retention: Plaid client unavailable (%s); deleting %d item(s) '
+                       'without revocation', e, len(items))
+        return 0, 0, 'client_error'
+
+    revoked = failed = 0
+    for item in items:
+        try:
+            client.item_remove(pc.decrypt_token(item.access_token_enc))
+            revoked += 1
+        except Exception as e:
+            failed += 1
+            logger.warning('retention: could not revoke Plaid item %s for user %s: %s',
+                           item.item_id, user_id, e)
+    return revoked, failed, None
+
+
 def purge_user_record(db, user):
     """Permanently delete a user and every row they own. Irreversible.
 
@@ -44,6 +84,9 @@ def purge_user_record(db, user):
                         IncomeSource, IncomeEvent, RecurringBill, BudgetCategory,
                         SpendTransaction, TaxDocument, AIInsight, PlaidItem, TaxProfile)
     uid = user.id
+    # Revoke at Plaid first: once the rows are gone we no longer hold the tokens needed
+    # to do it, so this cannot be deferred to after the delete.
+    _revoke_plaid_items(uid)
     user.groups = []
 
     ordered = (

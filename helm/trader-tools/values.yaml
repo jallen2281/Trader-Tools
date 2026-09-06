@@ -24,6 +24,17 @@ fullnameOverride: ""
 # absent secret won't block startup. The keys are NOT stored in this chart.
 aiKeysSecret: "ai-keys"
 
+# Name of a separately-managed secret holding Plaid credentials
+# (PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENCRYPTION_KEY). Mounted via envFrom as optional.
+# Create it out-of-band, exactly like ai-keys:
+#   kubectl -n trader-tools create secret generic plaid-keys \
+#     --from-literal=PLAID_CLIENT_ID='...' \
+#     --from-literal=PLAID_SECRET='...' \
+#     --from-literal=PLAID_ENCRYPTION_KEY="$(python -c \
+#        'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+# PLAID_ENV lives in the configmap (config.plaidEnv) since it is not sensitive.
+plaidKeysSecret: "plaid-keys"
+
 serviceAccount:
   create: true
   annotations: {}
