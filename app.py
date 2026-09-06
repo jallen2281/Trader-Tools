@@ -2102,6 +2102,21 @@ def _finance_observations(p):
                      'underpayment penalties start.' % (
                          _money(due), _money(tax.get('withheld')),
                          tax.get('withholding_source')), due)
+    if tax and (tax.get('unclaimed_match') or 0) > 0:
+        _obs(out, 'warning', 'unclaimed_match',
+             'Leaving employer 401(k) match on the table',
+             'Contributing %s%% of pay while the employer matches up to %s%%. Raising the '
+             'deferral to the cap would collect roughly %s a year of employer money — the '
+             'highest guaranteed return available anywhere in this picture.' % (
+                 tax.get('total_deferral_pct'),
+                 (p.get('tax_profile') or {}).get('employer_match_limit_pct'),
+                 _money(tax.get('unclaimed_match'))),
+             tax.get('unclaimed_match'))
+    if tax and tax.get('retirement_capped'):
+        _obs(out, 'note', 'deferral_capped',
+             'Retirement deferral exceeds the IRS limit',
+             'Traditional plus Roth contributions are capped at %s a year combined; the '
+             'estimate uses the capped figure.' % _money(tax.get('elective_deferral_limit')))
     if not p.get('tax_profile_saved'):
         _obs(out, 'note', 'no_tax_profile',
              'No household profile set',
@@ -2257,14 +2272,22 @@ def _overview_facts(p, obs):
         prof = p.get('tax_profile') or {}
         L.append("\n== HOUSEHOLD ==")
         L.append("Filing %s, household of %s: %s dependent(s) under 17, %s other. "
-                 "Pre-tax retirement %s/yr, other pre-tax %s/yr. Deduction used: %s (%s). "
-                 "State %s at %s%%." % (
+                 "Deduction used: %s (%s). State %s at %s%%." % (
                      tax.get('filing_status'), tax.get('household_size'),
                      tax.get('dependents_under_17'), tax.get('dependents_other'),
-                     _money(prof.get('pretax_retirement_annual')),
-                     _money(prof.get('pretax_other_annual')),
                      _money(tax.get('deduction_used')), tax.get('deduction_basis'),
                      tax.get('state'), tax.get('state_tax_rate')))
+        L.append("Retirement: %s/yr traditional (pre-tax, reduces taxable wages) + %s/yr "
+                 "Roth (post-tax, does NOT reduce taxable wages) — %s. Other pre-tax %s/yr." % (
+                     _money(tax.get('pretax_retirement')), _money(tax.get('roth_retirement')),
+                     tax.get('retirement_basis'), _money(prof.get('pretax_other_annual'))))
+        if tax.get('employer_match') or tax.get('unclaimed_match'):
+            L.append("Employer match: %s/yr contributed. %s This is employer money and has "
+                     "no effect on the tax owed, but it is real compensation." % (
+                         _money(tax.get('employer_match')),
+                         ('%s/yr is being left unclaimed by contributing below the match cap.'
+                          % _money(tax.get('unclaimed_match')))
+                         if tax.get('unclaimed_match') else 'The full match is being captured.'))
         if not p.get('tax_profile_saved'):
             L.append("NOTE: no household profile has been saved — the figures below assume a "
                      "single filer with no dependents and no pre-tax contributions. Say so "
@@ -3492,6 +3515,7 @@ _FED_BRACKETS = {
 }
 _STD_DEDUCTION = {'mfj': 30000, 'qss': 30000, 'single': 15000, 'mfs': 15000, 'hoh': 22500}
 _SS_WAGE_BASE = 176100
+_401K_ELECTIVE_LIMIT = 23500   # employee elective deferral cap, traditional + Roth COMBINED
 _CTC_PER_CHILD = 2200        # child tax credit, dependents under 17
 _ODC_PER_DEPENDENT = 500     # other-dependent credit
 
@@ -3510,6 +3534,9 @@ def _tax_profile(user_id):
                       dependents_under_17=0, dependents_other=0,
                       pretax_retirement_annual=0, pretax_other_annual=0,
                       itemized_deductions=0, other_credits_annual=0,
+                      pretax_retirement_mode='amount', pretax_retirement_pct=0,
+                      roth_retirement_annual=0, roth_retirement_pct=0,
+                      employer_match_rate_pct=0, employer_match_limit_pct=0,
                       state='MI', state_tax_rate=4.25, state_exemption_per_person=5600,
                       ytd_federal_withheld=0, ytd_state_withheld=0)
 
@@ -3572,9 +3599,24 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     w2_gross = round(sum(x.gross_annual() for x in srcs if x.tax_form == 'W2'), 2)
     se_income = round(sum(x.gross_annual() for x in srcs if x.tax_form == '1099'), 2)
 
-    pretax = round(float(prof.pretax_retirement_annual or 0) +
-                   float(prof.pretax_other_annual or 0), 2)
+    # Only TRADITIONAL deferrals reduce taxable wages. Roth comes out of the same paycheck
+    # and feels identical, but it is post-tax — deducting it would understate the bill.
+    # The IRS elective limit covers traditional and Roth together, so Roth consumes the
+    # allowance first and traditional is capped at what remains.
+    roth_retirement = prof.roth_annual(w2_gross)
+    deferral_room = max(0.0, _401K_ELECTIVE_LIMIT - roth_retirement)
+    retirement = prof.retirement_annual(w2_gross, deferral_room)
+    retirement_capped = (prof.retirement_annual(w2_gross) > retirement + 0.005)
+    pretax = round(retirement + float(prof.pretax_other_annual or 0), 2)
     w2_taxable = max(0.0, w2_gross - pretax)
+
+    employer_match = prof.employer_match_annual(w2_gross)
+    unclaimed_match = prof.unclaimed_match_annual(w2_gross)
+    if (prof.pretax_retirement_mode or 'amount') == 'percent':
+        retirement_basis = '%s%% traditional + %s%% Roth of %s wages' % (
+            prof.pretax_retirement_pct or 0, prof.roth_retirement_pct or 0, _money(w2_gross))
+    else:
+        retirement_basis = 'fixed annual amounts'
 
     se_net = round(se_income * 0.9235, 2)
     ss_room = max(0.0, _SS_WAGE_BASE - w2_gross)
@@ -3614,6 +3656,14 @@ def _income_tax_estimate(user_id, year=None, filing=None):
         'dependents_under_17': kids, 'dependents_other': others,
         'w2_wages': w2_gross, 'se_income': se_income, 'se_net': se_net,
         'pretax_deductions': pretax,
+        'pretax_retirement': retirement,
+        'roth_retirement': roth_retirement,
+        'retirement_basis': retirement_basis,
+        'retirement_capped': retirement_capped,
+        'elective_deferral_limit': _401K_ELECTIVE_LIMIT,
+        'employer_match': employer_match,
+        'unclaimed_match': unclaimed_match,
+        'total_deferral_pct': prof.total_deferral_pct(w2_gross),
         'standard_deduction': std, 'itemized_deductions': itemized,
         'deduction_used': deduction,
         'deduction_basis': 'itemized' if itemized > std else 'standard',
@@ -3662,7 +3712,13 @@ def finance_tax_profile():
                 setattr(prof, f, max(0, int(d[f] or 0)))
             except (TypeError, ValueError):
                 pass
-    for f in ('pretax_retirement_annual', 'pretax_other_annual', 'itemized_deductions',
+    mode = (d.get('pretax_retirement_mode') or '').lower()
+    if mode in ('amount', 'percent'):
+        prof.pretax_retirement_mode = mode
+    for f in ('pretax_retirement_annual', 'pretax_retirement_pct',
+              'roth_retirement_annual', 'roth_retirement_pct',
+              'employer_match_rate_pct', 'employer_match_limit_pct',
+              'pretax_other_annual', 'itemized_deductions',
               'other_credits_annual', 'state_tax_rate', 'state_exemption_per_person',
               'ytd_federal_withheld', 'ytd_state_withheld'):
         if f in d:

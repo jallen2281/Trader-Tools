@@ -4,6 +4,44 @@
 {% block head %}
 <style>
     .tax-card { background: var(--card-bg); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:18px 20px; margin-bottom:20px; }
+    /* Household profile card */
+    .tp-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .tp-section:first-of-type { margin-top: 14px; padding-top: 0; border-top: none; }
+    .tp-legend { font-size: 0.78em; font-weight: 700; letter-spacing: .07em;
+                 text-transform: uppercase; color: var(--text-secondary, #8b93a7);
+                 margin-bottom: 12px; }
+    .tp-grid { display: grid; gap: 14px 16px;
+               grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+    .tp-grid.narrow { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .tp-f { display: flex; flex-direction: column; min-width: 0; }
+    .tp-f > label { font-size: 0.79em; font-weight: 600; margin-bottom: 5px;
+                    color: var(--text-primary); white-space: nowrap; overflow: hidden;
+                    text-overflow: ellipsis; }
+    .tp-f .hint { font-size: 0.74em; color: var(--text-secondary, #8b93a7);
+                  margin-top: 4px; line-height: 1.35; font-weight: 400; }
+    .tp-in { width: 100%; padding: 8px 10px; border-radius: 7px;
+             border: 1px solid var(--border); background: var(--bg-primary);
+             color: var(--text-primary); font-size: 0.92em; font-family: inherit; }
+    .tp-in:focus { outline: none; border-color: #4ade80;
+                   box-shadow: 0 0 0 2px rgba(74,222,128,.18); }
+    .tp-unit { position: relative; }
+    .tp-unit > .tp-in { padding-right: 30px; }
+    .tp-unit::after { content: attr(data-unit); position: absolute; right: 10px; top: 50%;
+                      transform: translateY(-50%); font-size: 0.85em; pointer-events: none;
+                      color: var(--text-secondary, #8b93a7); }
+    .tp-note { font-size: 0.79em; line-height: 1.5; color: var(--text-secondary, #8b93a7);
+               background: rgba(255,255,255,.03); border-left: 3px solid var(--border);
+               border-radius: 0 7px 7px 0; padding: 9px 12px; margin-bottom: 12px; }
+    .tp-note strong { color: var(--text-primary); }
+    .tp-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px;
+              overflow: hidden; }
+    .tp-seg button { border: 0; background: transparent; color: var(--text-secondary,#8b93a7);
+                     padding: 6px 14px; font-size: 0.85em; cursor: pointer;
+                     font-family: inherit; }
+    .tp-seg button.on { background: #22c55e; color: #06210f; font-weight: 700; }
+    .tp-resolved { margin-top: 12px; font-size: 0.82em; line-height: 1.55;
+                   color: var(--text-secondary, #8b93a7); }
+    .tp-resolved b { color: var(--text-primary); }
     .tax-controls { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; }
     .tax-controls label { display:block; font-size:0.78em; color:var(--text-secondary); margin-bottom:4px; }
     .tax-controls select { padding:8px 12px; border-radius:6px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); }
@@ -47,41 +85,131 @@
 
     <!-- Household profile. The estimate below is only as good as this. -->
     <div class="tax-card">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
-            <h2 style="margin:0;">Household <span class="muted" style="font-size:0.58em;font-weight:400;">filing status, dependents, pre-tax contributions &amp; withholding</span></h2>
-            <button class="btn2 primary" onclick="saveTaxProfile()">Save</button>
-        </div>
-        <div id="tpMsg" class="muted" style="font-size:0.82em;margin-top:6px;"></div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:12px;">
-            <div>
-                <label class="fld">Filing status</label>
-                <select id="tpFiling" class="fin-in" style="width:100%;">
-                    <option value="single">Single</option>
-                    <option value="mfj">Married filing jointly</option>
-                    <option value="mfs">Married filing separately</option>
-                    <option value="hoh">Head of household</option>
-                    <option value="qss">Qualifying surviving spouse</option>
-                </select>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Household <span class="muted" style="font-size:0.55em;font-weight:400;">what the tax estimate needs that your income can't tell it</span></h2>
+            <div style="display:flex;align-items:center;gap:12px;">
+                <span id="tpMsg" class="muted" style="font-size:0.82em;"></span>
+                <button class="btn2 primary" onclick="saveTaxProfile()">Save</button>
             </div>
-            <div><label class="fld">Children under 17</label><input id="tpKids" type="number" min="0" class="fin-in" style="width:100%;"></div>
-            <div><label class="fld">Other dependents</label><input id="tpOther" type="number" min="0" class="fin-in" style="width:100%;"></div>
-            <div><label class="fld">401(k)/403(b) per year $</label><input id="tpRet" type="number" min="0" step="100" class="fin-in" style="width:100%;"></div>
-            <div><label class="fld">HSA / other pre-tax $</label><input id="tpPre" type="number" min="0" step="100" class="fin-in" style="width:100%;"></div>
-            <div><label class="fld">Itemized deductions $ <span class="muted" style="font-weight:400;">(0 = standard)</span></label><input id="tpItem" type="number" min="0" step="100" class="fin-in" style="width:100%;"></div>
-            <div><label class="fld">Other credits $/yr</label><input id="tpCred" type="number" min="0" step="50" class="fin-in" style="width:100%;"></div>
-            <div><label class="fld">State</label><input id="tpState" maxlength="2" class="fin-in" style="width:100%;text-transform:uppercase;"></div>
-            <div><label class="fld">State rate %</label><input id="tpRate" type="number" min="0" step="0.05" class="fin-in" style="width:100%;"></div>
         </div>
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
-            <div class="muted" style="font-size:0.82em;margin-bottom:8px;">
-                <strong>Withholding to date.</strong> Mid-year there is no W-2 yet, so without
-                this the estimate cannot tell what you still owe — it can only show the whole
-                year's tax. Copy "Federal income tax withheld" year-to-date off a recent paystub.
+
+        <div class="tp-section">
+            <div class="tp-legend">Who's on the return</div>
+            <div class="tp-grid">
+                <div class="tp-f">
+                    <label for="tpFiling">Filing status</label>
+                    <select id="tpFiling" class="tp-in">
+                        <option value="single">Single</option>
+                        <option value="mfj">Married filing jointly</option>
+                        <option value="mfs">Married filing separately</option>
+                        <option value="hoh">Head of household</option>
+                        <option value="qss">Qualifying surviving spouse</option>
+                    </select>
+                </div>
+                <div class="tp-f">
+                    <label for="tpKids">Children under 17</label>
+                    <input id="tpKids" type="number" min="0" class="tp-in">
+                    <span class="hint">Each claims the child tax credit.</span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpOther">Other dependents</label>
+                    <input id="tpOther" type="number" min="0" class="tp-in">
+                    <span class="hint">$500 credit each.</span>
+                </div>
             </div>
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;">
-                <div><label class="fld">Federal withheld YTD $</label><input id="tpYtdFed" type="number" min="0" step="10" class="fin-in" style="width:100%;"></div>
-                <div><label class="fld">State withheld YTD $</label><input id="tpYtdState" type="number" min="0" step="10" class="fin-in" style="width:100%;"></div>
-                <div><label class="fld">As of (paystub date)</label><input id="tpAsOf" type="date" class="fin-in" style="width:100%;"></div>
+        </div>
+
+        <div class="tp-section">
+            <div class="tp-legend">Retirement contributions</div>
+            <div class="tp-note">
+                <strong>Only traditional contributions reduce your taxable wages.</strong>
+                Roth comes out of the same paycheck and feels identical, but it's post-tax —
+                counting it as pre-tax would understate what you owe.
+            </div>
+            <div style="margin-bottom:12px;">
+                <span class="tp-seg">
+                    <button type="button" id="tpModePct" onclick="setRetMode('percent')">% of pay</button>
+                    <button type="button" id="tpModeAmt" onclick="setRetMode('amount')">$ per year</button>
+                </span>
+            </div>
+            <div class="tp-grid narrow">
+                <div class="tp-f tp-when-pct">
+                    <label for="tpRetPct">Traditional (pre-tax)</label>
+                    <span class="tp-unit" data-unit="%"><input id="tpRetPct" type="number" min="0" step="0.5" class="tp-in"></span>
+                </div>
+                <div class="tp-f tp-when-pct">
+                    <label for="tpRothPct">Roth (post-tax)</label>
+                    <span class="tp-unit" data-unit="%"><input id="tpRothPct" type="number" min="0" step="0.5" class="tp-in"></span>
+                </div>
+                <div class="tp-f tp-when-amt">
+                    <label for="tpRet">Traditional (pre-tax)</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpRet" type="number" min="0" step="100" class="tp-in"></span>
+                </div>
+                <div class="tp-f tp-when-amt">
+                    <label for="tpRoth">Roth (post-tax)</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpRoth" type="number" min="0" step="100" class="tp-in"></span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpMatchRate">Employer matches</label>
+                    <span class="tp-unit" data-unit="%"><input id="tpMatchRate" type="number" min="0" step="5" class="tp-in" placeholder="100"></span>
+                    <span class="hint">100 = dollar for dollar.</span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpMatchLimit">&hellip; up to</label>
+                    <span class="tp-unit" data-unit="%"><input id="tpMatchLimit" type="number" min="0" step="0.5" class="tp-in" placeholder="6"></span>
+                    <span class="hint">of your pay.</span>
+                </div>
+            </div>
+            <div class="tp-resolved" id="tpResolved"></div>
+        </div>
+
+        <div class="tp-section">
+            <div class="tp-legend">Other deductions &amp; credits</div>
+            <div class="tp-grid narrow">
+                <div class="tp-f">
+                    <label for="tpPre">HSA / other pre-tax</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpPre" type="number" min="0" step="100" class="tp-in"></span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpItem">Itemized deductions</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpItem" type="number" min="0" step="100" class="tp-in"></span>
+                    <span class="hint">Leave 0 to use the standard deduction.</span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpCred">Other credits</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpCred" type="number" min="0" step="50" class="tp-in"></span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpState">State</label>
+                    <input id="tpState" maxlength="2" class="tp-in" style="text-transform:uppercase;">
+                </div>
+                <div class="tp-f">
+                    <label for="tpRate">State rate</label>
+                    <span class="tp-unit" data-unit="%"><input id="tpRate" type="number" min="0" step="0.05" class="tp-in"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="tp-section">
+            <div class="tp-legend">Withholding to date</div>
+            <div class="tp-note">
+                Mid-year there's no W-2 yet, so without this the estimate can't tell what you
+                still <strong>owe</strong> — only what the whole year costs. Copy
+                &ldquo;Federal income tax withheld&rdquo; year-to-date off a recent paystub.
+            </div>
+            <div class="tp-grid narrow">
+                <div class="tp-f">
+                    <label for="tpYtdFed">Federal withheld YTD</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpYtdFed" type="number" min="0" step="10" class="tp-in"></span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpYtdState">State withheld YTD</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpYtdState" type="number" min="0" step="10" class="tp-in"></span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpAsOf">As of (paystub date)</label>
+                    <input id="tpAsOf" type="date" class="tp-in">
+                </div>
             </div>
         </div>
     </div>
@@ -293,11 +421,23 @@
 
     /* ===== Household tax profile ===== */
     const TP = {tpFiling:'filing_status', tpKids:'dependents_under_17', tpOther:'dependents_other',
-                tpRet:'pretax_retirement_annual', tpPre:'pretax_other_annual',
-                tpItem:'itemized_deductions', tpCred:'other_credits_annual',
-                tpState:'state', tpRate:'state_tax_rate',
+                tpRet:'pretax_retirement_annual', tpRetPct:'pretax_retirement_pct',
+                tpRoth:'roth_retirement_annual', tpRothPct:'roth_retirement_pct',
+                tpMatchRate:'employer_match_rate_pct', tpMatchLimit:'employer_match_limit_pct',
+                tpPre:'pretax_other_annual', tpItem:'itemized_deductions',
+                tpCred:'other_credits_annual', tpState:'state', tpRate:'state_tax_rate',
                 tpYtdFed:'ytd_federal_withheld', tpYtdState:'ytd_state_withheld',
                 tpAsOf:'ytd_as_of'};
+    let TP_MODE = 'amount';
+
+    function setRetMode(mode) {
+        TP_MODE = (mode === 'percent') ? 'percent' : 'amount';
+        const pct = TP_MODE === 'percent';
+        document.getElementById('tpModePct').classList.toggle('on', pct);
+        document.getElementById('tpModeAmt').classList.toggle('on', !pct);
+        document.querySelectorAll('.tp-when-pct').forEach(e => { e.style.display = pct ? '' : 'none'; });
+        document.querySelectorAll('.tp-when-amt').forEach(e => { e.style.display = pct ? 'none' : ''; });
+    }
     async function loadTaxProfile() {
         try {
             const r = await fetch('/api/finance/tax-profile', {credentials:'same-origin'});
@@ -308,13 +448,29 @@
                 const el = document.getElementById(id);
                 if (el) el.value = (p[key] === null || p[key] === undefined) ? '' : p[key];
             }
+            setRetMode(p.pretax_retirement_mode || 'amount');
             document.getElementById('tpMsg').textContent = d.saved
-                ? '' : 'Not set yet — the estimate below assumes a single filer with no dependents.';
+                ? '' : 'Not set — estimate assumes single, no dependents.';
         } catch(e) {}
+    }
+    /* Shows what the percentages actually resolve to, so "6%" is never an abstraction.
+       Figures come from the estimate response, which already did the arithmetic. */
+    function renderRetirementResolved(d) {
+        const el = document.getElementById('tpResolved');
+        if (!el || !d) return;
+        const bits = [];
+        if (d.pretax_retirement || d.roth_retirement) {
+            bits.push(`<b>${fmt(d.pretax_retirement)}</b> traditional (cuts taxable wages) + ` +
+                      `<b>${fmt(d.roth_retirement)}</b> Roth (doesn't) per year`);
+        }
+        if (d.employer_match) bits.push(`employer adds <b>${fmt(d.employer_match)}</b>`);
+        if (d.unclaimed_match) bits.push(`<span class="gain-neg">leaving <b>${fmt(d.unclaimed_match)}</b> of match unclaimed</span>`);
+        if (d.retirement_capped) bits.push(`<span class="gain-neg">capped at the ${fmt(d.elective_deferral_limit)} IRS limit</span>`);
+        el.innerHTML = bits.length ? bits.join(' &middot; ') : '';
     }
     async function saveTaxProfile() {
         const msg = document.getElementById('tpMsg');
-        const body = {};
+        const body = {pretax_retirement_mode: TP_MODE};
         for (const [id, key] of Object.entries(TP)) {
             const el = document.getElementById(id);
             if (!el) continue;
@@ -356,6 +512,7 @@
                 ['Quarterly Estimate', fmt(d.quarterly_estimate), '', 'set aside per quarter'],
             ];
             grid.innerHTML = tiles.map(t=>`<div class="summary-tile"><div class="lbl">${t[0]}</div><div class="val ${t[2]}">${t[1]}</div><div class="sub">${t[3]}</div></div>`).join('');
+            renderRetirementResolved(d);
             const st = document.getElementById('incEstStatus');
             if (st) st.textContent = `${d.filing_status} · household of ${d.household_size} · ${d.constants_vintage} brackets`;
             note.textContent = (d.note || '') + (d.withholding_source ? '  Withholding: ' + d.withholding_source : '');

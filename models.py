@@ -1308,7 +1308,24 @@ class TaxProfile(db.Model):
     dependents_other = db.Column(db.Integer, default=0)
 
     # Pre-tax payroll deductions reduce taxable wages before any bracket applies.
+    # Retirement can be entered either way because payroll works in percentages — people
+    # know "6% of my paycheck", not "$9,240 a year" — and a percentage stays correct when
+    # their salary changes, where a dollar figure silently goes stale.
+    #
+    # Traditional and Roth are stored separately because only TRADITIONAL reduces taxable
+    # wages. Roth is post-tax: it comes out of the same paycheck and feels identical to the
+    # employee, but treating a 6% deferral as fully pre-tax when half of it is Roth
+    # understates the tax bill by thousands.
+    pretax_retirement_mode = db.Column(db.String(10), default='amount')   # amount | percent
     pretax_retirement_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    pretax_retirement_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
+    roth_retirement_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    roth_retirement_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
+    # Employer match. Has NO effect on the tax estimate — it was never part of the
+    # employee's wages — but it is real compensation, and contributing below the match
+    # threshold is free money left behind, which is worth flagging.
+    employer_match_rate_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
+    employer_match_limit_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
     pretax_other_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
 
     itemized_deductions = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
@@ -1326,6 +1343,62 @@ class TaxProfile(db.Model):
     notes = db.Column(db.Text)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    def retirement_annual(self, w2_gross, limit=None):
+        """Annual pre-tax retirement contribution in dollars.
+
+        In percent mode the figure is resolved against W2 gross wages, which is what a
+        payroll deferral percentage actually applies to. `limit` caps it at the IRS
+        elective-deferral maximum — without that, entering 50% would deduct an amount
+        nobody is allowed to contribute and quietly understate the tax.
+        """
+        return self._deferral(w2_gross, self.pretax_retirement_pct,
+                              self.pretax_retirement_annual, limit)
+
+    def roth_annual(self, w2_gross, limit=None):
+        """Annual Roth contribution. Tracked, but deliberately NOT deducted anywhere in the
+        tax estimate — Roth money is taxed now and withdrawn tax-free later."""
+        return self._deferral(w2_gross, self.roth_retirement_pct,
+                              self.roth_retirement_annual, limit)
+
+    def _deferral(self, w2_gross, pct, amount, limit=None):
+        if (self.pretax_retirement_mode or 'amount') == 'percent':
+            amt = float(w2_gross or 0) * float(pct or 0) / 100.0
+        else:
+            amt = float(amount or 0)
+        if limit:
+            amt = min(amt, float(limit))
+        return round(amt, 2)
+
+    def total_deferral_pct(self, w2_gross):
+        """Combined traditional + Roth deferral as a percent of W2 wages — the figure an
+        employer match is actually measured against."""
+        if (self.pretax_retirement_mode or 'amount') == 'percent':
+            return round(float(self.pretax_retirement_pct or 0) + float(self.roth_retirement_pct or 0), 2)
+        if not w2_gross:
+            return 0.0
+        total = float(self.pretax_retirement_annual or 0) + float(self.roth_retirement_annual or 0)
+        return round(total / float(w2_gross) * 100.0, 2)
+
+    def employer_match_annual(self, w2_gross):
+        """What the employer actually contributes. Most plans match a rate on contributions
+        up to a cap ("100% of the first 6%"), so the match stops growing once the deferral
+        reaches the cap."""
+        rate = float(self.employer_match_rate_pct or 0)
+        cap = float(self.employer_match_limit_pct or 0)
+        if not rate or not cap or not w2_gross:
+            return 0.0
+        matched_pct = min(self.total_deferral_pct(w2_gross), cap)
+        return round(float(w2_gross) * matched_pct / 100.0 * rate / 100.0, 2)
+
+    def unclaimed_match_annual(self, w2_gross):
+        """Employer money left on the table by deferring below the match cap."""
+        cap = float(self.employer_match_limit_pct or 0)
+        rate = float(self.employer_match_rate_pct or 0)
+        if not rate or not cap or not w2_gross:
+            return 0.0
+        short = max(0.0, cap - self.total_deferral_pct(w2_gross))
+        return round(float(w2_gross) * short / 100.0 * rate / 100.0, 2)
+
     def household_size(self):
         filers = 2 if self.filing_status in ('mfj', 'qss') else 1
         return filers + int(self.dependents_under_17 or 0) + int(self.dependents_other or 0)
@@ -1335,7 +1408,13 @@ class TaxProfile(db.Model):
             'filing_status': self.filing_status or 'single',
             'dependents_under_17': int(self.dependents_under_17 or 0),
             'dependents_other': int(self.dependents_other or 0),
+            'pretax_retirement_mode': self.pretax_retirement_mode or 'amount',
             'pretax_retirement_annual': float(self.pretax_retirement_annual or 0),
+            'pretax_retirement_pct': float(self.pretax_retirement_pct or 0),
+            'roth_retirement_annual': float(self.roth_retirement_annual or 0),
+            'roth_retirement_pct': float(self.roth_retirement_pct or 0),
+            'employer_match_rate_pct': float(self.employer_match_rate_pct or 0),
+            'employer_match_limit_pct': float(self.employer_match_limit_pct or 0),
             'pretax_other_annual': float(self.pretax_other_annual or 0),
             'itemized_deductions': float(self.itemized_deductions or 0),
             'other_credits_annual': float(self.other_credits_annual or 0),
