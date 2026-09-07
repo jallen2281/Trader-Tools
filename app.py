@@ -21,6 +21,7 @@ from tax_analyzer import TaxAnalyzer
 from config import Config
 from datetime import datetime, timedelta, date
 import json
+import re
 import csv
 import hashlib
 import traceback
@@ -3759,8 +3760,28 @@ def tax_document_download(did):
     doc = _get_viewable(TaxDocument, did, uid)
     if not doc or not doc.data:
         return jsonify({'error': 'Not found'}), 404
-    return Response(doc.data, mimetype=doc.content_type or 'application/octet-stream',
-                    headers={'Content-Disposition': f'inline; filename="{doc.filename or "document"}"'})
+    # Re-validate the type on the way OUT. Uploads are already checked against
+    # ALLOWED_DOC_MIMES, but the database is not a trust boundary: a row can predate that
+    # check or arrive by another path, and this endpoint serves user-supplied bytes from
+    # the app's own origin — where anything that executes runs with the viewer's session.
+    ctype = (doc.content_type or '').split(';')[0].strip().lower()
+    if ctype in ALLOWED_DOC_MIMES:
+        mimetype, disposition = ctype, 'inline'
+    else:
+        mimetype, disposition = 'application/octet-stream', 'attachment'
+        logger.warning('tax document %s has unexpected content_type %r - serving as an '
+                       'opaque download instead of rendering it', doc.id, doc.content_type)
+    # The filename lands inside a quoted header value, so strip anything that could close
+    # the quote or inject a header.
+    safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', doc.filename or 'document')[:100] or 'document'
+    return Response(doc.data, mimetype=mimetype, headers={
+        'Content-Disposition': '%s; filename="%s"' % (disposition, safe_name),
+        # nosniff stops the browser second-guessing the type just declared; the CSP means
+        # that even if something did render, it could load and execute nothing.
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; img-src 'self'; object-src 'none'; sandbox",
+        'Referrer-Policy': 'no-referrer',
+    })
 
 
 @app.route('/api/tax/documents/<int:did>/extract', methods=['POST'])
