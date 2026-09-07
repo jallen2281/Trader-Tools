@@ -5433,6 +5433,7 @@ def get_pattern_info(pattern_name):
 
 
 @app.route('/api/compare', methods=['POST'])
+@require_api_auth
 def compare_stocks():
     """Compare multiple stocks with optional chart."""
     try:
@@ -5445,15 +5446,24 @@ def compare_stocks():
         if not symbols:
             return jsonify({'error': 'No symbols provided'}), 400
         
-        if len(symbols) > 10:
-            return jsonify({'error': 'Maximum 10 symbols allowed'}), 400
+        # The cap bounds outbound work. Symbols now go out in a single batched request
+        # rather than one rate-limited call each, so a longer watchlist no longer costs
+        # proportionally more — but a cap still stops one caller asking for hundreds.
+        if len(symbols) > 50:
+            return jsonify({'error': 'Maximum 50 symbols per request',
+                            'received': len(symbols)}), 400
         
         results = {}
         data_dict = {}
         
-        for symbol in symbols:
-            symbol_upper = symbol.upper()
-            stock_data = data_fetcher.fetch_stock_data(symbol_upper, period)
+        # One batched request for the whole list instead of a rate-limited call per
+        # symbol: the limiter sleeps 5s plus jitter while holding a global lock, so the
+        # old loop cost ~7s per symbol and blocked every other market-data request.
+        uppers = [str(sym).upper() for sym in symbols if sym]
+        fetched = data_fetcher.fetch_multiple_symbols(uppers, period)
+
+        for symbol_upper in uppers:
+            stock_data = fetched.get(symbol_upper)
             
             if stock_data is not None and not stock_data.empty:
                 data_dict[symbol_upper] = stock_data

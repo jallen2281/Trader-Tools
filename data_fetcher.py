@@ -258,6 +258,37 @@ class FinancialDataFetcher:
         logger.error(f"✗ All data sources exhausted for {symbol}")
         return None
     
+    @staticmethod
+    def _split_batch_frame(df, requested):
+        """Split a yf.download result into one DataFrame per requested symbol.
+
+        yfinance returns two different shapes: a MultiIndex on the columns when several
+        tickers were requested, and flat columns when only one was. Both orderings of the
+        MultiIndex appear in the wild depending on group_by, so try ticker-first and fall
+        back to field-first rather than assuming.
+        """
+        out = {}
+        if df is None or getattr(df, 'empty', True):
+            return out
+        cols = df.columns
+        if isinstance(cols, pd.MultiIndex):
+            level0 = set(cols.get_level_values(0))
+            for original, norm in requested.items():
+                frame = None
+                if norm in level0:                       # group_by='ticker'
+                    frame = df[norm]
+                elif norm in set(cols.get_level_values(1)):   # field-first
+                    frame = df.xs(norm, axis=1, level=1)
+                if frame is not None and not frame.empty:
+                    out[original] = frame.dropna(how='all')
+        else:
+            # Single ticker: the frame IS that ticker's data.
+            if len(requested) == 1:
+                original = next(iter(requested))
+                if not df.empty:
+                    out[original] = df.dropna(how='all')
+        return out
+
     def fetch_multiple_symbols(
         self,
         symbols: list,
@@ -265,23 +296,71 @@ class FinancialDataFetcher:
         interval: str = "1d"
     ) -> dict:
         """
-        Fetch data for multiple symbols.
-        
-        Args:
-            symbols: List of ticker symbols
-            period: Data period
-            interval: Data interval
-        
-        Returns:
-            Dictionary mapping symbols to their DataFrames
+        Fetch data for multiple symbols in ONE Yahoo request where possible.
+
+        This used to loop fetch_stock_data, which meant paying the global rate limiter once
+        per symbol — and that limiter sleeps 5s plus 1-3s of jitter while holding a lock, so
+        a ten-symbol watchlist cost over a minute and blocked every other market-data
+        request in the app for the duration. yfinance can fetch many tickers in a single
+        HTTP call, which costs one rate-limit slot instead of ten.
+
+        Cached symbols are served without any request at all; only the misses are batched,
+        and anything the batch fails to return falls back to the per-symbol path so a single
+        bad ticker cannot empty the whole response.
+
+        Returns: {original_symbol: DataFrame}
         """
         results = {}
-        for symbol in symbols:
-            data = self.fetch_stock_data(symbol, period, interval)
+        if not symbols:
+            return results
+
+        wanted = {}          # original symbol -> normalized symbol
+        for sym in symbols:
+            if not sym:
+                continue
+            norm = self.normalize_symbol(sym)
+            cached = self._get_from_cache(f"{norm}_{period}_{interval}")
+            if cached is not None:
+                results[sym] = cached
+            else:
+                wanted[sym] = norm
+
+        if not wanted:
+            return results
+
+        # One request for every miss.
+        if len(wanted) > 1:
+            try:
+                _rate_limited_request()
+                batch = yf.download(
+                    list(dict.fromkeys(wanted.values())),
+                    period=period, interval=interval,
+                    group_by='ticker', auto_adjust=False,
+                    progress=False, threads=False,
+                )
+                for original, frame in self._split_batch_frame(batch, wanted).items():
+                    if 'Close' not in frame.columns:
+                        continue
+                    frame = frame.copy()
+                    frame['Returns'] = frame['Close'].pct_change()
+                    frame['Cumulative_Returns'] = (1 + frame['Returns']).cumprod()
+                    self._save_to_cache(f"{wanted[original]}_{period}_{interval}", frame)
+                    results[original] = frame
+                logger.info("Batch fetch: %d/%d symbols in one request",
+                            len(results) - (len(symbols) - len(wanted)), len(wanted))
+            except Exception as e:
+                logger.warning("Batch fetch failed (%s); falling back to per-symbol", e)
+
+        # Anything the batch did not produce — including the single-symbol case — goes
+        # through the original path, which has the retry and DefeatBeta fallback logic.
+        for original in wanted:
+            if original in results:
+                continue
+            data = self.fetch_stock_data(original, period, interval)
             if data is not None:
-                results[symbol] = data
+                results[original] = data
         return results
-    
+
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """
         Get the latest price for a symbol with DefeatBeta fallback.

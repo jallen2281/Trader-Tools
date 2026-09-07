@@ -165,24 +165,39 @@ class WatchlistManager {
         const symbols = symbolsArray || this.getAll();
         if (symbols.length === 0) return {};
         
-        try {
-            const response = await fetch('/api/compare', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    symbols: symbols,
-                    period: '5d'  // Use 5d to get proper change percentage
-                })
-            });
-            
-            if (response.ok) {
-                const data = await response.json();
-                return data.symbols || {};
+        // The endpoint caps how many symbols one request may carry, and the whole
+        // watchlist used to be sent in a single call — so any list over the cap returned
+        // 400 and NO prices loaded at all. Split it and merge the results.
+        const CHUNK = 50;
+        const out = {};
+        for (let i = 0; i < symbols.length; i += CHUNK) {
+            const batch = symbols.slice(i, i + CHUNK);
+            try {
+                const response = await fetch('/api/compare', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        symbols: batch,
+                        period: '5d'  // 5d gives a real change percentage
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    Object.assign(out, data.symbols || {});
+                } else {
+                    // Previously this failed silently and the row just stayed blank, which
+                    // is why a 400 looked like "slow" rather than "broken".
+                    const err = await response.json().catch(() => ({}));
+                    console.error('Watchlist prices failed (%s): %s', response.status,
+                                  err.error || response.statusText);
+                }
+            } catch (e) {
+                console.error('Error fetching watchlist prices:', e);
             }
-        } catch (e) {
-            console.error('Error fetching watchlist prices:', e);
         }
-        return {};
+        return out;
     }
 
     // Fetch portfolio holdings
