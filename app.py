@@ -83,8 +83,18 @@ def _get_current_user_id():
     try:
         if hasattr(app, 'login_manager') and current_user.is_authenticated:
             return current_user.id
-    except Exception:
+    except (AttributeError, RuntimeError):
+        # No login_manager, or no request context. Genuinely "there is no user here".
         pass
+    except Exception:
+        # Anything else means we could not DETERMINE the user, which is a very different
+        # thing from there not being one. Reading current_user runs Flask-Login's user
+        # loader, so a database problem surfaces here — and swallowing it turned a missing
+        # tax_profiles column into a 401 "Authentication required" on every endpoint,
+        # sending the reader after a session bug that did not exist. Fail honestly.
+        logger.error("_get_current_user_id: could not resolve the current user",
+                     exc_info=True)
+        raise
     return None
 
 app = Flask(__name__)
@@ -4024,6 +4034,7 @@ def tax_income_estimate():
         filing = (request.args.get('filing') or 'mfj').lower()
         return jsonify(_income_tax_estimate(uid, year=year, filing=filing))
     except Exception as e:
+        db.session.rollback()   # a failed statement poisons the transaction on PostgreSQL
         logger.error(f"Error in income-tax estimate: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 

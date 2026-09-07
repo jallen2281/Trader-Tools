@@ -92,6 +92,81 @@ def _is_postgres(db):
     return str(db.engine.url).startswith('postgresql')
 
 
+def _sync_missing_columns(db, skip_tables=()):
+    """Add every column present on a model but missing from its existing table.
+
+    create_all() creates new TABLES but never alters existing ones, so any column added to
+    a model after its table already shipped is invisible to the database — and SQLAlchemy
+    still SELECTs it, so the very next query dies with UndefinedColumn. Hand-written
+    per-column migrations catch that only when someone remembers to write one, which is
+    exactly the failure this replaces: tax_profiles shipped, then gained six retirement
+    columns, and nothing added them.
+
+    Comparing the model metadata against the live schema needs no maintenance and cannot
+    forget. Conservative on purpose:
+      - columns are always added NULLable, because existing rows cannot satisfy NOT NULL
+      - a scalar model default is emitted as a SQL DEFAULT so existing rows backfill
+      - primary keys are skipped; adding one to a populated table is not a thing to do
+        automatically
+      - each column is attempted independently, so one failure cannot cascade
+    """
+    from sqlalchemy import inspect as sa_inspect
+    added, failed = [], []
+    inspector = sa_inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table_name, table in db.metadata.tables.items():
+        if table_name in skip_tables or table_name not in existing_tables:
+            continue          # a brand-new table was already handled by create_all()
+        try:
+            live_cols = {c['name'] for c in inspector.get_columns(table_name)}
+        except Exception as e:
+            logger.warning("schema sync: cannot inspect %s (%s)", table_name, e)
+            continue
+
+        for col in table.columns:
+            if col.name in live_cols or col.primary_key:
+                continue
+            try:
+                col_type = col.type.compile(dialect=db.engine.dialect)
+            except Exception as e:
+                logger.error("schema sync: cannot render type for %s.%s (%s)",
+                             table_name, col.name, e)
+                failed.append('%s.%s' % (table_name, col.name))
+                continue
+            default_clause = ''
+            d = getattr(col, 'default', None)
+            if d is not None and getattr(d, 'is_scalar', False):
+                v = d.arg
+                if isinstance(v, bool):
+                    default_clause = ' DEFAULT %s' % ('TRUE' if v else 'FALSE')
+                elif isinstance(v, (int, float)):
+                    default_clause = ' DEFAULT %s' % v
+                elif isinstance(v, str):
+                    default_clause = " DEFAULT '%s'" % v.replace("'", "''")
+            if _add_column_if_missing(db, inspector, table_name, col.name,
+                                      col_type, default_clause[9:] if default_clause else None):
+                added.append('%s.%s' % (table_name, col.name))
+            else:
+                # _add_column_if_missing logs its own error; distinguish "already there"
+                # from "failed" by re-inspecting just this table.
+                try:
+                    now = {c['name'] for c in sa_inspect(db.engine).get_columns(table_name)}
+                    if col.name not in now:
+                        failed.append('%s.%s' % (table_name, col.name))
+                except Exception:
+                    pass
+
+    if added:
+        logger.info("✓ Schema sync added %d column(s): %s", len(added), ', '.join(added))
+    if failed:
+        logger.error("✗ Schema sync could NOT add %d column(s): %s — queries touching "
+                     "these will fail", len(failed), ', '.join(failed))
+    if not added and not failed:
+        logger.info("✓ Schema sync: database matches the models")
+    return added, failed
+
+
 def _add_column_if_missing(db, inspector, table, column, col_type, default=None):
     """Add a column if it is missing. Works on SQLite and PostgreSQL.
 
@@ -224,6 +299,14 @@ def init_database(app):
             inspector = inspect(db.engine)
             if _add_column_if_missing(db, inspector, 'users', 'privacy_consent_version', 'VARCHAR(20)'):
                 logger.info("✓ Added privacy-consent columns to users table")
+
+        # Bring every existing table up to date with its model before anything queries it.
+        # The hand-written migrations below still run; they are now a backstop rather than
+        # the only mechanism, since forgetting one is what broke tax_profiles in production.
+        try:
+            _sync_missing_columns(db)
+        except Exception as e:
+            logger.error("schema sync failed wholesale: %s", e, exc_info=True)
 
         # Migrate: household sharing columns. create_all makes the new households/
         # household_members/entities tables, but never ALTERs an existing one.
