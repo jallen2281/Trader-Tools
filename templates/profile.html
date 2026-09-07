@@ -136,6 +136,16 @@
 
     <!-- ===== ACCOUNT ===== -->
     <div class="pf-panel" id="panel-account">
+        <div class="pf-card" id="hhCard">
+            <h2 style="margin:0 0 6px;">🏠 Household</h2>
+            <p class="pf-muted" style="font-size:0.85em;margin-top:0;">
+                Share chosen accounts, bills and transactions with a partner. Joining a
+                household shares <strong>nothing</strong> on its own — you pick what to share,
+                record by record, from the Finances page.
+            </p>
+            <div id="hhBody" class="pf-muted" style="font-size:0.9em;">Loading…</div>
+        </div>
+
         <div class="pf-card">
             <h2 style="margin:0 0 6px;">Your Permissions</h2>
             <p class="pf-muted" style="font-size:0.85em;margin-top:0;">Access is granted by the groups an admin assigns you.</p>
@@ -175,6 +185,107 @@
     }
 
     /* ---------- Account ---------- */
+    /* ===== Household ===== */
+    const REL_LABEL = {spouse:'Spouse', partner:'Partner', family:'Family', other:'Other'};
+
+    async function loadHousehold() {
+        const box = document.getElementById('hhBody');
+        try {
+            const r = await fetch('/api/household', {credentials:'same-origin'});
+            if (!r.ok) { box.textContent = 'Could not load household.'; return; }
+            const d = await r.json();
+            const pending = (d.pending_invitations || []).filter(i => i.status === 'invited');
+            if (!(d.households || []).length) {
+                box.innerHTML = pending.map(renderInvite).join('') + `
+                    <div style="margin-top:${pending.length ? '14px' : '0'};">
+                        <div class="pf-field" style="max-width:340px;">
+                            <label>Household name</label>
+                            <input id="hhName" placeholder="Our household">
+                        </div>
+                        <button class="btn2 primary" onclick="createHousehold()">Create a household</button>
+                        <span id="hhMsg" class="pf-muted" style="font-size:0.85em;margin-left:10px;"></span>
+                    </div>`;
+                return;
+            }
+            const h = d.households[0];
+            const iAmOwner = (h.members || []).some(m => m.user_id === CURRENT_UID && m.role === 'owner');
+            box.innerHTML = `
+                <div style="font-size:1.05em;color:var(--text-primary);margin-bottom:10px;">
+                    <strong>${esc(h.name)}</strong>
+                </div>
+                <div style="display:grid;gap:8px;margin-bottom:14px;">
+                    ${(h.members || []).map(m => renderMember(m, iAmOwner)).join('')}
+                </div>
+                ${iAmOwner ? `
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border-top:1px solid var(--border);padding-top:12px;">
+                    <div class="pf-field" style="margin:0;flex:1;min-width:200px;">
+                        <label>Invite by email</label>
+                        <input id="hhEmail" type="email" placeholder="partner@example.com">
+                    </div>
+                    <div class="pf-field" style="margin:0;">
+                        <label>Relationship</label>
+                        <select id="hhRel">
+                            <option value="spouse">Spouse</option>
+                            <option value="partner">Partner</option>
+                            <option value="family">Family</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    <button class="btn2 primary" onclick="inviteToHousehold(${h.id})">Invite</button>
+                </div>` : ''}
+                <div id="hhMsg" class="pf-muted" style="font-size:0.85em;margin-top:8px;"></div>`;
+        } catch (e) { box.textContent = 'Could not load household.'; }
+    }
+    function renderMember(m, iAmOwner) {
+        const who = esc(m.name || m.email || 'Invited');
+        const tag = m.status === 'invited'
+            ? '<span class="pf-muted">· invitation pending</span>'
+            : (m.role === 'owner' ? '<span class="pf-muted">· owner</span>' : '');
+        const canRemove = iAmOwner || m.user_id === CURRENT_UID;
+        const label = m.user_id === CURRENT_UID ? 'Leave' : 'Remove';
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+            <span>${who} ${m.relationship ? `<span class="pf-muted">(${esc(REL_LABEL[m.relationship] || m.relationship)})</span>` : ''} ${tag}</span>
+            ${canRemove ? `<button class="btn2 danger" onclick="removeMember(${m.id}, '${esc(label)}')">${label}</button>` : ''}
+        </div>`;
+    }
+    function renderInvite(i) {
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;">
+            <div style="margin-bottom:8px;">You've been invited to join a household.</div>
+            <button class="btn2 primary" onclick="respondInvite(${i.id}, true)">Accept</button>
+            <button class="btn2" onclick="respondInvite(${i.id}, false)">Decline</button>
+        </div>`;
+    }
+    async function createHousehold() {
+        const name = (document.getElementById('hhName').value || '').trim() || 'Our household';
+        await hhCall('/api/household', 'POST', {name});
+    }
+    async function inviteToHousehold(hid) {
+        const email = (document.getElementById('hhEmail').value || '').trim();
+        if (!email) { document.getElementById('hhMsg').textContent = 'Enter an email address.'; return; }
+        await hhCall(`/api/household/${hid}/invite`, 'POST',
+                     {email, relationship: document.getElementById('hhRel').value});
+    }
+    async function respondInvite(mid, accept) {
+        await hhCall(`/api/household/invitations/${mid}`, accept ? 'POST' : 'DELETE');
+    }
+    async function removeMember(mid, label) {
+        if (!confirm(`${label} this household?\n\nRecords are never deleted — anything shared simply stops being visible to the others.`)) return;
+        await hhCall(`/api/household/members/${mid}`, 'DELETE');
+    }
+    async function hhCall(url, method, body) {
+        const msg = document.getElementById('hhMsg');
+        if (msg) msg.textContent = 'Working…';
+        try {
+            const r = await fetch(url, {
+                method, credentials:'same-origin',
+                headers: body ? {'Content-Type':'application/json'} : undefined,
+                body: body ? JSON.stringify(body) : undefined});
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) { if (msg) msg.textContent = d.error || 'Failed.'; return; }
+            loadHousehold();
+        } catch (e) { if (msg) msg.textContent = e.message; }
+    }
+
     async function loadPermissions() {
         const el = document.getElementById('permBody');
         try {
@@ -626,6 +737,14 @@
         } catch (e) { box.innerHTML = ''; }
     }
 
-    document.addEventListener('DOMContentLoaded', () => { loadProfile(); loadPrefs(); loadSop(); });
+    let CURRENT_UID = null;
+    document.addEventListener('DOMContentLoaded', () => {
+        loadProfile(); loadPrefs(); loadSop();
+        fetch('/api/user/profile', {credentials:'same-origin'})
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { CURRENT_UID = (d && (d.id || (d.user && d.user.id))) || null; })
+            .catch(() => {})
+            .finally(loadHousehold);
+    });
 </script>
 {% endblock %}

@@ -112,6 +112,18 @@
         <div id="plaidBody"><p class="muted">Loading&hellip;</p></div>
     </div>
 
+    <!-- Books (entities). Hidden until there is something to show or create. -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Books <span class="muted" style="font-size:0.62em;font-weight:400;">separate sets for a farm, business or rental</span></h2>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select id="entYear" class="fin-in" style="padding:4px 8px;" onchange="loadEntities()"></select>
+                <button class="btn2 primary" onclick="openEntity(null)">+ Add books</button>
+            </div>
+        </div>
+        <div id="entBody"><p class="muted">Loading&hellip;</p></div>
+    </div>
+
     <!-- Spending -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
@@ -440,6 +452,7 @@
             <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Balance $</label><input id="dBal" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.balance||0}"></div>
             <div style="flex:1;"><label class="fld">APR %</label><input id="dApr" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.apr||0}"></div>
             <div style="flex:1;"><label class="fld">Min pmt/mo $</label><input id="dPmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.min_payment||0}"></div></div>
+            ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveDebt(${d?d.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="dMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
     }
     async function saveDebt(id) {
@@ -447,7 +460,11 @@
             balance:parseFloat(document.getElementById('dBal').value)||0,apr:parseFloat(document.getElementById('dApr').value)||0,min_payment:parseFloat(document.getElementById('dPmt').value)||0,secured:document.getElementById('dSecured').checked};
         if(!body.name){ document.getElementById('dMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/debts/${id}`:'/api/finance/debts',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
-            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadOutlook();
+            if(!r.ok) throw new Error((await r.json()).error||'fail');
+            // body is still unread on the success path, so this is the only read
+            const saved = await r.json().catch(() => ({}));
+            await applyShareEntity('debt', id || saved.id);
+            closeModal(); loadOutlook();
         }catch(e){ document.getElementById('dMsg').textContent=e.message; }
     }
     async function delDebt(id){ if(!confirm('Delete this debt?'))return; await fetch(`/api/finance/debts/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
@@ -459,13 +476,18 @@
             <label class="fld">Name</label><input id="aName" class="fin-in" style="width:100%;" value="${esc(e.name||'')}">
             <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Type</label><select id="aType" class="fin-in" style="width:100%;">${ACCT_TYPES.map(t=>`<option value="${t}" ${e.type===t?'selected':''}>${t}</option>`).join('')}</select></div>
             <div style="flex:1;"><label class="fld">Balance $</label><input id="aBal" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.balance||0}"></div></div>
+            ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveAccount(${a?a.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="aMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
     }
     async function saveAccount(id) {
         const body={name:document.getElementById('aName').value.trim(),type:document.getElementById('aType').value,balance:parseFloat(document.getElementById('aBal').value)||0};
         if(!body.name){ document.getElementById('aMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/accounts/${id}`:'/api/finance/accounts',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
-            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadOutlook();
+            if(!r.ok) throw new Error((await r.json()).error||'fail');
+            // body is still unread on the success path, so this is the only read
+            const saved = await r.json().catch(() => ({}));
+            await applyShareEntity('account', id || saved.id);
+            closeModal(); loadOutlook();
         }catch(e){ document.getElementById('aMsg').textContent=e.message; }
     }
     async function delAccount(id){ if(!confirm('Delete this account?'))return; await fetch(`/api/finance/accounts/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
@@ -564,6 +586,7 @@
               <div style="flex:1;"><label class="fld">Due day (monthly)</label><input id="bDay" type="number" min="1" max="31" class="fin-in" style="width:100%;" value="${e.due_day||''}" placeholder="e.g. 1"></div>
             </div>
             <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:0.88em;"><input type="checkbox" id="bAuto" ${e.autopay?'checked':''}> Autopay</label>
+            ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:6px;"><button class="btn2 primary" onclick="saveBill(${b?b.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="bMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
     }
     async function saveBill(id) {
@@ -573,7 +596,11 @@
             due_day:g('bDay').value,autopay:g('bAuto').checked};
         if(!body.name){ g('bMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/bills/${id}`:'/api/finance/bills',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
-            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadBudgeting();
+            if(!r.ok) throw new Error((await r.json()).error||'fail');
+            // body is still unread on the success path, so this is the only read
+            const saved = await r.json().catch(() => ({}));
+            await applyShareEntity('bill', id || saved.id);
+            closeModal(); loadBudgeting();
         }catch(e){ g('bMsg').textContent=e.message; }
     }
     async function delBill(id){ if(!confirm('Delete this bill?'))return; await fetch(`/api/finance/bills/${id}`,{method:'DELETE',credentials:'same-origin'}); loadBudgeting(); }
@@ -633,6 +660,7 @@
               <div style="flex:1;"><label class="fld">Category</label><select id="tCat" class="fin-in" style="width:100%;"><option value="">auto-detect</option>${BUDGET_CATS.map(c=>`<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
             </div>
             <label class="fld">Paid from (optional)</label><select id="tAcct" class="fin-in" style="width:100%;"><option value="">&mdash;</option>${accts.map(a=>`<option value="${a.id}" ${e.account_id===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
+            ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveTxn(${t?t.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="tMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
     }
     async function saveTxn(id) {
@@ -642,7 +670,11 @@
             category:g('tCat').value,account_id:g('tAcct').value};
         if(!body.description){ g('tMsg').textContent='Description required'; return; }
         try{ const r=await fetch(id?`/api/finance/transactions/${id}`:'/api/finance/transactions',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
-            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadBudgeting();
+            if(!r.ok) throw new Error((await r.json()).error||'fail');
+            // body is still unread on the success path, so this is the only read
+            const saved = await r.json().catch(() => ({}));
+            await applyShareEntity('transaction', id || saved.id);
+            closeModal(); loadBudgeting();
         }catch(e){ g('tMsg').textContent=e.message; }
     }
     async function delTxn(id){ if(!confirm('Delete this transaction?'))return; await fetch(`/api/finance/transactions/${id}`,{method:'DELETE',credentials:'same-origin'}); loadBudgeting(); }
@@ -801,9 +833,151 @@
         } catch(e) { alert('Could not disconnect: ' + e.message); }
     }
 
+    /* ---- Books (entities) and household sharing controls ---- */
+    let ENTITIES = [], HAS_HOUSEHOLD = false;
+
+    async function loadHouseholdState() {
+        try {
+            const r = await fetch('/api/household', {credentials:'same-origin'});
+            if (r.ok) HAS_HOUSEHOLD = ((await r.json()).households || []).length > 0;
+        } catch(e) {}
+    }
+    async function loadEntities() {
+        const box = document.getElementById('entBody');
+        const sel = document.getElementById('entYear');
+        if (sel && !sel.options.length) {
+            const y = new Date().getFullYear();
+            for (let i = y; i >= y - 4; i--) sel.add(new Option(i, i));
+        }
+        try {
+            const [list, rep] = await Promise.all([
+                fetch('/api/finance/entities', {credentials:'same-origin'}).then(r => r.json()),
+                fetch('/api/finance/entities/report?year=' + (sel ? sel.value : ''),
+                      {credentials:'same-origin'}).then(r => r.json()),
+            ]);
+            ENTITIES = list.entities || [];
+            renderEntities(rep);
+        } catch(e) { box.innerHTML = '<p class="muted" style="padding:12px;">Could not load books.</p>'; }
+    }
+    function renderEntities(rep) {
+        const box = document.getElementById('entBody');
+        const rows = (rep.entities || []);
+        if (!rows.length) {
+            box.innerHTML = '<p class="muted" style="padding:12px;">No separate books yet. Add one for a farm, side business or rental, then tag its transactions and receipts — its expenses and deductible totals are then reported apart from household spending.</p>';
+            return;
+        }
+        const line = (r, muted) => {
+            const e = r.entity;
+            const form = e.tax_form ? `<span class="badge b-inv" style="font-size:0.72em;">${esc(e.tax_form)}</span>` : '';
+            return `<tr${muted ? ' style="opacity:.72;"' : ''}>
+                <td><strong>${esc(e.name)}</strong> ${form}${e.id ? '' : '<div class="muted" style="font-size:0.78em;">records not assigned to any books</div>'}</td>
+                <td style="text-align:right;">${fmt(r.income)}</td>
+                <td style="text-align:right;">${fmt(r.expenses)}</td>
+                <td style="text-align:right;" class="${r.net < 0 ? 'neg' : 'pos'}">${fmt(r.net)}</td>
+                <td style="text-align:right;">${fmt(r.deductible_receipts)}</td>
+                <td style="text-align:right;white-space:nowrap;">${e.id
+                    ? `<button class="link-btn" onclick='openEntity(${attrJson(e)})'>edit</button>` : ''}</td>
+            </tr>`;
+        };
+        box.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr>' +
+            '<th>Books</th><th style="text-align:right;">Income</th><th style="text-align:right;">Expenses</th>' +
+            '<th style="text-align:right;">Net</th><th style="text-align:right;" title="Receipts explicitly marked deductible — reported apart from total expenses on purpose">Deductible</th><th></th>' +
+            '</tr></thead><tbody>' + rows.map(r => line(r, false)).join('') +
+            (rep.unassigned && (rep.unassigned.expenses || rep.unassigned.transactions)
+                ? line(rep.unassigned, true) : '') +
+            '</tbody></table></div>';
+    }
+    function openEntity(e) {
+        const x = e || {kind:'farm', name:''};
+        const KINDS = ['personal','household','business','farm','rental','other'];
+        showModal(`<h2 style="margin:0 0 8px;">${e ? 'Edit' : 'Add'} books</h2>
+            <label class="fld">Name</label><input id="enName" class="fin-in" style="width:100%;" value="${esc(x.name||'')}" placeholder="e.g. Allen Farm">
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Kind</label><select id="enKind" class="fin-in" style="width:100%;">${KINDS.map(k=>`<option ${x.kind===k?'selected':''}>${k}</option>`).join('')}</select></div>
+              <div style="flex:1;"><label class="fld">Tax form <span class="muted" style="font-weight:400;">(auto)</span></label><input id="enForm" class="fin-in" style="width:100%;" value="${esc(x.tax_form||'')}" placeholder="Schedule F"></div>
+            </div>
+            ${HAS_HOUSEHOLD ? `<label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:0.88em;"><input type="checkbox" id="enShared" ${x.household_id?'checked':''}> Let my household tag records to these books</label>` : ''}
+            <div style="display:flex;gap:10px;margin-top:14px;">
+              <button class="btn2 primary" onclick="saveEntity(${e ? e.id : 'null'})">Save</button>
+              <button class="btn2" onclick="closeModal()">Cancel</button>
+              ${e ? `<button class="btn2 danger" onclick="deactivateEntity(${e.id})">Deactivate</button>` : ''}
+              <span id="enMsg" class="muted" style="align-self:center;font-size:0.85em;"></span>
+            </div>`);
+    }
+    async function saveEntity(id) {
+        const g = i => document.getElementById(i);
+        const body = {name:g('enName').value.trim(), kind:g('enKind').value,
+                      tax_form:g('enForm').value.trim(),
+                      shared_with_household: !!(g('enShared') && g('enShared').checked)};
+        if (!body.name) { g('enMsg').textContent = 'Name required'; return; }
+        try {
+            const r = await fetch(id ? `/api/finance/entities/${id}` : '/api/finance/entities',
+                {method: id ? 'PUT' : 'POST', headers:{'Content-Type':'application/json'},
+                 credentials:'same-origin', body: JSON.stringify(body)});
+            if (!r.ok) throw new Error(((await r.json())||{}).error || 'fail');
+            closeModal(); loadEntities();
+        } catch(e) { g('enMsg').textContent = e.message; }
+    }
+    async function deactivateEntity(id) {
+        if (!confirm('Deactivate these books?\n\nRecords already tagged keep their tag and the history is preserved — it just stops appearing as a choice.')) return;
+        await fetch(`/api/finance/entities/${id}`, {method:'DELETE', credentials:'same-origin'});
+        closeModal(); loadEntities();
+    }
+
+    /* Two extra fields for every record modal. Share level and books are set through their
+       own endpoints rather than the record PUT — only an owner may change who can see a
+       record, so it is not just another editable field. */
+    let MODAL_REC = {};
+    function shareEntityFields(rec) {
+        const r = rec || {};
+        MODAL_REC = r;      // remembered so applyShareEntity only fires on real changes
+        let html = '';
+        if (HAS_HOUSEHOLD) {
+            const lv = r.share_level || 'none';
+            html += `<div style="flex:1;"><label class="fld">Share with household</label>
+                <select id="xShare" class="fin-in" style="width:100%;">
+                  <option value="none" ${lv==='none'?'selected':''}>Private</option>
+                  <option value="view" ${lv==='view'?'selected':''}>They can view</option>
+                  <option value="edit" ${lv==='edit'?'selected':''}>They can edit</option>
+                </select></div>`;
+        }
+        if (ENTITIES.length) {
+            html += `<div style="flex:1;"><label class="fld">Books</label>
+                <select id="xEntity" class="fin-in" style="width:100%;">
+                  <option value="">Personal / unassigned</option>
+                  ${ENTITIES.map(e=>`<option value="${e.id}" ${String(r.entity_id||'')===String(e.id)?'selected':''}>${esc(e.name)}</option>`).join('')}
+                </select></div>`;
+        }
+        return html ? `<div style="display:flex;gap:10px;">${html}</div>` : '';
+    }
+    /* Called after the record itself saves. Only fires the calls that actually changed. */
+    async function applyShareEntity(kind, id) {
+        if (!id) return;
+        const sh = document.getElementById('xShare'), en = document.getElementById('xEntity');
+        const b = MODAL_REC || {};
+        try {
+            if (sh && sh.value !== (b.share_level || 'none')) {
+                await fetch(`/api/household/share/${kind}/${id}`, {
+                    method:'PUT', headers:{'Content-Type':'application/json'},
+                    credentials:'same-origin', body: JSON.stringify({share_level: sh.value})});
+            }
+            if (en && String(en.value || '') !== String(b.entity_id || '')) {
+                await fetch(`/api/finance/entity/${kind}/${id}`, {
+                    method:'PUT', headers:{'Content-Type':'application/json'},
+                    credentials:'same-origin',
+                    body: JSON.stringify({entity_id: en.value ? parseInt(en.value, 10) : null})});
+            }
+        } catch(e) { /* the record saved; these are secondary */ }
+    }
+
     function showModal(html){ const r=document.getElementById('modalRoot'); r.innerHTML=`<div class="modal-back" id="_mb"><div class="modal-box">${html}</div></div>`; document.getElementById('_mb').addEventListener('click',e=>{if(e.target.id==='_mb')closeModal();}); }
     function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
-    document.addEventListener('DOMContentLoaded', function(){ loadOutlook(); loadPlaid(); loadOverview(); });  // loadOutlook chains loadBudgeting()
+    document.addEventListener('DOMContentLoaded', function(){
+        // household state and the entity list gate the two extra modal fields, so
+        // they load before anything that opens a modal.
+        loadHouseholdState().then(loadEntities);
+        loadOutlook(); loadPlaid(); loadOverview();
+    });  // loadOutlook chains loadBudgeting()
 </script>
 {% endblock %}
