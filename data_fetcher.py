@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 from typing import Optional, Tuple, Dict
 from datetime import datetime, timedelta
+import os
 import time
 import logging
 import threading
@@ -84,6 +85,9 @@ class FinancialDataFetcher:
         """Initialize the data fetcher."""
         self.cache = {}
         self.cache_ttl = timedelta(minutes=10)  # Cache for 10 minutes to reduce API load
+        # How long fetch_multiple_symbols may spend on per-symbol fallbacks before giving up
+        # and returning partial data. Each one costs a full rate-limit interval.
+        self.fallback_budget_seconds = float(os.getenv('FETCH_FALLBACK_BUDGET', '25'))
         self.use_defeatbeta_fallback = DEFEATBETA_ENABLED
         self.defeatbeta_as_secondary = DEFEATBETA_ENABLED
         
@@ -332,11 +336,16 @@ class FinancialDataFetcher:
         if len(wanted) > 1:
             try:
                 _rate_limited_request()
+                # threads=True is yfinance's default and is what correlation_analyzer has
+                # always used in production. Yahoo's history API is per-symbol, so download()
+                # fans out to one request per ticker no matter what — threads=False made it
+                # do them SERIALLY inside the call while this code took the pacing slot only
+                # once, which is strictly worse than the per-symbol loop it replaced.
                 batch = yf.download(
                     list(dict.fromkeys(wanted.values())),
                     period=period, interval=interval,
                     group_by='ticker', auto_adjust=False,
-                    progress=False, threads=False,
+                    progress=False, threads=True,
                 )
                 for original, frame in self._split_batch_frame(batch, wanted).items():
                     if 'Close' not in frame.columns:
@@ -353,12 +362,26 @@ class FinancialDataFetcher:
 
         # Anything the batch did not produce — including the single-symbol case — goes
         # through the original path, which has the retry and DefeatBeta fallback logic.
+        #
+        # Bounded on purpose. Each fallback pays the global limiter (5s plus jitter) and may
+        # retry on top, so falling back for a whole failed batch is how a page ends up
+        # taking minutes. Past the budget we return what we have: a partial response that
+        # renders is better than a complete one nobody waits for.
+        deadline = time.monotonic() + self.fallback_budget_seconds
+        skipped = []
         for original in wanted:
             if original in results:
+                continue
+            if time.monotonic() > deadline:
+                skipped.append(original)
                 continue
             data = self.fetch_stock_data(original, period, interval)
             if data is not None:
                 results[original] = data
+        if skipped:
+            logger.warning("fetch_multiple_symbols: returning partial data — skipped %d "
+                           "symbol(s) after %.0fs of per-symbol fallback: %s",
+                           len(skipped), self.fallback_budget_seconds, ', '.join(skipped))
         return results
 
     def get_latest_price(self, symbol: str) -> Optional[float]:
