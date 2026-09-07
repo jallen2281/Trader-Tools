@@ -93,13 +93,36 @@ def _is_postgres(db):
 
 
 def _add_column_if_missing(db, inspector, table, column, col_type, default=None):
-    """Safely add a column to a table if it doesn't exist (works on both SQLite and PostgreSQL)"""
+    """Add a column if it is missing. Works on SQLite and PostgreSQL.
+
+    Failures are contained deliberately. This runs inside init_database, and an exception
+    escaping here aborts the whole initializer — which skips init_auth, leaves the app with
+    no login_manager, and makes every endpoint answer a misleading 401 "Authentication
+    required" instead of admitting the database is half-migrated. One un-addable column
+    must not take authentication down with it, so the failure is logged loudly and the rest
+    of the migration continues.
+
+    On PostgreSQL the rollback matters as much as the catch: a failed statement poisons the
+    transaction, and every later migration in the same session would fail too.
+    """
     from sqlalchemy import text
-    cols = [c['name'] for c in inspector.get_columns(table)]
-    if column not in cols:
-        default_clause = f" DEFAULT {default}" if default is not None else ""
+    try:
+        cols = [c['name'] for c in inspector.get_columns(table)]
+    except Exception as e:
+        logger.error("MIGRATION: cannot inspect %s (%s)", table, e)
+        return False
+    if column in cols:
+        return False
+    default_clause = f" DEFAULT {default}" if default is not None else ""
+    try:
         db.session.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {col_type}{default_clause}'))
         db.session.commit()
+        return True
+    except Exception as e:
+        db.session.rollback()
+        logger.error("MIGRATION FAILED: could not add column %s.%s (%s) — %s",
+                     table, column, col_type, e)
+        return False
         return True
     return False
 

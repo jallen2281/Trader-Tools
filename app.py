@@ -136,7 +136,12 @@ if PHASE2_ENABLED:
         logger.info("✓ Authentication routes registered")
         
     except Exception as e:
-        logger.error(f"✗ Failed to initialize Phase 2 features: {e}")
+        # exc_info matters: without the traceback this line names the exception but not
+        # the statement that raised it, and the app then runs degraded — every endpoint
+        # answering 401 because there is no login_manager — with no way to tell why.
+        logger.critical("✗ Failed to initialize Phase 2 features: %s", e, exc_info=True)
+        logger.critical("✗ AUTH IS DISABLED. The app will answer 401/503 on authenticated "
+                        "endpoints until this is fixed.")
         PHASE2_ENABLED = False
 else:
     logger.info("ℹ Running in Phase 1 mode (no authentication)")
@@ -378,7 +383,7 @@ CONSENT_VERSION = '2026-09-05'
 # be, /logout must be so "decline" is always possible, and /login|/authorize must be so the
 # sign-in round-trip can complete before consent is even evaluated.
 CONSENT_EXEMPT_PATHS = {'/consent', '/privacy', '/terms', '/login', '/authorize',
-                        '/logout', '/health'}
+                        '/logout', '/health', '/health/ready'}
 
 
 @app.route('/privacy')
@@ -5062,15 +5067,42 @@ def generate_technical_chart():
 @app.route('/health', methods=['GET'])
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    """Simple health check endpoint."""
-    git_rev = os.environ.get('GIT_COMMIT', 'unknown')
-    logger.debug("Health check requested")
+    """LIVENESS: is this process alive? Always 200 while it can answer at all.
+
+    Deliberately does NOT fail when the database or auth stack is broken. Liveness failing
+    kills and restarts the pod, so reporting a persistent migration failure here would
+    produce a restart loop instead of a diagnosis. Readiness is the probe that should react
+    to a degraded app — see /health/ready.
+    """
     return jsonify({
         'status': 'healthy',
         'message': 'Server is running',
-        'git_commit': git_rev,
+        'git_commit': os.environ.get('GIT_COMMIT', 'unknown'),
+        'phase2_enabled': bool(PHASE2_ENABLED),
         'routes_registered': [str(rule) for rule in app.url_map.iter_rules()]
     })
+
+
+@app.route('/health/ready', methods=['GET'])
+def readiness_check():
+    """READINESS: should this pod receive traffic?
+
+    503 when the auth stack failed to initialize. A pod that cannot authenticate anyone has
+    nothing useful to serve — it answers 401 on every authenticated endpoint, which reads
+    like a login bug rather than a broken deploy. Failing readiness instead takes it out of
+    the load balancer, so a rolling update stalls with the previous pods still serving
+    rather than replacing them with broken ones.
+    """
+    if not PHASE2_ENABLED:
+        return jsonify({
+            'status': 'degraded',
+            'ready': False,
+            'reason': 'Database or authentication failed to initialize at startup. '
+                      'Authenticated endpoints cannot work. See the startup logs.',
+            'git_commit': os.environ.get('GIT_COMMIT', 'unknown'),
+        }), 503
+    return jsonify({'status': 'ready', 'ready': True,
+                    'git_commit': os.environ.get('GIT_COMMIT', 'unknown')})
 
 
 @app.route('/api/import-data', methods=['POST'])

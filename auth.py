@@ -257,10 +257,20 @@ def require_api_auth(f):
             except:
                 pass  # login_manager not properly initialized
         
-        # If no authentication is configured, allow access (development mode)
+        # No login_manager means the auth stack never initialized. Locally that is a
+        # convenience (run the app without OAuth configured); in production it means
+        # init_database or init_auth threw, and letting requests through would serve
+        # private financial data to anyone. Fail closed there, and say what actually
+        # happened rather than "Authentication required", which sends people hunting for
+        # a session problem that does not exist.
         if not hasattr(current_app, 'login_manager'):
+            if os.getenv('FLASK_ENV', '').lower() == 'production':
+                return {'error': 'Authentication is unavailable: the auth system failed to '
+                                 'initialize. Check the application logs for the startup '
+                                 'error.',
+                        'code': 'auth_unavailable'}, 503
             return f(*args, **kwargs)
-        
+
         return {'error': 'Authentication required'}, 401
     
     decorated_function.__name__ = f.__name__
