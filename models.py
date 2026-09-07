@@ -954,6 +954,8 @@ class FinanceAccount(db.Model):
 
     def to_dict(self):
         return {
+            'share_level': self.share_level or 'none',
+            'entity_id': self.entity_id,
             'id': self.id, 'name': self.name, 'type': self.type,
             'balance': float(self.balance or 0), 'notes': self.notes,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
@@ -992,6 +994,8 @@ class Debt(db.Model):
 
     def to_dict(self):
         return {
+            'share_level': self.share_level or 'none',
+            'entity_id': self.entity_id,
             'id': self.id, 'name': self.name, 'type': self.type, 'lender': self.lender,
             'balance': float(self.balance or 0), 'apr': float(self.apr or 0),
             'min_payment': float(self.min_payment or 0), 'secured': bool(self.secured),
@@ -1122,6 +1126,8 @@ class IncomeSource(db.Model):
 
     def to_dict(self, include_events=False):
         d = {
+            'share_level': self.share_level or 'none',
+            'entity_id': self.entity_id,
             'id': self.id, 'name': self.name, 'owner': self.owner, 'type': self.type,
             'annual_salary': float(self.annual_salary or 0), 'hourly_rate': float(self.hourly_rate or 0),
             'hours_per_week': float(self.hours_per_week or 0), 'ot_multiplier': float(self.ot_multiplier or 1.5),
@@ -1240,6 +1246,8 @@ class RecurringBill(db.Model):
 
     def to_dict(self):
         return {
+            'share_level': self.share_level or 'none',
+            'entity_id': self.entity_id,
             'id': self.id, 'name': self.name, 'payee': self.payee, 'category': self.category,
             'amount': float(self.amount or 0), 'frequency': self.frequency,
             'monthly_amount': self.monthly_amount(),
@@ -1276,6 +1284,8 @@ class BudgetCategory(db.Model):
 
     def to_dict(self):
         return {
+            'share_level': self.share_level or 'none',
+            'entity_id': self.entity_id,
             'id': self.id, 'category': self.category, 'monthly_limit': float(self.monthly_limit or 0),
             'kind': self.kind, 'notes': self.notes,
         }
@@ -1326,6 +1336,8 @@ class SpendTransaction(db.Model):
 
     def to_dict(self):
         return {
+            'share_level': self.share_level or 'none',
+            'entity_id': self.entity_id,
             'id': self.id,
             'posted_at': self.posted_at.isoformat() if self.posted_at else None,
             'description': self.description, 'merchant': self.merchant,
@@ -1418,6 +1430,8 @@ class TaxDocument(db.Model):
     def to_dict(self):
         """Metadata only — never ships the file bytes (download via the dedicated route)."""
         return {
+            'share_level': self.share_level or 'none',
+            'entity_id': self.entity_id,
             'id': self.id, 'tax_year': self.tax_year, 'doc_type': self.doc_type,
             'issuer': self.issuer, 'filename': self.filename, 'content_type': self.content_type,
             'size': self.size, 'extracted': self.extracted or {},

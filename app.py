@@ -1432,6 +1432,210 @@ def household_share(kind, rid):
     return jsonify({'id': rec.id, 'kind': kind, 'share_level': rec.share_level})
 
 
+# ===================== ENTITIES: separate books (farm, rental, personal) =====================
+# Sharing answers "who may SEE this record"; an entity answers "whose BOOKS does it belong
+# to". They are orthogonal — a farm receipt can be visible to a spouse and still belong to
+# the farm's Schedule F — which is why entity_id is its own column rather than a share
+# level or a household flag.
+#
+# entity_id NULL means unassigned, deliberately: forcing every historical record into a
+# default entity would silently claim personal spending as business expense, and an
+# unassigned bucket that you can see and triage is much safer than a wrong default.
+
+ENTITY_KINDS = ('personal', 'household', 'business', 'farm', 'rental', 'other')
+
+# Which entity kinds file as a business, and on what. Used to label the report and to
+# decide whether a deductible-expense total is meaningful at all.
+ENTITY_TAX_FORMS = {'farm': 'Schedule F', 'business': 'Schedule C', 'rental': 'Schedule E'}
+
+ENTITY_TAGGABLE = {
+    'account': FinanceAccount, 'debt': Debt, 'income': IncomeSource,
+    'bill': RecurringBill, 'budget': BudgetCategory,
+    'transaction': SpendTransaction, 'document': TaxDocument,
+}
+
+
+def _visible_entities(user_id):
+    """Entities this user may tag records with: their own, plus any belonging to their
+    household — a jointly-run farm has to be taggable by both partners."""
+    hids = _household_ids(user_id)
+    clause = (Entity.user_id == user_id)
+    if hids:
+        clause = db.or_(clause, Entity.household_id.in_(hids))
+    return Entity.query.filter(clause, Entity.active.is_(True))
+
+
+@app.route('/api/finance/entities', methods=['GET', 'POST'])
+@require_api_auth
+def finance_entities():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    if request.method == 'GET':
+        rows = _visible_entities(uid).order_by(Entity.name).all()
+        return jsonify({'entities': [e.to_dict() for e in rows],
+                        'kinds': list(ENTITY_KINDS),
+                        'taggable': sorted(ENTITY_TAGGABLE)})
+    d = request.get_json() or {}
+    name = (d.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    kind = (d.get('kind') or 'personal').lower()
+    kind = kind if kind in ENTITY_KINDS else 'personal'
+    hids = _household_ids(uid)
+    e = Entity(user_id=uid, name=name[:120], kind=kind,
+               tax_form=(d.get('tax_form') or ENTITY_TAX_FORMS.get(kind)),
+               household_id=(hids[0] if (hids and d.get('shared_with_household')) else None),
+               notes=(d.get('notes') or None))
+    db.session.add(e)
+    db.session.commit()
+    return jsonify(e.to_dict()), 201
+
+
+@app.route('/api/finance/entities/<int:eid>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def finance_modify_entity(eid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    e = Entity.query.filter_by(id=eid, user_id=uid).first()
+    if not e:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        # Deactivate rather than delete: records still point here, and dropping the row
+        # would either break those references or silently untag a year of bookkeeping.
+        e.active = False
+        db.session.commit()
+        return jsonify({'success': True, 'deactivated': True})
+    d = request.get_json() or {}
+    if (d.get('name') or '').strip():
+        e.name = d['name'].strip()[:120]
+    if (d.get('kind') or '').lower() in ENTITY_KINDS:
+        e.kind = d['kind'].lower()
+    if 'tax_form' in d:
+        e.tax_form = (d.get('tax_form') or None)
+    if 'notes' in d:
+        e.notes = (d.get('notes') or None)
+    if 'shared_with_household' in d:
+        hids = _household_ids(uid)
+        e.household_id = hids[0] if (hids and d.get('shared_with_household')) else None
+    db.session.commit()
+    return jsonify(e.to_dict())
+
+
+@app.route('/api/finance/entity/<kind>/<int:rid>', methods=['PUT'])
+@require_api_auth
+def finance_tag_entity(kind, rid):
+    """Assign (or clear) the entity a record's books belong to."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    model = ENTITY_TAGGABLE.get(kind)
+    if not model:
+        return jsonify({'error': 'That kind of record cannot be tagged',
+                        'taggable': sorted(ENTITY_TAGGABLE)}), 400
+    rec = _get_editable(model, rid, uid)
+    if not rec:
+        return jsonify({'error': 'Not found'}), 404
+    raw = (request.get_json() or {}).get('entity_id')
+    if raw in (None, '', 0):
+        rec.entity_id = None
+    else:
+        try:
+            eid = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'entity_id must be a number or null'}), 400
+        if not _visible_entities(uid).filter(Entity.id == eid).first():
+            return jsonify({'error': 'Unknown entity'}), 404
+        rec.entity_id = eid
+    db.session.commit()
+    return jsonify({'id': rec.id, 'kind': kind, 'entity_id': rec.entity_id})
+
+
+def _entity_report(user_id, entity_id, year=None):
+    """A set of books for one entity over a calendar year.
+
+    Expenses come from the spending ledger; the deductible total comes from receipts
+    explicitly marked deductible, and is reported SEPARATELY from total expenses rather
+    than replacing it — "what I spent" and "what I can deduct" are different questions and
+    conflating them is how people over-claim.
+    """
+    yr = int(year or datetime.now().year)
+    start, end = date(yr, 1, 1), date(yr, 12, 31)
+    ent = _visible_entities(user_id).filter(Entity.id == entity_id).first() if entity_id else None
+    if entity_id and not ent:
+        return None
+
+    def scoped(model):
+        q = model.query.filter(_visible(model, user_id))
+        return q.filter(model.entity_id == entity_id) if entity_id \
+            else q.filter(model.entity_id.is_(None))
+
+    txns = scoped(SpendTransaction).filter(SpendTransaction.posted_at >= start,
+                                           SpendTransaction.posted_at <= end).all()
+    by_cat = {}
+    for t in txns:
+        c = t.category or 'other'
+        by_cat[c] = round(by_cat.get(c, 0) + float(t.amount or 0), 2)
+    expenses = round(sum(float(t.amount or 0) for t in txns), 2)
+
+    docs = [d for d in scoped(TaxDocument).all() if (d.tax_year or yr) == yr]
+    deductible = round(sum(float(d.amount or 0) for d in docs if d.deductible), 2)
+
+    srcs = scoped(IncomeSource).filter(IncomeSource.active.is_(True)).all()
+    income = round(sum(x.gross_annual() for x in srcs), 2)
+
+    accounts = scoped(FinanceAccount).all()
+    debts = scoped(Debt).all()
+
+    return {
+        'entity': ent.to_dict() if ent else {'id': None, 'name': 'Unassigned',
+                                             'kind': 'unassigned', 'tax_form': None},
+        'year': yr,
+        'income': income,
+        'expenses': expenses,
+        'net': round(income - expenses, 2),
+        'deductible_receipts': deductible,
+        'receipts_on_file': len(docs),
+        'transactions': len(txns),
+        'by_category': sorted(({'category': c, 'amount': a} for c, a in by_cat.items()),
+                              key=lambda r: -r['amount']),
+        'assets': round(sum(float(a.balance or 0) for a in accounts), 2),
+        'debts': round(sum(float(x.balance or 0) for x in debts), 2),
+        'tax_form': (ent.tax_form if ent else None) or (
+            ENTITY_TAX_FORMS.get(ent.kind) if ent else None),
+    }
+
+
+@app.route('/api/finance/entities/report', methods=['GET'])
+@require_api_auth
+def finance_entity_report():
+    """Per-entity books for a year, including an Unassigned bucket.
+
+    Unassigned is reported as its own line rather than hidden: records nobody has tagged
+    are the ones most likely to be misfiled, and a farm total that silently excludes them
+    reads as complete when it is not.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        yr = int(request.args.get('year') or datetime.now().year)
+    except (TypeError, ValueError):
+        yr = datetime.now().year
+    eid = request.args.get('entity_id')
+    if eid:
+        rep = _entity_report(uid, int(eid), yr)
+        if rep is None:
+            return jsonify({'error': 'Unknown entity'}), 404
+        return jsonify(rep)
+    reports = [_entity_report(uid, e.id, yr)
+               for e in _visible_entities(uid).order_by(Entity.name).all()]
+    unassigned = _entity_report(uid, None, yr)
+    return jsonify({'year': yr, 'entities': reports, 'unassigned': unassigned,
+                    'business_entities': [r for r in reports if r['tax_form']]})
+
+
 # ===================== PLAID: connected bank / brokerage accounts =====================
 # Every route here is gated on 'plaid_link'. A newly registered account holds no
 # permissions, so open registration can never reach anyone's banking data.
