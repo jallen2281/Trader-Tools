@@ -1,0 +1,96 @@
+"""Run every test suite and report a single pass/fail.
+
+Each suite is a standalone script rather than a pytest module, and that is deliberate: they
+boot the real Flask application against a throwaway SQLite database, and several of them
+manipulate module-level state (stubbing yfinance, swapping the Plaid client, moving
+CONSENT_VERSION). Running each in its OWN PROCESS means one suite cannot leak that state
+into the next — a shared interpreter would make failures depend on ordering, which is the
+worst kind of flaky.
+
+    python tests/run_all.py            # everything
+    python tests/run_all.py plaid      # only suites matching "plaid"
+    python tests/run_all.py -v         # stream each suite's own output
+
+Run from the repository root; the suites import the application from the working directory.
+"""
+import os
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+# Ordered roughly by what they cover: platform first, then features, then integrations.
+SUITES = [
+    ('schema_sync', 'database migration on an existing schema'),
+    ('consent', 'privacy policy, terms, consent gate, landing page'),
+    ('ai_gate', 'paid-AI permission gating and the SECRET_KEY guard'),
+    ('docsec', 'safe serving of uploaded documents'),
+    ('docencrypt', 'document encryption at rest'),
+    ('retention', 'retention, purge cascade and Plaid revocation'),
+    ('phase4', 'spending ledger, CSV and receipt import, budgets'),
+    ('taxprofile', 'household tax profile and withholding'),
+    ('retirement', 'Roth/traditional split and employer match'),
+    ('overview', 'whole-picture overview and observations'),
+    ('household', 'household sharing boundaries'),
+    ('entities', 'separate books per entity'),
+    ('plaid', 'Plaid client, sync and token handling'),
+    ('batchfetch', 'batched market data fetching'),
+    ('ui_render', 'pages render and controls are wired'),
+]
+
+
+def main():
+    args = [a for a in sys.argv[1:]]
+    verbose = '-v' in args or '--verbose' in args
+    filters = [a for a in args if not a.startswith('-')]
+
+    selected = [(n, d) for n, d in SUITES
+                if not filters or any(f.lower() in n.lower() for f in filters)]
+    if not selected:
+        print('No suite matches %r. Available: %s'
+              % (filters, ', '.join(n for n, _ in SUITES)))
+        return 2
+
+    print('Running %d suite(s) from %s\n' % (len(selected), ROOT))
+    results, started = [], time.time()
+    for name, desc in selected:
+        path = os.path.join(HERE, 'test_%s.py' % name)
+        if not os.path.exists(path):
+            print('  %-14s MISSING  (%s)' % (name, path))
+            results.append((name, False, 0.0))
+            continue
+        t0 = time.time()
+        # encoding/errors are explicit: the application logs contain characters the
+        # Windows locale codec cannot decode, and the default would raise a
+        # UnicodeDecodeError while capturing a FAILING suite's output — crashing the
+        # runner exactly when its output matters most.
+        proc = subprocess.run([sys.executable, path], cwd=ROOT,
+                              capture_output=not verbose, text=True,
+                              encoding='utf-8', errors='replace')
+        took = time.time() - t0
+        ok = proc.returncode == 0
+        results.append((name, ok, took))
+        print('  %-14s %-5s %5.1fs   %s' % (name, 'PASS' if ok else 'FAIL', took, desc))
+        if not ok and not verbose:
+            # Only the failing suite's output, and only the part that matters.
+            out = (proc.stdout or '') + (proc.stderr or '')
+            lines = [l for l in out.split('\n') if 'FAIL' in l or 'Error' in l]
+            for line in (lines[-15:] if lines else out.split('\n')[-15:]):
+                if line.strip():
+                    print('        %s' % line)
+
+    failed = [n for n, ok, _ in results if not ok]
+    print('\n' + '=' * 62)
+    print('%d passed, %d failed in %.1fs'
+          % (len(results) - len(failed), len(failed), time.time() - started))
+    if failed:
+        print('failed: %s' % ', '.join(failed))
+        print('re-run one with output:  python tests/run_all.py %s -v' % failed[0])
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

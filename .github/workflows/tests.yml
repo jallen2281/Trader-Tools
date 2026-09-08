@@ -1,0 +1,53 @@
+name: Tests
+
+# Runs the suites in tests/ on every push and pull request.
+#
+# These boot the real Flask application against a throwaway SQLite database and stub every
+# external call — no network, no credentials, nothing to configure. They cover the security
+# boundaries that fail SILENTLY when broken: consent gating, permission enforcement,
+# household sharing isolation, document encryption, retention and purge. A regression in any
+# of those does not raise an error, it just quietly shows one person another person's data.
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'      # match the Dockerfile
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run all suites
+        env:
+          # The suites each set their own throwaway database; this only stops the app
+          # picking up a developer .env if one is ever committed by accident.
+          DATABASE_URL: 'sqlite:///ci.db'
+          FLASK_ENV: testing
+        run: python tests/run_all.py
+
+      - name: Report
+        if: failure()
+        run: |
+          echo "A suite failed. Re-run one locally with its own output:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo 'python tests/run_all.py <name> -v' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
