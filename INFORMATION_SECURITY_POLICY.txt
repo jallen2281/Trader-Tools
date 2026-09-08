@@ -402,11 +402,21 @@ is not a control.
                                        consumer data without touching the cluster.
                                        The identity provider used for application
                                        sign-in is also MFA-protected.
-                                       REMAINING: shell access to the nodes and
-                                       cluster credentials have no second factor.
-                                       SSH is key-based and the kubeconfig is a
-                                       long-lived file; possession of either is
-                                       sufficient on its own.
+                                       DONE: password authentication is disabled on
+                                       every cluster node — access is key-only, which
+                                       removes brute-force and credential-stuffing
+                                       against SSH entirely.
+                                       REMAINING: a key on its own is a single
+                                       factor. It counts as two only if the key is
+                                       passphrase-protected (have + know) or
+                                       hardware-backed (have + physical presence);
+                                       an unencrypted key file is sufficient by
+                                       itself to anyone who copies it. The
+                                       kubeconfig is a long-lived file with the same
+                                       property.
+                                       VERIFY: `ssh-keygen -y -f <key> </dev/null`
+                                       printing a public key means the key is NOT
+                                       encrypted.
                                        REMEDIATION: require a hardware-backed SSH
                                        key (ed25519-sk, which needs both the key and
                                        a physical touch) or add a TOTP factor via
