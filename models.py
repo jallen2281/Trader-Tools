@@ -1178,7 +1178,7 @@ class RecurringBill(db.Model):
 
     # occurrences per year, for normalizing any frequency to a monthly figure
     FREQ_PER_YEAR = {'weekly': 52, 'biweekly': 26, 'semimonthly': 24, 'monthly': 12,
-                     'quarterly': 4, 'annual': 1}
+                     'quarterly': 4, 'semiannual': 2, 'annual': 1}
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
@@ -1347,6 +1347,40 @@ class SpendTransaction(db.Model):
             'pending': bool(self.pending), 'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class RecurringDecision(db.Model):
+    """What the user decided about a DETECTED recurring charge.
+
+    Detections themselves are deliberately not stored. They are recomputed from the ledger
+    on every request, because a saved detection goes stale the moment a transaction is
+    added, recategorized or deleted — and a stale "you have an undeclared subscription" is
+    worse than saying nothing. What IS worth keeping is the judgement: dismissed, or already
+    covered by a bill the matcher could not see. Keyed by merchant_key rather than by a
+    detection id, since the key is precisely the part that survives a recompute.
+
+    Per-user, not per-household: one partner deciding a charge is fine should not silence
+    it in the other's overview.
+    """
+    __tablename__ = 'recurring_decisions'
+
+    DECISIONS = ('dismissed', 'linked')
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    merchant_key = db.Column(db.String(120), nullable=False)
+    decision = db.Column(db.String(12), nullable=False)       # dismissed | linked
+    bill_id = db.Column(db.Integer, db.ForeignKey('recurring_bills.id'))
+    note = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (db.UniqueConstraint('user_id', 'merchant_key',
+                                          name='uq_recurring_decision'),)
+
+    def to_dict(self):
+        return {'id': self.id, 'merchant_key': self.merchant_key,
+                'decision': self.decision, 'bill_id': self.bill_id, 'note': self.note}
 
 
 class PlaidItem(db.Model):

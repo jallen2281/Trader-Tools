@@ -33,6 +33,8 @@ SUITES = [
     ('taxprofile', 'household tax profile and withholding'),
     ('retirement', 'Roth/traditional split and employer match'),
     ('matchtiers', 'tiered employer match schedules'),
+    ('recurring', 'recurring-charge detection arithmetic'),
+    ('recurring_api', 'recurring charges: decisions, adoption, sharing'),
     ('overview', 'whole-picture overview and observations'),
     ('household', 'household sharing boundaries'),
     ('entities', 'separate books per entity'),

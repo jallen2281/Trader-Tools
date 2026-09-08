@@ -113,7 +113,8 @@ def purge_user_record(db, user):
     from models import (PaperTrade, TradingSOP, Notification, ThreadVote, ThreadReply,
                         DiscussionThread, CopyTradingFollow, FinanceAccount, Debt,
                         IncomeSource, IncomeEvent, RecurringBill, BudgetCategory,
-                        SpendTransaction, TaxDocument, AIInsight, PlaidItem, TaxProfile,
+                        SpendTransaction, RecurringDecision, TaxDocument, AIInsight,
+                        PlaidItem, TaxProfile,
                         Household, HouseholdMember, Entity)
     uid = user.id
     _detach_household(db, uid)
@@ -124,6 +125,7 @@ def purge_user_record(db, user):
 
     ordered = (
         SpendTransaction,   # -> finance_accounts, tax_documents
+        RecurringDecision,  # -> recurring_bills
         RecurringBill,      # -> debts, finance_accounts
         IncomeEvent,        # -> income_sources
         ThreadVote,         # -> discussion_threads / thread_replies

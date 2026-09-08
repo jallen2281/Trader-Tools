@@ -138,6 +138,22 @@
         <div id="spendBody"><p class="muted">Loading&hellip;</p></div>
     </div>
 
+    <!-- Recurring charges found in the ledger -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Recurring charges <span class="muted" id="recTotal" style="font-size:0.65em;font-weight:400;"></span></h2>
+            <label class="muted" style="font-size:0.8em;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" id="recShowAll" onchange="renderRecurring(REC)"> show settled
+            </label>
+        </div>
+        <p class="muted" style="font-size:0.8em;margin:0 0 12px;line-height:1.5;">
+            Found by looking for repeats in your actual transactions &mdash; not the same
+            thing as the bills you have declared above. Anything here without a bill is
+            missing from the budget floor and the cash-flow calendar.
+        </p>
+        <div id="recurringBody"><p class="muted">Loading&hellip;</p></div>
+    </div>
+
     <!-- Budget -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
@@ -497,16 +513,18 @@
     async function loadBudgeting() {
         const m = spendMonth(), qs = m ? `?month=${m}` : '';
         try {
-            const [bills, budgets, cash, txns] = await Promise.all([
+            const [bills, budgets, cash, txns, rec] = await Promise.all([
                 fetch('/api/finance/bills',{credentials:'same-origin'}).then(r=>r.json()),
                 fetch(`/api/finance/budgets${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
                 fetch('/api/finance/cashflow?days=60',{credentials:'same-origin'}).then(r=>r.json()),
                 fetch(`/api/finance/transactions${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
+                fetch('/api/finance/recurring',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
             ]);
             BILLS = bills.bills||[];
             const mEl=document.getElementById('spendMonth');
             if(mEl && !mEl.value && txns.month) mEl.value = txns.month;
-            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns);
+            REC = rec;
+            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns); renderRecurring(rec);
         } catch(e){ document.getElementById('billsBody').innerHTML='<p class="neg" style="padding:12px;">Could not load budgeting.</p>'; }
     }
     function renderBills(d) {
@@ -523,6 +541,66 @@
                 <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openBill(${JSON.stringify(b)})'>edit</button> <button class="link-btn danger" onclick="delBill(${b.id})">✕</button></td>
             </tr>`).join('')+'</tbody></table></div>';
     }
+    /* ---- recurring charges detected in the ledger ---- */
+    let REC = null;
+    const CADENCE_LABEL = {weekly:'weekly', biweekly:'every 2 weeks', monthly:'monthly',
+                           quarterly:'quarterly', semiannual:'twice a year', annual:'yearly'};
+    function renderRecurring(d) {
+        const el=document.getElementById('recurringBody'), tot=document.getElementById('recTotal');
+        if(!d || !d.charges){ el.innerHTML='<p class="muted" style="padding:12px;">Could not scan transactions.</p>'; tot.textContent=''; return; }
+        const all=d.charges;
+        if(!all.length){
+            tot.textContent='';
+            el.innerHTML='<p class="muted" style="padding:12px;">Nothing repeating yet. A charge needs to appear at least three times, at a steady amount and interval, before it counts &mdash; which keeps the grocery run out of this list.</p>';
+            return;
+        }
+        tot.textContent = `· ${fmt(d.monthly_total)}/mo` + (d.undeclared_count?` · ${d.undeclared_count} not billed (${fmt(d.undeclared_annual)}/yr)`:'');
+        /* Settled = already a declared bill, or explicitly dismissed. Hidden by default so
+           the list stays about what still needs a decision, and shrinks as you work it. */
+        const showAll=document.getElementById('recShowAll').checked;
+        const settled=c=>c.decision==='dismissed'||(c.matched_bill_id&&c.status==='active');
+        const rows=showAll?all:all.filter(c=>!settled(c));
+        if(!rows.length){ el.innerHTML='<p class="muted" style="padding:12px;">Every repeating charge is accounted for. Tick &ldquo;show settled&rdquo; to see all '+all.length+'.</p>'; return; }
+        el.innerHTML='<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Charge</th><th>Pattern</th><th style="text-align:right;">Amount</th><th style="text-align:right;">/yr</th><th>Status</th><th></th></tr></thead><tbody>'+
+            rows.map(c=>{
+                const flags=[];
+                if(c.price_increased) flags.push(`<span class="badge b-inv neg">up ${fmt2(c.price_change)}</span>`);
+                if(c.status==='stopped') flags.push('<span class="badge b-inv">stopped</span>');
+                if(c.decision==='dismissed') flags.push('<span class="badge b-inv">dismissed</span>');
+                const state = c.matched_bill_id ? '<span class="pos">declared</span>'
+                            : c.decision==='linked' ? '<span class="pos">linked</span>'
+                            : '<span class="neg">not a bill</span>';
+                const acts=[];
+                if(!c.matched_bill_id && c.decision!=='linked' && c.status==='active')
+                    acts.push(`<button class="link-btn" onclick="recAdopt('${jsq(c.merchant_key)}')">add as bill</button>`);
+                acts.push(c.decision
+                    ? `<button class="link-btn" onclick="recDecide('${jsq(c.merchant_key)}','')">undo</button>`
+                    : `<button class="link-btn danger" onclick="recDecide('${jsq(c.merchant_key)}','dismissed')">ignore</button>`);
+                return `<tr${settled(c)?' style="opacity:0.6;"':''}>
+                <td><strong>${esc(c.label)}</strong><div class="muted" style="font-size:0.78em;">${esc(c.category)} · ${c.occurrences}× since ${c.first_seen}</div></td>
+                <td>${CADENCE_LABEL[c.cadence]||esc(c.cadence)}<div class="muted" style="font-size:0.78em;">${c.status==='stopped'?'last '+c.last_seen:'next ~'+c.next_expected}</div></td>
+                <td style="text-align:right;">${fmt2(c.typical_amount)}</td>
+                <td style="text-align:right;">${fmt(c.annual_equivalent)}</td>
+                <td>${state} ${flags.join(' ')}</td>
+                <td style="text-align:right;white-space:nowrap;">${acts.join(' ')}</td>
+            </tr>`;}).join('')+'</tbody></table></div>';
+    }
+    /* Merchant keys are our own uppercase A-Z0-9 strings, but they land inside a quoted
+       onclick attribute, so escape anyway rather than trusting that invariant to hold. */
+    function jsq(v){ return String(v).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+    async function recDecide(key, decision) {
+        await fetch('/api/finance/recurring/decision',{method:'POST',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({merchant_key:key, decision:decision})});
+        loadBudgeting(); loadOverview();
+    }
+    async function recAdopt(key) {
+        const r=await fetch('/api/finance/recurring/adopt',{method:'POST',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'}, body:JSON.stringify({merchant_key:key})});
+        if(!r.ok){ alert((await r.json()).error||'Could not add that as a bill.'); return; }
+        loadBudgeting(); loadOverview();
+    }
+
     function renderBudgets(rows) {
         const el=document.getElementById('budgetBody');
         if(!rows.length){ el.innerHTML='<p class="muted" style="padding:12px;">No budget set. Set a monthly limit per category to track it against your actual spend.</p>'; return; }

@@ -69,12 +69,17 @@ check('entity + household state load on boot',
       'loadHouseholdState().then(loadEntities)' in b)
 check('deductible is labelled as reported apart from expenses',
       'apart from total expenses' in b)
+check('recurring-charges card present', 'recurringBody' in b)
+check('its actions are wired', 'recAdopt(' in b and 'recDecide(' in b)
+check('it is fetched alongside the rest of the budgeting load',
+      "fetch('/api/finance/recurring'" in b)
 
 print('\n--- the endpoints those controls call all answer ---')
 for method, path, body in (
         ('GET', '/api/household', None),
         ('GET', '/api/finance/entities', None),
         ('GET', '/api/finance/entities/report', None),
+        ('GET', '/api/finance/recurring', None),
 ):
     r = c.get(path) if method == 'GET' else c.post(path, json=body)
     check('%-5s %-34s -> 200' % (method, path), r.status_code == 200,

@@ -18,6 +18,7 @@ from llm_analyzer import LLMAnalyzer
 from claude_analyzer import ClaudeAnalyzer
 from gemini_analyzer import GeminiAnalyzer
 from tax_analyzer import TaxAnalyzer
+import recurring_detector
 from config import Config
 from datetime import datetime, timedelta, date
 import json
@@ -30,7 +31,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, PlaidItem, TaxDocument, TaxProfile, Household, HouseholdMember, Entity
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, RecurringDecision, PlaidItem, TaxDocument, TaxProfile, Household, HouseholdMember, Entity
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -2201,6 +2202,165 @@ def _finance_cashflow(user_id, days=60, starting_balance=None):
     }
 
 
+# Long enough for an annual charge to repeat at least once, which is the whole reason the
+# annual cadence is detectable at all. A shorter window silently makes yearly renewals
+# invisible — exactly the charges people forget about.
+RECURRING_LOOKBACK_DAYS = 400
+
+
+def _detected_recurring(user_id, today=None):
+    """Recurring charges found in the ledger, with the user's decisions applied.
+
+    Computed live rather than stored. The arithmetic is cheap (one query, one pass), and a
+    persisted detections table would be wrong the moment a transaction was edited.
+    """
+    today = today or date.today()
+    since = today - timedelta(days=RECURRING_LOOKBACK_DAYS)
+    rows = SpendTransaction.query.filter(
+        _visible(SpendTransaction, user_id),
+        SpendTransaction.posted_at >= since).all()
+    charges = recurring_detector.detect(
+        [{'posted_at': t.posted_at, 'amount': float(t.amount or 0),
+          'merchant': t.merchant or t.description, 'category': t.category}
+         for t in rows], today=today)
+
+    bills = RecurringBill.query.filter(_visible(RecurringBill, user_id),
+                                       RecurringBill.active.is_(True)).all()
+    bill_rows = [{'id': b.id, 'name': b.name, 'payee': b.payee} for b in bills]
+    recurring_detector.annotate_matches(charges, bill_rows)
+
+    decided = {d.merchant_key: d for d in
+               RecurringDecision.query.filter_by(user_id=user_id).all()}
+    for ch in charges:
+        d = decided.get(ch['merchant_key'])
+        ch['decision'] = d.decision if d else None
+        # A hand-linked bill wins over the fuzzy name match, which is the point of linking.
+        if d and d.decision == 'linked' and d.bill_id:
+            ch['matched_bill_id'] = d.bill_id
+
+    found = recurring_detector.findings(
+        charges, bill_rows, decisions=dict((k, v.decision) for k, v in decided.items()))
+    active = [c for c in charges if c['status'] == 'active']
+    # A dismissed charge is excluded alongside a linked one: the headline figure has to
+    # agree with the findings list, and findings() already treats both as settled. A
+    # summary that keeps counting what the user told it to drop reads as a broken dismiss.
+    undeclared = [c for c in active
+                  if not c.get('matched_bill_id') and not c.get('decision')]
+    return {
+        'charges': charges,
+        'findings': found,
+        'count': len(charges),
+        'monthly_total': round(sum(c['monthly_equivalent'] for c in active), 2),
+        'annual_total': round(sum(c['annual_equivalent'] for c in active), 2),
+        'undeclared_annual': round(sum(c['annual_equivalent'] for c in undeclared), 2),
+        'undeclared_count': len(undeclared),
+        'lookback_days': RECURRING_LOOKBACK_DAYS,
+    }
+
+
+@app.route('/api/finance/recurring', methods=['GET'])
+@require_api_auth
+def finance_recurring():
+    """Subscriptions and other repeating charges the ledger actually shows."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    return jsonify(_detected_recurring(uid))
+
+
+@app.route('/api/finance/recurring/decision', methods=['POST'])
+@require_api_auth
+def finance_recurring_decision():
+    """Record — or clear — a judgement about a detected charge.
+
+    An empty decision deletes the row rather than storing a third state, so "undo" and
+    "never decided" are the same thing and cannot drift apart.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json() or {}
+    key = (d.get('merchant_key') or '').strip()[:120]
+    if not key:
+        return jsonify({'error': 'merchant_key is required'}), 400
+    row = RecurringDecision.query.filter_by(user_id=uid, merchant_key=key).first()
+    decision = (d.get('decision') or '').strip().lower()
+    if decision in ('', 'none', 'reset'):
+        if row:
+            db.session.delete(row)
+            db.session.commit()
+        return jsonify({'success': True, 'decision': None})
+    if decision not in RecurringDecision.DECISIONS:
+        return jsonify({'error': 'decision must be one of %s, or empty to clear'
+                                 % ', '.join(RecurringDecision.DECISIONS)}), 400
+    bill_id = d.get('bill_id')
+    if bill_id not in (None, ''):
+        try:
+            bill_id = int(bill_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'bill_id must be a number'}), 400
+        # Only a bill this user can actually see — otherwise a decision row becomes a way to
+        # confirm that someone else's bill id exists.
+        if not _get_viewable(RecurringBill, bill_id, uid):
+            return jsonify({'error': 'Bill not found'}), 404
+    else:
+        bill_id = None
+    if not row:
+        row = RecurringDecision(user_id=uid, merchant_key=key, decision=decision)
+        db.session.add(row)
+    row.decision = decision
+    row.bill_id = bill_id
+    row.note = (d.get('note') or None)
+    db.session.commit()
+    return jsonify({'success': True, 'decision': row.to_dict()})
+
+
+@app.route('/api/finance/recurring/adopt', methods=['POST'])
+@require_api_auth
+def finance_recurring_adopt():
+    """Turn a detected charge into a declared RecurringBill.
+
+    This is the payoff of detecting anything: the charge stops being a finding and starts
+    counting in the budget floor and the cash-flow calendar. The bill is created from the
+    observed figures and then linked, so it is never re-reported as undeclared.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    key = ((request.get_json() or {}).get('merchant_key') or '').strip()
+    if not key:
+        return jsonify({'error': 'merchant_key is required'}), 400
+    match = next((c for c in _detected_recurring(uid)['charges']
+                  if c['merchant_key'] == key), None)
+    if not match:
+        return jsonify({'error': 'No detected charge for that merchant'}), 404
+
+    try:
+        next_due = datetime.strptime(match['next_expected'], '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        next_due = None
+    cat = match.get('category') if match.get('category') in BUDGET_CATEGORIES else 'subscriptions'
+    bill = RecurringBill(
+        user_id=uid, name=match['label'][:120], payee=match['label'][:120],
+        category=cat, amount=match['typical_amount'],
+        frequency=(match['cadence'] if match['cadence'] in RecurringBill.FREQ_PER_YEAR
+                   else 'monthly'),
+        next_due_date=next_due, active=True,
+        notes='Created from a detected recurring charge: %d occurrences since %s.'
+              % (match['occurrences'], match['first_seen']))
+    db.session.add(bill)
+    db.session.flush()
+
+    row = RecurringDecision.query.filter_by(user_id=uid, merchant_key=key).first()
+    if not row:
+        row = RecurringDecision(user_id=uid, merchant_key=key, decision='linked')
+        db.session.add(row)
+    row.decision = 'linked'
+    row.bill_id = bill.id
+    db.session.commit()
+    return jsonify({'success': True, 'bill': bill.to_dict()}), 201
+
+
 @app.route('/api/finance/cashflow', methods=['GET'])
 @require_api_auth
 def finance_cashflow():
@@ -2437,6 +2597,12 @@ def _finance_full_picture(user_id, month=None, days=60):
     }
 
     try:
+        picture['recurring'] = _detected_recurring(user_id)
+    except Exception as e:
+        logger.warning('overview: recurring detection failed: %s', e)
+        picture['recurring'] = None
+
+    try:
         picture['cashflow'] = _finance_cashflow(user_id, days=days)
     except Exception as e:
         logger.warning('overview: cashflow failed: %s', e)
@@ -2628,6 +2794,37 @@ def _finance_observations(p):
              'Emergency fund is under three months',
              'Liquid savings cover %.1f months of bills and debt payments.' % runway, runway)
 
+    # --- what the ledger shows repeating, as opposed to what was declared as a bill ---
+    fnd = (p.get('recurring') or {}).get('findings') or []
+    undeclared = [f for f in fnd if f['kind'] == 'undeclared']
+    if undeclared:
+        # Grouped rather than one observation per charge: five separate notes about $6
+        # subscriptions would bury the things that actually matter.
+        _obs(out, 'note', 'undeclared_subscriptions',
+             '%d recurring charge%s not recorded as a bill' % (
+                 len(undeclared), '' if len(undeclared) == 1 else 's'),
+             '%s a year repeats on the ledger but is missing from bills, so the budget floor '
+             'and the cash-flow projection both understate committed spend. Largest: %s.' % (
+                 _money(sum(f.get('amount') or 0 for f in undeclared)),
+                 ', '.join(f['merchant_key'].title() for f in undeclared[:3])),
+             round(sum(f.get('amount') or 0 for f in undeclared), 2))
+    # These are named individually because the merchant IS the finding — "something went up"
+    # is not actionable, "Spotify went up $2" is.
+    for f in [x for x in fnd if x['kind'] == 'price_increase'][:3]:
+        _obs(out, 'warning', 'price_increase:%s' % f['merchant_key'],
+             f['title'], f['detail'], f.get('amount'))
+    for f in [x for x in fnd if x['kind'] == 'renewal_due'][:3]:
+        _obs(out, 'warning', 'renewal_due:%s' % f['merchant_key'],
+             f['title'], f['detail'], f.get('amount'))
+    stopped = [f for f in fnd if f['kind'] == 'stopped']
+    if stopped:
+        _obs(out, 'note', 'stopped_charges',
+             '%d recurring charge%s stopped unexpectedly' % (
+                 len(stopped), '' if len(stopped) == 1 else 's'),
+             'Nothing has posted from %s when one was due. Either it was cancelled, or a '
+             'card expired and the service is about to lapse.' % (
+                 ', '.join(f['merchant_key'].title() for f in stopped[:3])))
+
     # --- data quality: advice on stale or missing data is worse than no advice ---
     for c in (p.get('connections') or []):
         if c.get('status') == 'login_required':
@@ -2752,6 +2949,22 @@ def _overview_facts(p, obs):
         ', '.join(spend.get('sources') or []) or 'none recorded'))
     for m in (spend.get('top_merchants') or [])[:6]:
         L.append("  %s: %s" % (m['merchant'], _money(m['amount'])))
+
+    rec = p.get('recurring') or {}
+    if rec.get('count'):
+        L.append("\n== RECURRING CHARGES DETECTED IN THE LEDGER ==")
+        L.append("%d repeating charges, %s/mo (%s/yr). %d of them are NOT declared as "
+                 "bills, worth %s/yr — those are missing from the budget floor above." % (
+                     rec['count'], _money(rec.get('monthly_total')),
+                     _money(rec.get('annual_total')), rec.get('undeclared_count', 0),
+                     _money(rec.get('undeclared_annual'))))
+        for c in (rec.get('charges') or [])[:10]:
+            L.append("  %s: %s %s, %d times since %s%s%s%s" % (
+                c['label'], _money(c['typical_amount']), c['cadence'], c['occurrences'],
+                c['first_seen'],
+                '' if c.get('matched_bill_id') else ' [NOT a declared bill]',
+                ' [PRICE UP %s]' % _money(c['price_change']) if c.get('price_increased') else '',
+                ' [STOPPED, last %s]' % c['last_seen'] if c['status'] == 'stopped' else ''))
 
     if cash:
         L.append("\n== CASH FLOW (next %d days) ==" % cash.get('days', 60))
