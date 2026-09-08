@@ -1,3 +1,21 @@
+# NOT DEPLOYED AUTOMATICALLY. Editing this file changes nothing on the cluster.
+#
+# The live ArgoCD Application points at helm/trader-tools, not at k8s/ — there is an
+# application-kustomize.yaml that would deploy this directory, but it is not the one in use.
+# So everything here is applied BY HAND:
+#
+#   kubectl apply -n trader-tools -f k8s/backup-cronjob.yaml
+#
+# This is not theoretical. Encryption was added to this script and to backup.sh, committed,
+# and then quietly did nothing for weeks: the CronJob kept running the old ConfigMap and
+# writing plaintext dumps, and the only symptom was a .dump where a .dump.enc was expected.
+# After changing anything here, apply it and then confirm from a real run:
+#
+#   kubectl create job -n trader-tools --from=cronjob/tradertools-db-backup check-$(date +%s)
+#   kubectl logs -n trader-tools job/check-...
+#
+# Requires the tradertools-backup-encryption secret (key BACKUP_ENCRYPTION_KEY) to exist in
+# the namespace; without it the script still runs but writes an UNENCRYPTED dump on purpose.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
