@@ -394,14 +394,29 @@ is not a control.
                                        left custody. Procedure defined in
                                        Section 12.
 
-  MFA ON INFRASTRUCTURE                NOT IMPLEMENTED. Cluster, host and
-                                       database access use key- and file-based
-                                       credentials without a second factor.
-                                       REMEDIATION: enable MFA on the
-                                       source-control account able to deploy to
-                                       production and on the hosting account;
-                                       move off long-lived cluster credentials.
-                                       Target: [DATE].
+  MFA ON INFRASTRUCTURE                PARTIAL.
+                                       DONE: the source-control account is
+                                       MFA-protected. This is a real access path
+                                       rather than a formality — it can deploy to
+                                       production through GitOps, so it reaches
+                                       consumer data without touching the cluster.
+                                       The identity provider used for application
+                                       sign-in is also MFA-protected.
+                                       REMAINING: shell access to the nodes and
+                                       cluster credentials have no second factor.
+                                       SSH is key-based and the kubeconfig is a
+                                       long-lived file; possession of either is
+                                       sufficient on its own.
+                                       REMEDIATION: require a hardware-backed SSH
+                                       key (ed25519-sk, which needs both the key and
+                                       a physical touch) or add a TOTP factor via
+                                       PAM, and disable password authentication.
+                                       Where kubectl is run from a node reached over
+                                       SSH, securing that path secures cluster
+                                       access with it; if a kubeconfig has been
+                                       copied to any machine with weaker access,
+                                       that copy is the weakest link and should be
+                                       removed. Target: [DATE].
 
   DEPENDENCY AND IMAGE SCANNING        IMPLEMENTED 9/7/2026. pip-audit scans the
                                        pinned requirements and Trivy scans the built
