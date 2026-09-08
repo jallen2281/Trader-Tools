@@ -126,6 +126,16 @@ service:
     clientIP:
       timeoutSeconds: 10800
 
+# THIS FILE is the source of truth for the ingress, not the Portainer UI.
+#
+# The live Ingress carries Portainer's io.portainer.kubernetes.ingress.owner label, so it
+# shows up as editable there — but it is rendered from this chart and tracked by ArgoCD,
+# whose sync policy has selfHeal and prune both on. An annotation changed in Portainer is
+# reverted on the next sync, with no error anywhere: the UI accepts the edit, and it
+# silently goes away minutes later. Change it here, commit, and let ArgoCD apply it.
+#
+# (Extra labels Portainer adds are tolerated — ArgoCD only reconciles the fields the chart
+# declares — which is why the app still reports Synced with that label present.)
 ingress:
   enabled: true
   className: "nginx"
