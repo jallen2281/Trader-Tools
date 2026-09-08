@@ -149,16 +149,21 @@
                     <label for="tpRoth">Roth (post-tax)</label>
                     <span class="tp-unit" data-unit="$"><input id="tpRoth" type="number" min="0" step="100" class="tp-in"></span>
                 </div>
-                <div class="tp-f">
-                    <label for="tpMatchRate">Employer matches</label>
-                    <span class="tp-unit" data-unit="%"><input id="tpMatchRate" type="number" min="0" step="5" class="tp-in" placeholder="100"></span>
-                    <span class="hint">100 = dollar for dollar.</span>
+
+            </div>
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
+                    <div class="tp-legend" style="margin:0;">Employer match</div>
+                    <button type="button" class="btn2" onclick="addMatchTier()">+ Add band</button>
                 </div>
-                <div class="tp-f">
-                    <label for="tpMatchLimit">&hellip; up to</label>
-                    <span class="tp-unit" data-unit="%"><input id="tpMatchLimit" type="number" min="0" step="0.5" class="tp-in" placeholder="6"></span>
-                    <span class="hint">of your pay.</span>
+                <div class="muted" style="font-size:0.78em;margin:6px 0 10px;line-height:1.5;">
+                    Plans are usually tiered &mdash; copy the bands straight off your plan
+                    document, in order. &ldquo;First 3% matched 100%, next 2% matched 20%&rdquo;
+                    is two bands. Each band applies only to the pay percentage above the
+                    previous one.
                 </div>
+                <div id="tpTiers"></div>
+                <div class="tp-resolved" id="tpMatchSummary"></div>
             </div>
             <div class="tp-resolved" id="tpResolved"></div>
         </div>
@@ -423,7 +428,6 @@
     const TP = {tpFiling:'filing_status', tpKids:'dependents_under_17', tpOther:'dependents_other',
                 tpRet:'pretax_retirement_annual', tpRetPct:'pretax_retirement_pct',
                 tpRoth:'roth_retirement_annual', tpRothPct:'roth_retirement_pct',
-                tpMatchRate:'employer_match_rate_pct', tpMatchLimit:'employer_match_limit_pct',
                 tpPre:'pretax_other_annual', tpItem:'itemized_deductions',
                 tpCred:'other_credits_annual', tpState:'state', tpRate:'state_tax_rate',
                 tpYtdFed:'ytd_federal_withheld', tpYtdState:'ytd_state_withheld',
@@ -449,6 +453,7 @@
                 if (el) el.value = (p[key] === null || p[key] === undefined) ? '' : p[key];
             }
             setRetMode(p.pretax_retirement_mode || 'amount');
+            renderMatchTiers(p.employer_match_tiers || []);
             document.getElementById('tpMsg').textContent = d.saved
                 ? '' : 'Not set — estimate assumes single, no dependents.';
         } catch(e) {}
@@ -468,9 +473,66 @@
         if (d.retirement_capped) bits.push(`<span class="gain-neg">capped at the ${fmt(d.elective_deferral_limit)} IRS limit</span>`);
         el.innerHTML = bits.length ? bits.join(' &middot; ') : '';
     }
+    /* ---- employer match bands ---- */
+    function renderMatchTiers(tiers) {
+        const box = document.getElementById('tpTiers');
+        if (!box) return;
+        const rows = (tiers && tiers.length) ? tiers : [];
+        box.innerHTML = rows.map((t, i) => `
+            <div class="tp-grid narrow" style="margin-bottom:8px;align-items:end;">
+              <div class="tp-f">
+                <label>${i === 0 ? 'First' : 'Next'} &mdash; % of pay</label>
+                <span class="tp-unit" data-unit="%"><input type="number" min="0" step="0.5"
+                    class="tp-in tp-tier-w" value="${t.employee_pct}" oninput="updateMatchSummary()"></span>
+              </div>
+              <div class="tp-f">
+                <label>matched at</label>
+                <span class="tp-unit" data-unit="%"><input type="number" min="0" step="5"
+                    class="tp-in tp-tier-m" value="${t.match_pct}" oninput="updateMatchSummary()"></span>
+              </div>
+              <div class="tp-f">
+                <label>&nbsp;</label>
+                <button type="button" class="btn2 danger" onclick="removeMatchTier(${i})">Remove</button>
+              </div>
+            </div>`).join('') ||
+            '<div class="muted" style="font-size:0.82em;">No match configured.</div>';
+        updateMatchSummary();
+    }
+    function collectMatchTiers() {
+        const w = [...document.querySelectorAll('.tp-tier-w')];
+        const m = [...document.querySelectorAll('.tp-tier-m')];
+        const out = [];
+        for (let i = 0; i < w.length; i++) {
+            const ep = parseFloat(w[i].value), mp = parseFloat(m[i].value);
+            if (ep > 0) out.push({employee_pct: ep, match_pct: isNaN(mp) ? 0 : mp});
+        }
+        return out;
+    }
+    function addMatchTier() {
+        renderMatchTiers(collectMatchTiers().concat([{employee_pct: 1, match_pct: 100}]));
+    }
+    function removeMatchTier(i) {
+        const t = collectMatchTiers();
+        t.splice(i, 1);
+        renderMatchTiers(t);
+    }
+    /* Live total, so the bands can be checked against the figure the plan document states
+       before saving — a transcription slip is otherwise invisible. */
+    function updateMatchSummary() {
+        const el = document.getElementById('tpMatchSummary');
+        if (!el) return;
+        const t = collectMatchTiers();
+        if (!t.length) { el.textContent = ''; return; }
+        const total = t.reduce((a, x) => a + x.employee_pct * x.match_pct / 100, 0);
+        const need = t.reduce((a, x) => a + x.employee_pct, 0);
+        el.innerHTML = `Full match <b>${(Math.round(total * 100) / 100)}% of pay</b>, ` +
+                       `which needs a <b>${Math.round(need * 100) / 100}%</b> contribution.`;
+    }
+
     async function saveTaxProfile() {
         const msg = document.getElementById('tpMsg');
-        const body = {pretax_retirement_mode: TP_MODE};
+        const body = {pretax_retirement_mode: TP_MODE,
+                      employer_match_tiers: collectMatchTiers()};
         for (const [id, key] of Object.entries(TP)) {
             const el = document.getElementById(id);
             if (!el) continue;

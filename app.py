@@ -2597,12 +2597,12 @@ def _finance_observations(p):
     if tax and (tax.get('unclaimed_match') or 0) > 0:
         _obs(out, 'warning', 'unclaimed_match',
              'Leaving employer 401(k) match on the table',
-             'Contributing %s%% of pay while the employer matches up to %s%%. Raising the '
-             'deferral to the cap would collect roughly %s a year of employer money — the '
-             'highest guaranteed return available anywhere in this picture.' % (
-                 tax.get('total_deferral_pct'),
-                 (p.get('tax_profile') or {}).get('employer_match_limit_pct'),
-                 _money(tax.get('unclaimed_match'))),
+             'Contributing %s%% of pay. Deferring %s%% would fill every match band and '
+             'collect the full %s%% of pay the plan offers — roughly %s a year of employer '
+             'money currently left behind, which is the highest guaranteed return anywhere '
+             'in this picture.' % (
+                 tax.get('total_deferral_pct'), tax.get('deferral_for_full_match'),
+                 tax.get('full_match_pct'), _money(tax.get('unclaimed_match'))),
              tax.get('unclaimed_match'))
     if tax and tax.get('retirement_capped'):
         _obs(out, 'note', 'deferral_capped',
@@ -2773,12 +2773,16 @@ def _overview_facts(p, obs):
                  "Roth (post-tax, does NOT reduce taxable wages) — %s. Other pre-tax %s/yr." % (
                      _money(tax.get('pretax_retirement')), _money(tax.get('roth_retirement')),
                      tax.get('retirement_basis'), _money(prof.get('pretax_other_annual'))))
-        if tax.get('employer_match') or tax.get('unclaimed_match'):
-            L.append("Employer match: %s/yr contributed. %s This is employer money and has "
-                     "no effect on the tax owed, but it is real compensation." % (
-                         _money(tax.get('employer_match')),
-                         ('%s/yr is being left unclaimed by contributing below the match cap.'
-                          % _money(tax.get('unclaimed_match')))
+        if tax.get('match_tiers'):
+            sched = ', '.join('%g%% of pay matched at %g%%' % (t['employee_pct'], t['match_pct'])
+                              for t in tax['match_tiers'])
+            L.append("Employer match schedule (tiered, applied in order): %s. Filling every "
+                     "band needs a %s%% deferral and pays %s%% of pay. Currently deferring "
+                     "%s%%, collecting %s/yr. %s This is employer money: it has no effect on "
+                     "the tax owed, but it is real compensation." % (
+                         sched, tax.get('deferral_for_full_match'), tax.get('full_match_pct'),
+                         tax.get('total_deferral_pct'), _money(tax.get('employer_match')),
+                         ('%s/yr is being left unclaimed.' % _money(tax.get('unclaimed_match')))
                          if tax.get('unclaimed_match') else 'The full match is being captured.'))
         if not p.get('tax_profile_saved'):
             L.append("NOTE: no household profile has been saved — the figures below assume a "
@@ -4226,6 +4230,10 @@ def _income_tax_estimate(user_id, year=None, filing=None):
         'elective_deferral_limit': _401K_ELECTIVE_LIMIT,
         'employer_match': employer_match,
         'unclaimed_match': unclaimed_match,
+        'match_tiers': [{'employee_pct': w, 'match_pct': m} for w, m in prof.match_tiers()],
+        'full_match_pct': prof.full_match_pct(),
+        'deferral_for_full_match': prof.deferral_for_full_match(),
+        'matched_pct': prof.matched_pct(w2_gross),
         'total_deferral_pct': prof.total_deferral_pct(w2_gross),
         'standard_deduction': std, 'itemized_deductions': itemized,
         'deduction_used': deduction,
@@ -4275,6 +4283,20 @@ def finance_tax_profile():
                 setattr(prof, f, max(0, int(d[f] or 0)))
             except (TypeError, ValueError):
                 pass
+    if 'employer_match_tiers' in d:
+        # Normalized and bounded here rather than trusted: a band with a nonsense width or
+        # rate would silently distort every match figure downstream.
+        tiers = []
+        for t in (d.get('employer_match_tiers') or [])[:12]:
+            try:
+                w = round(float(t.get('employee_pct') or 0), 2)
+                m = round(float(t.get('match_pct') or 0), 2)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if 0 < w <= 100 and 0 <= m <= 500:
+                tiers.append({'employee_pct': w, 'match_pct': m})
+        prof.employer_match_tiers = tiers or None
+
     mode = (d.get('pretax_retirement_mode') or '').lower()
     if mode in ('amount', 'percent'):
         prof.pretax_retirement_mode = mode

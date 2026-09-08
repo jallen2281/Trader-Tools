@@ -1488,6 +1488,15 @@ class TaxProfile(db.Model):
     # Employer match. Has NO effect on the tax estimate — it was never part of the
     # employee's wages — but it is real compensation, and contributing below the match
     # threshold is free money left behind, which is worth flagging.
+    #
+    # Real plans are tiered, not a single rate up to a cap: "100% of the first 3%, 20% of
+    # the next 2%, 10% of the next 1%" is an ordinary schedule and cannot be expressed as
+    # one rate. Stored as an ordered list of {employee_pct, match_pct} bands, which is how
+    # the plan document reads ("First 3%", "Next 2%") so it can be transcribed directly.
+    # A simple "100% of the first 6%" is just a single-band schedule.
+    employer_match_tiers = db.Column(JSON)      # [{"employee_pct": 3, "match_pct": 100}, ...]
+    # Legacy flat fields. Retained so existing rows keep working and are treated as a
+    # one-band schedule; the tier list wins when present.
     employer_match_rate_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
     employer_match_limit_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
     pretax_other_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
@@ -1543,25 +1552,68 @@ class TaxProfile(db.Model):
         total = float(self.pretax_retirement_annual or 0) + float(self.roth_retirement_annual or 0)
         return round(total / float(w2_gross) * 100.0, 2)
 
-    def employer_match_annual(self, w2_gross):
-        """What the employer actually contributes. Most plans match a rate on contributions
-        up to a cap ("100% of the first 6%"), so the match stops growing once the deferral
-        reaches the cap."""
+    def match_tiers(self):
+        """The effective match schedule, as an ordered list of (employee_pct, match_pct).
+
+        Falls back to the legacy flat rate/limit pair as a single band, so a profile saved
+        before tiers existed keeps producing the same numbers.
+        """
+        raw = self.employer_match_tiers
+        if isinstance(raw, list) and raw:
+            out = []
+            for t in raw:
+                try:
+                    w = float(t.get('employee_pct') or 0)
+                    m = float(t.get('match_pct') or 0)
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if w > 0:
+                    out.append((w, m))
+            if out:
+                return out
         rate = float(self.employer_match_rate_pct or 0)
         cap = float(self.employer_match_limit_pct or 0)
-        if not rate or not cap or not w2_gross:
+        return [(cap, rate)] if (rate and cap) else []
+
+    def full_match_pct(self):
+        """Employer contribution, as a percent of pay, when every band is filled."""
+        return round(sum(w * m / 100.0 for w, m in self.match_tiers()), 4)
+
+    def deferral_for_full_match(self):
+        """Employee deferral percent needed to fill every band."""
+        return round(sum(w for w, _ in self.match_tiers()), 4)
+
+    def matched_pct(self, w2_gross):
+        """Employer contribution as a percent of pay at the CURRENT deferral.
+
+        Bands are consumed in order, which is what makes a tiered schedule work: the first
+        3% is matched at 100% before any of it counts toward the 20% band.
+        """
+        remaining = self.total_deferral_pct(w2_gross)
+        matched = 0.0
+        for width, rate in self.match_tiers():
+            if remaining <= 0:
+                break
+            take = min(remaining, width)
+            matched += take * rate / 100.0
+            remaining -= take
+        return round(matched, 4)
+
+    def employer_match_annual(self, w2_gross):
+        if not w2_gross:
             return 0.0
-        matched_pct = min(self.total_deferral_pct(w2_gross), cap)
-        return round(float(w2_gross) * matched_pct / 100.0 * rate / 100.0, 2)
+        return round(float(w2_gross) * self.matched_pct(w2_gross) / 100.0, 2)
 
     def unclaimed_match_annual(self, w2_gross):
-        """Employer money left on the table by deferring below the match cap."""
-        cap = float(self.employer_match_limit_pct or 0)
-        rate = float(self.employer_match_rate_pct or 0)
-        if not rate or not cap or not w2_gross:
+        """Employer money left behind by not filling every band.
+
+        Measured against the full schedule rather than a single cap, so a plan whose top
+        band matches at 10% is not reported as if that last percent were worth 100%.
+        """
+        if not w2_gross:
             return 0.0
-        short = max(0.0, cap - self.total_deferral_pct(w2_gross))
-        return round(float(w2_gross) * short / 100.0 * rate / 100.0, 2)
+        shortfall = max(0.0, self.full_match_pct() - self.matched_pct(w2_gross))
+        return round(float(w2_gross) * shortfall / 100.0, 2)
 
     def household_size(self):
         filers = 2 if self.filing_status in ('mfj', 'qss') else 1
@@ -1577,6 +1629,10 @@ class TaxProfile(db.Model):
             'pretax_retirement_pct': float(self.pretax_retirement_pct or 0),
             'roth_retirement_annual': float(self.roth_retirement_annual or 0),
             'roth_retirement_pct': float(self.roth_retirement_pct or 0),
+            'employer_match_tiers': [{'employee_pct': w, 'match_pct': m}
+                                     for w, m in self.match_tiers()],
+            'full_match_pct': self.full_match_pct(),
+            'deferral_for_full_match': self.deferral_for_full_match(),
             'employer_match_rate_pct': float(self.employer_match_rate_pct or 0),
             'employer_match_limit_pct': float(self.employer_match_limit_pct or 0),
             'pretax_other_annual': float(self.pretax_other_annual or 0),
