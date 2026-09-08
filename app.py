@@ -20,6 +20,7 @@ from gemini_analyzer import GeminiAnalyzer
 from tax_analyzer import TaxAnalyzer
 import recurring_detector
 import credit as credit_lib
+import debt_planner
 from config import Config
 from datetime import datetime, timedelta, date
 import json
@@ -2486,6 +2487,66 @@ def finance_delete_credit_score(sid):
     return jsonify({'success': True})
 
 
+def _debt_plan(user_id, extra_monthly=None, start=None):
+    """Payoff simulation for this user's debts, both strategies.
+
+    `extra_monthly` defaults to whatever the user last chose, so the overview and the AI
+    briefing describe the plan they are actually on rather than a hypothetical one.
+    """
+    debts = [d.to_dict() for d in Debt.query.filter(_visible(Debt, user_id)).all()
+             if float(d.balance or 0) > 0]
+    if extra_monthly is None:
+        prof = TaxProfile.query.filter_by(user_id=user_id).first()
+        extra_monthly = float(getattr(prof, 'debt_extra_monthly', 0) or 0) if prof else 0.0
+    cmp_ = debt_planner.compare(debts, extra_monthly, start=start)
+    return {
+        'extra_monthly': round(float(extra_monthly or 0), 2),
+        'debt_count': len(debts),
+        'avalanche': cmp_['avalanche'],
+        'snowball': cmp_['snowball'],
+        'interest_saved_by_avalanche': cmp_['interest_saved_by_avalanche'],
+        'months_saved_by_avalanche': cmp_['months_saved_by_avalanche'],
+        'first_payoff_months': cmp_['first_payoff_months'],
+        'findings': debt_planner.findings(cmp_, debts),
+        'what_if': debt_planner.extra_payment_impact(
+            debts, base_extra=extra_monthly, start=start)['options'],
+    }
+
+
+@app.route('/api/finance/debt-plan', methods=['GET'])
+@require_api_auth
+def finance_debt_plan():
+    """Avalanche vs snowball, and what another $100 a month would buy."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    extra = request.args.get('extra')
+    try:
+        extra = max(float(extra), 0.0) if extra not in (None, '') else None
+    except (TypeError, ValueError):
+        return jsonify({'error': 'extra must be a number'}), 400
+    return jsonify(_debt_plan(uid, extra_monthly=extra))
+
+
+@app.route('/api/finance/debt-plan/extra', methods=['PUT'])
+@require_api_auth
+def finance_set_debt_extra():
+    """Persist the extra-payment figure, so the plan survives a page reload."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        extra = max(float((request.get_json() or {}).get('extra_monthly') or 0), 0.0)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'extra_monthly must be a number'}), 400
+    prof = _tax_profile(uid)
+    if not TaxProfile.query.filter_by(user_id=uid).first():
+        db.session.add(prof)
+    prof.debt_extra_monthly = extra
+    db.session.commit()
+    return jsonify({'success': True, 'extra_monthly': extra})
+
+
 @app.route('/api/finance/cashflow', methods=['GET'])
 @require_api_auth
 def finance_cashflow():
@@ -2755,7 +2816,37 @@ def _finance_full_picture(user_id, month=None, days=60):
     except Exception:
         picture['connections'] = []
 
-    monthly_outflow = picture['bills']['total_monthly'] + picture['outlook'].get('monthly_debt_service', 0)
+    try:
+        picture['debt_plan'] = _debt_plan(user_id)
+    except Exception as e:
+        logger.warning('overview: debt plan failed: %s', e)
+        picture['debt_plan'] = None
+
+    # A debt paid by a RecurringBill is ALREADY inside bills.total_monthly. Adding its
+    # min_payment on top counted a single obligation twice: a $400 car payment recorded both
+    # ways read as $800/mo of outflow and halved the runway. linked_debt_id has existed on
+    # RecurringBill since the budgeting module shipped and nothing had ever read it, so the
+    # app held the information needed to avoid this and did not use it.
+    #
+    # monthly_debt_service is deliberately NOT changed: it is the DTI numerator, and a lender
+    # counts the scheduled minimum on a debt regardless of which envelope pays it. Only the
+    # cash-outflow view needs the deduplicated figure.
+    billed_debt_ids = {b.linked_debt_id for b in bills if b.linked_debt_id}
+    debt_rows = picture['outlook'].get('debts') or []
+    picture['billed_debt_service'] = round(
+        sum(float(d.get('min_payment') or 0) for d in debt_rows
+            if d.get('id') in billed_debt_ids), 2)
+    picture['unbilled_debt_service'] = round(
+        sum(float(d.get('min_payment') or 0) for d in debt_rows
+            if d.get('id') not in billed_debt_ids), 2)
+    # Debts with no bill covering them are invisible to the cash-flow calendar, which only
+    # walks RecurringBills. Named here so the gap can be reported rather than guessed at.
+    picture['debts_without_bill'] = [
+        {'id': d.get('id'), 'name': d.get('name'), 'min_payment': d.get('min_payment')}
+        for d in debt_rows
+        if d.get('id') not in billed_debt_ids and float(d.get('min_payment') or 0) > 0]
+
+    monthly_outflow = picture['bills']['total_monthly'] + picture['unbilled_debt_service']
     picture['runway_months'] = _months_of_runway(picture['liquid_total'], monthly_outflow)
     picture['monthly_outflow'] = round(monthly_outflow, 2)
 
@@ -2925,6 +3016,21 @@ def _finance_observations(p):
              'Emergency fund is under three months',
              'Liquid savings cover %.1f months of bills and debt payments.' % runway, runway)
 
+    # --- debt payoff ---
+    for f in ((p.get('debt_plan') or {}).get('findings') or []):
+        _obs(out, f['severity'], f['key'], f['title'], f['detail'], f.get('amount'))
+    missing = p.get('debts_without_bill') or []
+    if missing:
+        _obs(out, 'note', 'debt_not_in_cashflow',
+             '%d debt payment%s missing from the cash-flow calendar' % (
+                 len(missing), '' if len(missing) == 1 else 's'),
+             '%s of monthly payments on %s are not recorded as bills, so the 60-day '
+             'projection does not show them leaving the account. Linking a bill to the debt '
+             'fixes the calendar without counting the payment twice.' % (
+                 _money(sum(float(m.get('min_payment') or 0) for m in missing)),
+                 ', '.join(m.get('name') or '?' for m in missing[:3])),
+             round(sum(float(m.get('min_payment') or 0) for m in missing), 2))
+
     # --- credit: utilization moves faster than anything else here ---
     for f in ((p.get('credit') or {}).get('findings') or []):
         # credit.findings already carries a severity and a stable key, so it is passed
@@ -3034,8 +3140,10 @@ def _overview_facts(p, obs):
         _money(p.get('liquid_total')), _money(o.get('investment_assets')),
         _money(o.get('total_debt'))))
     if p.get('runway_months') is not None:
-        L.append("Liquid savings cover %.1f months of bills + debt payments (%s/mo outflow)." % (
-            p['runway_months'], _money(p.get('monthly_outflow'))))
+        L.append("Liquid savings cover %.1f months of bills + debt payments (%s/mo outflow; "
+                 "%s of debt service is already inside the bills figure and is not added "
+                 "twice)." % (p['runway_months'], _money(p.get('monthly_outflow')),
+                              _money(p.get('billed_debt_service'))))
 
     L.append("\n== INCOME ==")
     L.append("Gross %s/mo. Debt-only DTI %s; total committed obligations %s of gross "
@@ -3053,10 +3161,15 @@ def _overview_facts(p, obs):
         L.append("  paycheck %s: %s (%s)" % (pd.get('date'), _money(pd.get('amount')), pd.get('source')))
 
     L.append("\n== DEBTS (highest rate first) ==")
-    for d in (o.get('debts') or []):
+    # Capped: this list is already ordered by rate, so the ones past the first dozen are the
+    # cheapest debts in the picture and are the least likely to change any advice.
+    _debts = o.get('debts') or []
+    for d in _debts[:12]:
         L.append("  %s: %s @ %s%%%s, min %s/mo" % (
             d.get('name'), _money(d.get('balance')), d.get('apr'),
             ' (secured)' if d.get('secured') else '', _money(d.get('min_payment'))))
+    if len(_debts) > 12:
+        L.append("  (+%d smaller/cheaper debts)" % (len(_debts) - 12))
     L.append("Debt service %s/mo; interest drain %s/yr at a blended %s%% APR." % (
         _money(o.get('monthly_debt_service')), _money(o.get('annual_interest')),
         o.get('blended_apr')))
@@ -3086,6 +3199,35 @@ def _overview_facts(p, obs):
         ', '.join(spend.get('sources') or []) or 'none recorded'))
     for m in (spend.get('top_merchants') or [])[:6]:
         L.append("  %s: %s" % (m['merchant'], _money(m['amount'])))
+
+    dp = p.get('debt_plan') or {}
+    if dp.get('debt_count'):
+        av, sn = dp.get('avalanche') or {}, dp.get('snowball') or {}
+        L.append("\n== DEBT PAYOFF PLAN ==")
+        L.append("Paying %s/mo total (%s of it above the minimums)." % (
+            _money(av.get('monthly_outlay')), _money(dp.get('extra_monthly'))))
+        if av.get('months'):
+            L.append("Highest-rate-first: debt free in %d months (%s), %s total interest. "
+                     "Smallest-balance-first: %s months, %s interest — a %s difference." % (
+                         av['months'], av.get('debt_free_on'), _money(av.get('total_interest')),
+                         sn.get('months'), _money(sn.get('total_interest')),
+                         _money(dp.get('interest_saved_by_avalanche'))))
+            # One line, not one per debt. The DEBTS section above already carries every
+            # balance, rate and minimum; repeating them here spent a third of this section's
+            # tokens restating the inventory instead of the plan.
+            if len(av.get('order') or []) > 1:
+                L.append("Payoff order: %s." % ' -> '.join(
+                    '%s (month %d)' % (x['name'], x['months']) for x in av['order'][:6]))
+        for d in (av.get('never_pays_off') or []):
+            L.append("  %s NEVER pays off at this payment — the minimum is below the "
+                     "interest it accrues, so the balance grows." % d['name'])
+        # The largest option only: the relationship is monotonic and the model can
+        # interpolate, so three rows of it bought nothing.
+        w = (dp.get('what_if') or [])[-1:]
+        if w:
+            L.append("An extra %s/mo would finish %d months sooner and save %s of interest."
+                     % (_money(w[0]['extra']), w[0]['months_sooner'],
+                        _money(w[0]['interest_saved'])))
 
     cr = p.get('credit') or {}
     if cr.get('series') or (cr.get('utilization') or {}).get('cards'):
@@ -3192,16 +3334,19 @@ def _overview_facts(p, obs):
 
     if obs:
         L.append("\n== FLAGGED BY THE SYSTEM (already computed — do not re-derive) ==")
-        # Criticals and warnings keep their full detail; notes are titles only. A note's
-        # detail almost always restates a figure that is already in a section above, and
-        # this briefing is sent on every AI call — paying twice for the same sentence is the
-        # easiest cost in the feature to avoid. Capped for the same reason: past a dozen or
-        # so findings the model is being handed a list rather than a picture.
+        # Titles only, except for criticals. This section's job is to say WHICH facts the
+        # deterministic layer already judged significant — the judgement is the part the
+        # model cannot re-derive. The supporting numbers are duplication: "Food is over
+        # budget, $555 against a $400 limit" restates a BUDGET vs ACTUAL line word for word,
+        # and "liquid savings cover 0.3 months" appears verbatim under NET WORTH. Carrying
+        # both cost a third of the briefing on every AI call and taught nothing extra.
+        # Criticals keep their detail because acting on one should not require the model to
+        # go looking for the number first.
         for x in obs[:14]:
-            if x['severity'] == 'note':
-                L.append("  [NOTE] %s" % x['title'])
+            if x['severity'] == 'critical':
+                L.append("  [CRITICAL] %s — %s" % (x['title'], x['detail']))
             else:
-                L.append("  [%s] %s — %s" % (x['severity'].upper(), x['title'], x['detail']))
+                L.append("  [%s] %s" % (x['severity'].upper(), x['title']))
         if len(obs) > 14:
             L.append("  (+%d further notes, omitted)" % (len(obs) - 14))
 

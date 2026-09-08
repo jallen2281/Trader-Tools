@@ -167,6 +167,16 @@ check('facts carry the computed findings for the model to trust',
 check('no stray "None" leaked into the briefing', 'None' not in facts,
       [l for l in facts.split('\n') if 'None' in l][:3])
 check('briefing stays compact (under 4k chars)', len(facts) < 4000, len(facts))
+# The flagged list exists to say WHICH facts were judged significant; the numbers behind
+# them are already in the sections above, and carrying both cost a third of the briefing.
+_flagged = facts.split('== FLAGGED')[-1].split(chr(10))[1:]
+check('warnings and notes in the flagged list are titles only',
+      not [l for l in _flagged if l.startswith('  [') and not l.startswith('  [CRITICAL')
+           and ' — ' in l],
+      [l for l in _flagged if ' — ' in l][:2])
+check('but a critical still carries its number, so acting on it needs no lookup',
+      any(l.startswith('  [CRITICAL') and ' — ' in l for l in _flagged),
+      [l for l in _flagged if 'CRITICAL' in l])
 
 print('\n--- deep AI read: gated, and hands back the findings either way ---')
 with app.app_context():

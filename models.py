@@ -1586,6 +1586,10 @@ class TaxProfile(db.Model):
     # one rate. Stored as an ordered list of {employee_pct, match_pct} bands, which is how
     # the plan document reads ("First 3%", "Next 2%") so it can be transcribed directly.
     # A simple "100% of the first 6%" is just a single-band schedule.
+    # Money paid above the debt minimums each month. It lives on the tax profile because
+    # that is already the per-user financial-settings record; a second settings table for
+    # one number would be worse than the slightly odd home.
+    debt_extra_monthly = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
     employer_match_tiers = db.Column(JSON)      # [{"employee_pct": 3, "match_pct": 100}, ...]
     # Legacy flat fields. Retained so existing rows keep working and are treated as a
     # one-band schedule; the tier list wins when present.
@@ -1721,6 +1725,7 @@ class TaxProfile(db.Model):
             'pretax_retirement_pct': float(self.pretax_retirement_pct or 0),
             'roth_retirement_annual': float(self.roth_retirement_annual or 0),
             'roth_retirement_pct': float(self.roth_retirement_pct or 0),
+            'debt_extra_monthly': float(self.debt_extra_monthly or 0),
             'employer_match_tiers': [{'employee_pct': w, 'match_pct': m}
                                      for w, m in self.match_tiers()],
             'full_match_pct': self.full_match_pct(),

@@ -138,6 +138,22 @@
         <div id="spendBody"><p class="muted">Loading&hellip;</p></div>
     </div>
 
+    <!-- Debt payoff plan -->
+    <div class="fin-card" id="debtPlanCard">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Payoff plan <span class="muted" id="planHead" style="font-size:0.62em;font-weight:400;"></span></h2>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:0.85em;">
+                <label class="muted" for="planExtra">extra $/mo</label>
+                <input id="planExtra" type="number" min="0" step="25" class="fin-in" style="width:90px;padding:4px 8px;" onchange="saveExtra()">
+                <select id="planStrategy" class="fin-in" style="padding:4px 8px;" onchange="renderDebtPlan(PLAN)">
+                    <option value="avalanche">highest rate first</option>
+                    <option value="snowball">smallest balance first</option>
+                </select>
+            </div>
+        </div>
+        <div id="debtPlanBody"><p class="muted">Loading&hellip;</p></div>
+    </div>
+
     <!-- Credit health -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:10px;">
@@ -532,19 +548,20 @@
     async function loadBudgeting() {
         const m = spendMonth(), qs = m ? `?month=${m}` : '';
         try {
-            const [bills, budgets, cash, txns, rec, cred] = await Promise.all([
+            const [bills, budgets, cash, txns, rec, cred, plan] = await Promise.all([
                 fetch('/api/finance/bills',{credentials:'same-origin'}).then(r=>r.json()),
                 fetch(`/api/finance/budgets${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
                 fetch('/api/finance/cashflow?days=60',{credentials:'same-origin'}).then(r=>r.json()),
                 fetch(`/api/finance/transactions${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
                 fetch('/api/finance/recurring',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
                 fetch('/api/finance/credit',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
+                fetch('/api/finance/debt-plan',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
             ]);
             BILLS = bills.bills||[];
             const mEl=document.getElementById('spendMonth');
             if(mEl && !mEl.value && txns.month) mEl.value = txns.month;
-            REC = rec; CREDIT = cred;
-            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns); renderRecurring(rec); renderCredit(cred);
+            REC = rec; CREDIT = cred; PLAN = plan;
+            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns); renderRecurring(rec); renderCredit(cred); renderDebtPlan(plan);
         } catch(e){ document.getElementById('billsBody').innerHTML='<p class="neg" style="padding:12px;">Could not load budgeting.</p>'; }
     }
     function renderBills(d) {
@@ -553,7 +570,7 @@
         if(!bills.length){ el.innerHTML='<p class="muted" style="padding:12px;">No bills yet. Add recurring bills to build the cash-flow calendar and budget.</p>'; return; }
         el.innerHTML='<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Bill</th><th>Category</th><th>Next due</th><th style="text-align:right;">Amount</th><th style="text-align:right;">/mo</th><th></th></tr></thead><tbody>'+
             bills.map(b=>`<tr>
-                <td><strong>${esc(b.name)}</strong>${b.payee?`<div class="muted" style="font-size:0.8em;">${esc(b.payee)}</div>`:''}${b.autopay?' <span class="badge b-inv">auto</span>':''}</td>
+                <td><strong>${esc(b.name)}</strong>${b.payee?`<div class="muted" style="font-size:0.8em;">${esc(b.payee)}</div>`:''}${b.autopay?' <span class="badge b-inv">auto</span>':''}${b.linked_debt_id?` <span class="badge b-inv" title="counted once: this payment is not added to debt service again">&#8618; debt</span>`:''}</td>
                 <td>${esc(b.category)}</td>
                 <td>${b.upcoming_due_dates&&b.upcoming_due_dates[0]?b.upcoming_due_dates[0]:'<span class="muted">—</span>'}<div class="muted" style="font-size:0.78em;">${esc(b.frequency)}</div></td>
                 <td style="text-align:right;">${fmt2(b.amount)}</td>
@@ -561,6 +578,68 @@
                 <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openBill(${JSON.stringify(b)})'>edit</button> <button class="link-btn danger" onclick="delBill(${b.id})">✕</button></td>
             </tr>`).join('')+'</tbody></table></div>';
     }
+    /* ---- debt payoff plan ---- */
+    let PLAN = null;
+    function renderDebtPlan(d) {
+        PLAN = d || PLAN;
+        const el=document.getElementById('debtPlanBody'), head=document.getElementById('planHead');
+        const card=document.getElementById('debtPlanCard');
+        if(!d || !d.debt_count){ card.style.display='none'; return; }
+        card.style.display='';
+        const ex=document.getElementById('planExtra');
+        if(ex && document.activeElement!==ex) ex.value = d.extra_monthly||0;
+        const which = document.getElementById('planStrategy').value;
+        const p = d[which] || {}, other = d[which==='avalanche'?'snowball':'avalanche'] || {};
+
+        head.textContent = p.months ? `· debt free ${p.debt_free_on} · ${fmt(p.total_interest)} interest`
+                                    : '· one debt never pays off at this payment';
+        const out=[];
+
+        /* The unpayable case first and loudly: no ordering advice matters while a balance
+           is growing faster than it is being paid. */
+        (p.never_pays_off||[]).forEach(n=>{
+            out.push(`<div class="fire" style="margin-bottom:12px;">&#9888;&#65039; <strong>${esc(n.name)}</strong> never pays off at the current payment &mdash; the minimum is below the interest it accrues, so the balance grows every month (now ${fmt(n.balance)}). It needs a bigger payment, a lower rate, or a balance transfer.</div>`);
+        });
+
+        out.push(`<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;">
+            <div><div class="muted" style="font-size:0.75em;">paying</div><div style="font-size:1.25em;font-weight:600;">${fmt(p.monthly_outlay)}<span class="muted" style="font-size:0.7em;font-weight:400;">/mo</span></div></div>
+            ${p.months?`<div><div class="muted" style="font-size:0.75em;">debt free</div><div style="font-size:1.25em;font-weight:600;">${p.debt_free_on}</div><div class="muted" style="font-size:0.75em;">${p.months} months</div></div>
+            <div><div class="muted" style="font-size:0.75em;">interest you will pay</div><div style="font-size:1.25em;font-weight:600;" class="neg">${fmt(p.total_interest)}</div></div>`:''}
+        </div>`);
+
+        /* State the trade rather than choosing for them. Snowball is worse arithmetic and
+           better psychology; the only useful thing to publish is the size of the gap. */
+        if(d.interest_saved_by_avalanche!=null && d.interest_saved_by_avalanche>0){
+            const fa=d.first_payoff_months||{};
+            out.push(`<p class="muted" style="font-size:0.82em;margin:0 0 14px;line-height:1.55;">
+                Highest-rate-first costs <strong>${fmt(d.interest_saved_by_avalanche)}</strong> less
+                interest${d.months_saved_by_avalanche?` and finishes ${d.months_saved_by_avalanche} month${d.months_saved_by_avalanche===1?'':'s'} sooner`:''}.
+                Smallest-balance-first closes its first account in ${fa.snowball} months instead of ${fa.avalanche},
+                which is worth something if that is what keeps you going. That is the whole trade.
+            </p>`);
+        }
+
+        if((p.order||[]).length){
+            out.push('<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>#</th><th>Debt</th><th>Clears</th><th style="text-align:right;">Months</th><th style="text-align:right;">Interest</th></tr></thead><tbody>'+
+                p.order.map((o,i)=>`<tr><td class="muted">${i+1}</td><td><strong>${esc(o.name)}</strong></td><td>${o.payoff_on}</td><td style="text-align:right;">${o.months}</td><td style="text-align:right;" class="neg">${fmt(o.interest_paid)}</td></tr>`).join('')+
+                '</tbody></table></div>');
+        }
+
+        if((d.what_if||[]).length){
+            out.push('<div style="margin-top:14px;"><div class="muted" style="font-size:0.78em;margin-bottom:6px;">What another payment each month would buy, on top of the '+fmt(d.extra_monthly||0)+' already going in:</div><div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Extra/mo</th><th style="text-align:right;">Sooner by</th><th style="text-align:right;">Interest saved</th><th>Debt free</th></tr></thead><tbody>'+
+                d.what_if.map(w=>`<tr><td>+${fmt(w.extra)}</td><td style="text-align:right;">${w.months_sooner} mo</td><td style="text-align:right;" class="pos">${fmt(w.interest_saved)}</td><td>${w.debt_free_on}</td></tr>`).join('')+
+                '</tbody></table></div></div>');
+        }
+        el.innerHTML = out.join('');
+    }
+    async function saveExtra() {
+        const v = parseFloat(document.getElementById('planExtra').value)||0;
+        await fetch('/api/finance/debt-plan/extra',{method:'PUT',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'}, body:JSON.stringify({extra_monthly:v})});
+        const d = await fetch(`/api/finance/debt-plan?extra=${v}`,{credentials:'same-origin'}).then(r=>r.json());
+        renderDebtPlan(d); loadOverview();
+    }
+
     /* ---- credit health ---- */
     let CREDIT = null;
     const BAND_COLOR = {exceptional:'#16a34a', 'very good':'#22c55e', good:'#84cc16',
@@ -726,10 +805,21 @@
         loadBudgeting(); loadOverview();
     }
 
+    /* The Budget card holds two different things and used to render them identically:
+       categories you set a LIMIT on, and categories money merely moves through (a bill or a
+       transaction lands there, so the rollup returns a row with id: null). Deleting a limit
+       on the second kind removed the BudgetCategory and left the derived row on screen,
+       which is indistinguishable from a delete that silently failed. Splitting them makes
+       the delete visible: the row leaves the list above and reappears in the line below. */
     function renderBudgets(rows) {
         const el=document.getElementById('budgetBody');
-        if(!rows.length){ el.innerHTML='<p class="muted" style="padding:12px;">No budget set. Set a monthly limit per category to track it against your actual spend.</p>'; return; }
-        el.innerHTML = rows.map(r=>{
+        const budgeted = rows.filter(r=>r.id);
+        const tracked  = rows.filter(r=>!r.id && (r.projected_monthly||0) > 0);
+        if(!budgeted.length && !tracked.length){
+            el.innerHTML='<p class="muted" style="padding:12px;">No budget set. Set a monthly limit per category to track it against your actual spend.</p>';
+            return;
+        }
+        let html = budgeted.map(r=>{
             const limit=r.monthly_limit||0, act=r.actual_monthly||0, com=r.committed_monthly||0;
             const proj=r.projected_monthly||0;
             const pct    = limit>0 ? Math.min(100, Math.round(proj/limit*100)) : (proj>0?100:0);
@@ -750,9 +840,19 @@
                   <div style="position:absolute;top:0;left:0;bottom:0;width:${actPct}%;background:${barColor};"></div>
                 </div>
                 <div class="muted" style="font-size:0.76em;margin-top:3px;">spent ${fmt2(act)} &middot; bills ${fmt2(com)}/mo</div>
-                ${r.id?`<div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick='openBudget(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delBudget(${r.id})">&#10005;</button></div>`:`<div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick="openBudget({category:'${esc(r.category)}'})">set limit</button></div>`}
+                <div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick='openBudget(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delBudget(${r.id},'${jsq(r.category)}')">remove limit</button></div>
             </div>`;
         }).join('');
+        if(!budgeted.length) html = '<p class="muted" style="margin:0 0 12px;">No limits set yet. The categories below already have money moving through them &mdash; setting a limit on one starts tracking it here.</p>';
+        if(tracked.length){
+            html += `<div id="budgetTracked" style="margin-top:${budgeted.length?'16px':'0'};padding-top:${budgeted.length?'12px':'0'};border-top:${budgeted.length?'1px solid var(--border)':'none'};">
+                <div class="muted" style="font-size:0.78em;margin-bottom:6px;">Money is moving through these, with no limit set. They are here because a bill or a transaction lands in them &mdash; there is nothing to delete, only a limit to add.</div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;">${tracked.map(r=>
+                    `<button class="link-btn" style="border:1px solid var(--border);border-radius:14px;padding:3px 10px;font-size:0.8em;" onclick="openBudget({category:'${jsq(r.category)}'})">${esc(r.category)} <span class="muted">${fmt(r.projected_monthly)}</span> +</button>`
+                ).join('')}</div>
+            </div>`;
+        }
+        el.innerHTML = html;
     }
     function renderCashflow(c) {
         const el=document.getElementById('cashflowBody');
@@ -788,6 +888,23 @@
               <div style="flex:1;"><label class="fld">Next due date</label><input id="bNext" type="date" class="fin-in" style="width:100%;" value="${e.next_due_date||''}"></div>
               <div style="flex:1;"><label class="fld">Due day (monthly)</label><input id="bDay" type="number" min="1" max="31" class="fin-in" style="width:100%;" value="${e.due_day||''}" placeholder="e.g. 1"></div>
             </div>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;">
+                <label class="fld">Pays down which debt?</label>
+                <select id="bDebt" class="fin-in" style="width:100%;">
+                  <option value="">not a debt payment</option>
+                  ${debts.map(d=>`<option value="${d.id}" ${String(e.linked_debt_id)===String(d.id)?'selected':''}>${esc(d.name)} &mdash; min ${fmt(d.min_payment)}/mo</option>`).join('')}
+                </select>
+                <div class="muted" style="font-size:0.76em;margin-top:3px;line-height:1.45;">Link it and the payment is counted once, not twice: it stays on the cash-flow calendar without being added to debt service again.</div>
+              </div>
+              <div style="flex:1;">
+                <label class="fld">Paid from</label>
+                <select id="bAcct" class="fin-in" style="width:100%;">
+                  <option value="">unspecified</option>
+                  ${accts.map(a=>`<option value="${a.id}" ${String(e.from_account_id)===String(a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}
+                </select>
+              </div>
+            </div>
             <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:0.88em;"><input type="checkbox" id="bAuto" ${e.autopay?'checked':''}> Autopay</label>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:6px;"><button class="btn2 primary" onclick="saveBill(${b?b.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="bMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
@@ -796,7 +913,8 @@
         const g=i=>document.getElementById(i);
         const body={name:g('bName').value.trim(),payee:g('bPayee').value.trim(),category:g('bCat').value,
             amount:parseFloat(g('bAmt').value)||0,frequency:g('bFreq').value,next_due_date:g('bNext').value,
-            due_day:g('bDay').value,autopay:g('bAuto').checked};
+            due_day:g('bDay').value,autopay:g('bAuto').checked,
+            linked_debt_id:g('bDebt').value||null, from_account_id:g('bAcct').value||null};
         if(!body.name){ g('bMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/bills/${id}`:'/api/finance/bills',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail');
@@ -825,7 +943,11 @@
             if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadBudgeting();
         }catch(e){ g('buMsg').textContent=e.message; }
     }
-    async function delBudget(id){ if(!confirm('Remove this budget limit?'))return; await fetch(`/api/finance/budgets/${id}`,{method:'DELETE',credentials:'same-origin'}); loadBudgeting(); }
+    async function delBudget(id, category){
+        if(!confirm(`Remove the spending limit on ${category||'this category'}?\n\nThe category itself stays visible while bills or transactions land in it — only the limit goes.`)) return;
+        await fetch(`/api/finance/budgets/${id}`,{method:'DELETE',credentials:'same-origin'});
+        loadBudgeting();
+    }
 
     /* ---- spending: the ledger that turns Budget into limit-vs-actual ---- */
     /* JSON in a single-quoted onclick: esc() handles the HTML, then the apostrophes in

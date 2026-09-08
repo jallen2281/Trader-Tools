@@ -47,6 +47,8 @@ SUITES = [
     ('matchtiers', 'tiered employer match schedules'),
     ('recurring', 'recurring-charge detection arithmetic'),
     ('recurring_api', 'recurring charges: decisions, adoption, sharing'),
+    ('debtplan', 'payoff simulation: avalanche vs snowball'),
+    ('debt_api', 'bill-to-debt link, dedupe, and the payoff endpoints'),
     ('credit', 'credit utilization and score trends'),
     ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),
