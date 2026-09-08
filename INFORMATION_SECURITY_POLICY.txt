@@ -3,7 +3,7 @@ INFORMATION SECURITY POLICY
 Trader Tools (tradertools.kegbot.net)
 ================================================================================
 
-Version:        1.0
+Version:        1.1
 Effective:      9/7/2026
 Owner:          Jared Allen, sole operator
 Next review:    9/7/2027
@@ -70,9 +70,9 @@ as a fact about the operation's size, not as a control.
 --------------------------------------------------------------------------------
 
 Risks are identified from three sources and recorded with their treatment in
-Section 13:
+Section 14:
 
-  a) REVIEW - the annual review defined in Section 12, and the access review in
+  a) REVIEW - the annual review defined in Section 13, and the access review in
      the Access Control Policy.
   b) CHANGE - every material change to authentication, data handling, third-party
      processors or deployment is assessed for security impact before release.
@@ -112,7 +112,7 @@ AT REST
   radius. The application refuses to begin a bank connection at all if that key
   is absent, rather than storing a token it cannot protect.
 
-  Section 13 records where encryption at rest is NOT yet applied.
+  Section 14 records where encryption at rest is NOT yet applied.
 
 SECRETS
   Credentials are injected at runtime as Kubernetes Secrets. They are never
@@ -187,7 +187,7 @@ failed to initialize reports itself NOT READY and is removed from service, so a
 broken release stalls on healthy previous instances instead of replacing them
 with instances that cannot authenticate anyone.
 
-Section 13 records the gap in log retention verification.
+Section 14 records the gap in log retention verification.
 
 --------------------------------------------------------------------------------
 10. INCIDENT RESPONSE
@@ -208,7 +208,7 @@ On discovering a suspected compromise:
      if any connected-account data was involved.
   5. REMEDIATE AND RECORD. Fix the cause, add a regression test where the cause
      was a software defect, and record the incident and its resolution in
-     Section 14.
+     Section 15.
 
 Contact for security reports: admin@kegbot.net.
 
@@ -220,10 +220,47 @@ The production database is backed up on an automated nightly schedule with a
 30-day retention window, older dumps being pruned automatically.
 
 Restoration has not been rehearsed. An untested backup is an assumption rather
-than a control, and this is recorded as a gap in Section 13.
+than a control, and this is recorded as a gap in Section 14.
 
 --------------------------------------------------------------------------------
-12. POLICY REVIEW
+12. PHYSICAL AND ENVIRONMENTAL SECURITY
+--------------------------------------------------------------------------------
+
+The application does not run on rented cloud capacity. It runs on physical server
+hardware owned outright by the operator, colocated in a commercial datacenter.
+
+This is a meaningful strength for several controls. There is no shared tenancy
+and no hypervisor neighbour. The facility provides the environmental and physical
+controls a colocation contract entails — controlled entry, monitoring, power and
+cooling redundancy — which are stronger than any self-hosted alternative and are
+maintained by an organization whose business it is.
+
+It also creates one risk that renting does not, and it is stated plainly because
+it directly shapes the priorities in Section 14:
+
+  DATACENTER PERSONNEL HAVE PHYSICAL ACCESS TO THE HARDWARE.
+
+  This is inherent to colocation, not a defect of this facility. But physical
+  access to a machine is access to whatever its disks hold in the clear. Software
+  access control is irrelevant to someone holding the drive.
+
+  The operator is also employed by the facility. That is disclosed here because a
+  control framework should record where operational and custodial roles overlap,
+  rather than leave a reviewer to discover it.
+
+The consequence is that encryption at rest is not a defence-in-depth nicety in
+this deployment — it is the control that stands between physical access and
+readable Social Security numbers. It is why the unencrypted tax documents and
+unencrypted backups recorded in Section 14 are treated as the highest-priority
+remediation items in this policy, ahead of items that appear on external
+checklists.
+
+Hardware disposal: drives are securely erased or destroyed before any machine
+leaves the operator's custody, and are never returned to a vendor or resold
+carrying application data.
+
+--------------------------------------------------------------------------------
+13. POLICY REVIEW
 --------------------------------------------------------------------------------
 
 This policy is reviewed at least ANNUALLY, and additionally whenever:
@@ -235,11 +272,11 @@ This policy is reviewed at least ANNUALLY, and additionally whenever:
   - an incident occurs.
 
 Each review confirms that the controls described here still match what the system
-does, that automated enforcement is running, and that Section 13 is current.
-Outcomes are recorded in Section 14, including reviews resulting in no change.
+does, that automated enforcement is running, and that Section 14 is current.
+Outcomes are recorded in Section 15, including reviews resulting in no change.
 
 --------------------------------------------------------------------------------
-13. IMPLEMENTATION STATUS AND KNOWN GAPS
+14. IMPLEMENTATION STATUS AND KNOWN GAPS
 --------------------------------------------------------------------------------
 
 Recorded honestly, and reviewed at every cycle. A policy that omits its own gaps
@@ -287,6 +324,18 @@ is not a control.
                                        REMEDIATION: encrypt dumps at rest.
                                        Target: [DATE].
 
+  FULL-DISK ENCRYPTION ON NODES        NOT VERIFIED. Given that datacenter
+                                       personnel have physical access to owned
+                                       hardware (Section 12), unencrypted volumes
+                                       would expose stored data to anyone with the
+                                       drive. REMEDIATION: confirm whether cluster
+                                       node volumes are encrypted at rest and
+                                       enable it if not. Target: [DATE].
+
+  SECURE HARDWARE DISPOSAL             STATED, NOT YET EXERCISED. No machine has
+                                       left custody. Procedure defined in
+                                       Section 12.
+
   MFA ON INFRASTRUCTURE                NOT IMPLEMENTED. Cluster, host and
                                        database access use key- and file-based
                                        credentials without a second factor.
@@ -326,12 +375,18 @@ is not a control.
                                        fit the term.
 
 --------------------------------------------------------------------------------
-14. REVIEW, INCIDENT AND REVISION HISTORY
+15. REVIEW, INCIDENT AND REVISION HISTORY
 --------------------------------------------------------------------------------
 
   DATE          VERSION   AUTHOR          NOTE
   ------------  --------  --------------  ---------------------------------
   9/7/2026      1.0       Jared Allen     Initial policy defined.
+  9/7/2026      1.1       Jared Allen     Added physical and environmental
+                                          security (Section 12). Hardware is
+                                          owned and colocated, so at-rest
+                                          encryption is reprioritised as the
+                                          control standing between physical
+                                          access and readable data.
 
 ================================================================================
 END OF POLICY
