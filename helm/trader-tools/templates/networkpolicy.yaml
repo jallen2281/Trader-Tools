@@ -11,8 +11,9 @@
 # drops traffic, and the usual symptom is the application unable to reach its own database.
 # Enable deliberately, in this order:
 #
-#   1. Confirm which namespace the ingress controller runs in and set
-#      networkPolicy.ingressNamespace to match. The default below is a guess.
+#   1. Confirm which namespace the ingress controller runs in, and the addresses the
+#      kubelet probes actually arrive from. Both are verified for this cluster and
+#      recorded in values.yaml with the commands used; re-check after a node changes.
 #   2. Set networkPolicy.enabled=true, leaving restrictEgress false. This constrains only
 #      INBOUND traffic, which cannot break the app's outbound calls to Postgres, Plaid,
 #      Yahoo or the AI providers.
@@ -56,10 +57,16 @@ spec:
         - protocol: TCP
           port: {{ .Values.service.targetPort }}
 ---
-# Probes come from the kubelet on the node, not from a pod, so they arrive with the node's
-# IP rather than a pod identity a namespaceSelector could match. Without this the liveness
-# and readiness probes are dropped and every pod is killed as unhealthy — which is the most
+# Probes come from the kubelet on the node, not from a pod, so they arrive with a host
+# address rather than a pod identity a namespaceSelector could match. Without this the
+# liveness and readiness probes are dropped and every pod is killed as unhealthy — the most
 # common way enabling NetworkPolicy takes an application down.
+#
+# It is a LIST, not one CIDR, because the source address is whatever Linux picks for the
+# route to the pod, and that is not necessarily the node's INTERNAL-IP: on this cluster
+# three nodes answer from their public address and one from a 10.0.1.1 it carries on
+# loopback. Widening a single range until it covers every case is how this rule ends up
+# admitting the whole pod network.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -74,8 +81,10 @@ spec:
     - Ingress
   ingress:
     - from:
+        {{- range .Values.networkPolicy.nodeCidrs }}
         - ipBlock:
-            cidr: {{ .Values.networkPolicy.nodeCidr | quote }}
+            cidr: {{ . | quote }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.service.targetPort }}

@@ -41,27 +41,58 @@ plaidKeysSecret: "plaid-keys"
 # its own database. See the comments in templates/networkpolicy.yaml before enabling.
 networkPolicy:
   enabled: false
-  # VERIFY THIS before enabling. On this cluster the controller is the one Portainer
-  # installs, which lands in "ingress" rather than the upstream chart's "ingress-nginx".
-  # Confirm the namespace, and that it carries the label the selector matches on:
-  #   kubectl get pods -A | grep -i ingress
-  #   kubectl get ns ingress -o jsonpath='{.metadata.labels}'
-  # kubernetes.io/metadata.name is set automatically by the API server on 1.21+, so it is
-  # there unless the namespace predates that; if it is missing, label it or the allow rule
-  # matches nothing and every request is dropped at the ingress hop.
+  # VERIFIED on this cluster: MicroK8s' bundled nginx controller, a DaemonSet in the
+  # "ingress" namespace, which carries kubernetes.io/metadata.name=ingress as the selector
+  # below needs. It runs WITHOUT hostNetwork, so its traffic reaches the app with a pod
+  # source address and a namespaceSelector matches it. Re-check with:
+  #   microk8s kubectl get pods -A | grep -i ingress
+  #   microk8s kubectl get ns ingress -o jsonpath='{.metadata.labels}'
   ingressNamespace: "ingress"
   # Liveness and readiness probes come from the kubelet on the node, not from a pod, so
-  # they need an explicit CIDR allowance. Getting this wrong kills every pod as unhealthy.
-  #   kubectl get nodes -o wide      # use the range covering the INTERNAL-IP column
-  nodeCidr: "10.0.0.0/8"
+  # they need an explicit allowance. Getting this wrong kills every pod as unhealthy.
+  #
+  # The INTERNAL-IP column is NOT a reliable answer. The source is whatever Linux picks
+  # for the route to the pod, so ask the kernel directly, on EVERY node:
+  #   microk8s kubectl get pods -n trader-tools -o wide     # a pod on that node
+  #   ip route get <that pod IP>                            # read the "src" field
+  # On this cluster that gives the node's public address on node1-3, and 10.0.1.1 on
+  # node4, which carries it on loopback and prefers it as the source.
+  #
+  # Listed as individual hosts rather than a summarised block. A /29 here does not line up
+  # with the addresses in use (the API server rejects 69.16.214.140/29 as ambiguous, since
+  # a /29 boundary falls on .136 or .144), and rounding outward to a /27 would admit
+  # thirty-two addresses to buy nothing. Adding a node means adding a line, which is the
+  # right failure mode for a security control: visible, not silent.
+  #
+  # Do NOT widen this to 10.0.0.0/8 to cover the node4 case. That range contains the pod
+  # CIDR 10.1.0.0/16, so it would admit every pod in the cluster and make the default-deny
+  # above purely decorative.
+  #
+  # node1 and node4 were confirmed directly with `ip route get`. node2 and node3 were not
+  # reachable over SSH at the time and are listed from their INTERNAL-IP on the assumption
+  # they behave like node1 — node4's loopback address is the outlier here, not the rule.
+  # Confirm them before trusting this in anger; the symptom of getting it wrong is those
+  # nodes' pods failing their probes and restarting.
+  nodeCidrs:
+    - "69.16.214.143/32"    # node1, verified
+    - "69.16.214.144/32"    # node2, from INTERNAL-IP
+    - "69.16.214.145/32"    # node3, from INTERNAL-IP
+    - "69.16.214.146/32"    # node4
+    - "10.0.1.1/32"         # node4 again: it prefers this loopback address as the source
   # Only used when restrictEgress is true.
   restrictEgress: false
+  # VERIFIED: the supabase namespace exists and holds the Postgres this app connects to.
   databaseNamespace: "supabase"
   # Pod and service ranges, excluded from the "allow everything external" egress rule so it
   # does not quietly re-permit lateral movement inside the cluster.
+  # VERIFIED from the apiserver args on this cluster:
+  #   --cluster-cidr=10.1.0.0/16              (pods)
+  #   --service-cluster-ip-range=10.152.183.0/24
+  # These were k3s defaults before and matched nothing here, which would have left the
+  # "everything external" egress rule quietly permitting the whole cluster.
   clusterCidrs:
-    - "10.42.0.0/16"
-    - "10.43.0.0/16"
+    - "10.1.0.0/16"
+    - "10.152.183.0/24"
 
 serviceAccount:
   create: true
