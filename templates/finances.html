@@ -138,6 +138,15 @@
         <div id="spendBody"><p class="muted">Loading&hellip;</p></div>
     </div>
 
+    <!-- Credit health -->
+    <div class="fin-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Credit <span class="muted" id="creditHead" style="font-size:0.65em;font-weight:400;"></span></h2>
+            <button class="btn2 primary" onclick="openScore()">+ Record score</button>
+        </div>
+        <div id="creditBody"><p class="muted">Loading&hellip;</p></div>
+    </div>
+
     <!-- Recurring charges found in the ledger -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:10px;">
@@ -468,12 +477,14 @@
             <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Balance $</label><input id="dBal" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.balance||0}"></div>
             <div style="flex:1;"><label class="fld">APR %</label><input id="dApr" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.apr||0}"></div>
             <div style="flex:1;"><label class="fld">Min pmt/mo $</label><input id="dPmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.min_payment||0}"></div></div>
+            <div id="dLimitBox"><label class="fld">Credit limit $ <span class="muted">(cards only &mdash; drives utilization, about a third of a credit score)</span></label><input id="dLimit" type="number" step="100" class="fin-in" style="width:100%;" value="${e.credit_limit==null?'':e.credit_limit}" placeholder="leave blank if not known"></div>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveDebt(${d?d.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="dMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
     }
     async function saveDebt(id) {
         const body = {name:document.getElementById('dName').value.trim(),lender:document.getElementById('dLender').value.trim(),type:document.getElementById('dType').value,
-            balance:parseFloat(document.getElementById('dBal').value)||0,apr:parseFloat(document.getElementById('dApr').value)||0,min_payment:parseFloat(document.getElementById('dPmt').value)||0,secured:document.getElementById('dSecured').checked};
+            balance:parseFloat(document.getElementById('dBal').value)||0,apr:parseFloat(document.getElementById('dApr').value)||0,min_payment:parseFloat(document.getElementById('dPmt').value)||0,secured:document.getElementById('dSecured').checked,
+            credit_limit:(document.getElementById('dLimit').value===''?null:parseFloat(document.getElementById('dLimit').value))};
         if(!body.name){ document.getElementById('dMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/debts/${id}`:'/api/finance/debts',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail');
@@ -513,18 +524,19 @@
     async function loadBudgeting() {
         const m = spendMonth(), qs = m ? `?month=${m}` : '';
         try {
-            const [bills, budgets, cash, txns, rec] = await Promise.all([
+            const [bills, budgets, cash, txns, rec, cred] = await Promise.all([
                 fetch('/api/finance/bills',{credentials:'same-origin'}).then(r=>r.json()),
                 fetch(`/api/finance/budgets${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
                 fetch('/api/finance/cashflow?days=60',{credentials:'same-origin'}).then(r=>r.json()),
                 fetch(`/api/finance/transactions${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
                 fetch('/api/finance/recurring',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
+                fetch('/api/finance/credit',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
             ]);
             BILLS = bills.bills||[];
             const mEl=document.getElementById('spendMonth');
             if(mEl && !mEl.value && txns.month) mEl.value = txns.month;
-            REC = rec;
-            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns); renderRecurring(rec);
+            REC = rec; CREDIT = cred;
+            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns); renderRecurring(rec); renderCredit(cred);
         } catch(e){ document.getElementById('billsBody').innerHTML='<p class="neg" style="padding:12px;">Could not load budgeting.</p>'; }
     }
     function renderBills(d) {
@@ -541,6 +553,111 @@
                 <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openBill(${JSON.stringify(b)})'>edit</button> <button class="link-btn danger" onclick="delBill(${b.id})">✕</button></td>
             </tr>`).join('')+'</tbody></table></div>';
     }
+    /* ---- credit health ---- */
+    let CREDIT = null;
+    const BAND_COLOR = {exceptional:'#16a34a', 'very good':'#22c55e', good:'#84cc16',
+                        fair:'#f59e0b', poor:'#ef4444'};
+    function utilColor(pct){ return pct>=50?'var(--neg,#ef4444)':(pct>=30?'#f59e0b':'#22c55e'); }
+    function renderCredit(d) {
+        const el=document.getElementById('creditBody'), head=document.getElementById('creditHead');
+        if(!d || !d.utilization){ el.innerHTML='<p class="muted" style="padding:12px;">Could not load credit.</p>'; head.textContent=''; return; }
+        const u=d.utilization, out=[];
+        head.textContent = d.headline ? `· ${d.headline} (${d.headline_band})`
+                         : (u.pct!=null ? `· ${u.pct}% utilization` : '');
+
+        /* Utilization first: it is the part the person can actually move this month. */
+        if(u.pct!=null){
+            out.push(`<div style="margin-bottom:6px;">
+              <div style="display:flex;justify-content:space-between;font-size:0.88em;margin-bottom:3px;">
+                <span><strong>Revolving utilization</strong> <span class="muted">${fmt(u.total_balance)} of ${fmt(u.total_limit)}</span></span>
+                <span style="color:${utilColor(u.pct)};font-weight:600;">${u.pct}%</span>
+              </div>
+              <div style="background:var(--bg-tertiary,#eee);border-radius:6px;height:8px;overflow:hidden;position:relative;">
+                <div style="position:absolute;top:0;left:0;bottom:0;width:${Math.min(100,u.pct)}%;background:${utilColor(u.pct)};"></div>
+                <div style="position:absolute;top:0;left:30%;bottom:0;width:1px;background:var(--text-secondary,#888);opacity:0.7;"></div>
+              </div>
+              <div class="muted" style="font-size:0.76em;margin-top:3px;">the mark is 30%, where the scoring penalty starts${d.paydown_to_30>0?` &middot; <strong>${fmt(d.paydown_to_30)}</strong> off the balance clears it`:''}</div>
+            </div>`);
+            out.push('<div style="overflow-x:auto;margin-bottom:14px;"><table class="fin-table"><thead><tr><th>Card</th><th style="text-align:right;">Balance</th><th style="text-align:right;">Limit</th><th style="text-align:right;">Used</th></tr></thead><tbody>'+
+                u.cards.map(c=>`<tr><td>${esc(c.name)}</td><td style="text-align:right;">${fmt2(c.balance)}</td><td style="text-align:right;">${fmt2(c.credit_limit)}</td><td style="text-align:right;color:${utilColor(c.pct)};">${c.pct}%</td></tr>`).join('')+
+                (u.cards_without_limit||[]).map(c=>`<tr style="opacity:0.7;"><td>${esc(c.name)}</td><td style="text-align:right;">${fmt2(c.balance)}</td><td colspan="2" style="text-align:right;" class="muted">no limit recorded &mdash; outside the ratio</td></tr>`).join('')+
+                '</tbody></table></div>');
+        } else if((u.cards_without_limit||[]).length){
+            out.push('<p class="muted" style="margin:0 0 14px;">No credit limits recorded, so utilization cannot be worked out. Add the limit to each card under Debts &mdash; it is on the statement.</p>');
+        }
+
+        /* One block per bureau/scale. They are never merged into a single line: two
+           bureaus disagreeing by 30 points is normal, and one chart would read as a crash. */
+        if(d.series.length){
+            out.push('<div class="fin-grid" style="gap:10px;">'+d.series.map(sr=>{
+                const arrow = sr.change==null?'' : (sr.change>0?`<span class="pos">&#9650; ${sr.change}</span>`:(sr.change<0?`<span class="neg">&#9660; ${Math.abs(sr.change)}</span>`:'<span class="muted">no change</span>'));
+                return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+                  <div class="muted" style="font-size:0.72em;text-transform:uppercase;letter-spacing:0.04em;">${esc(sr.bureau)} &middot; ${esc(sr.scale_label)}</div>
+                  <div style="display:flex;align-items:baseline;gap:8px;margin:2px 0 4px;">
+                    <span style="font-size:1.7em;font-weight:600;color:${BAND_COLOR[sr.band]||'inherit'};">${sr.latest}</span>
+                    <span style="font-size:0.85em;">${esc(sr.band)}</span> ${arrow}
+                  </div>
+                  ${sparkline(sr.history)}
+                  <div class="muted" style="font-size:0.75em;margin-top:4px;">read ${sr.latest_on}${sr.readings>1?` &middot; ${sr.readings} readings since ${sr.first_on}${sr.change_all_time!=null?` (${sr.change_all_time>0?'+':''}${sr.change_all_time})`:''}`:''}</div>
+                </div>`;}).join('')+'</div>');
+            if(d.series.length>1) out.push('<p class="muted" style="font-size:0.76em;margin:8px 0 0;">Scores from different bureaus and models are not comparable to each other &mdash; read each one against its own history, not against the others.</p>');
+        } else {
+            out.push('<p class="muted" style="margin:0;">No score recorded yet. One reading a month from your card issuer or a free app is enough to see whether paying a card down is working.</p>');
+        }
+        if(d.readings.length) out.push('<div style="text-align:right;margin-top:8px;"><button class="link-btn" onclick="openScoreHistory()">history</button></div>');
+        el.innerHTML = out.join('');
+    }
+    /* Inline SVG rather than a chart library: a dozen points needs no dependency, and this
+       renders identically with scripts blocked. */
+    function sparkline(history) {
+        if(!history || history.length<2) return '';
+        const vals=history.map(h=>h.score), lo=Math.min(...vals), hi=Math.max(...vals);
+        const span=(hi-lo)||1, W=180, H=28;
+        const pts=vals.map((v,i)=>`${(i/(vals.length-1)*W).toFixed(1)},${(H-(v-lo)/span*H).toFixed(1)}`).join(' ');
+        return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block;"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.65" vector-effect="non-scaling-stroke"/></svg>`;
+    }
+    function openScore() {
+        const d=CREDIT||{bureaus:['equifax','experian','transunion','other'],scales:[]};
+        const today=new Date().toISOString().slice(0,10);
+        showModal(`<h2 style="margin:0 0 4px;">Record a credit score</h2>
+            <p class="muted" style="font-size:0.82em;margin:0 0 10px;">Which bureau and which model matter: the same person scores differently on each, so a reading is only comparable to earlier readings of the same pair.</p>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Score</label><input id="csScore" type="number" min="250" max="900" class="fin-in" style="width:100%;" placeholder="e.g. 742"></div>
+              <div style="flex:1;"><label class="fld">Date read</label><input id="csDate" type="date" class="fin-in" style="width:100%;" value="${today}" max="${today}"></div>
+            </div>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Bureau</label><select id="csBureau" class="fin-in" style="width:100%;">${(d.bureaus||[]).map(b=>`<option value="${b}">${b}</option>`).join('')}</select></div>
+              <div style="flex:1;"><label class="fld">Model</label><select id="csScale" class="fin-in" style="width:100%;">${(d.scales||[]).map(x=>`<option value="${x.value}">${x.label}</option>`).join('')}</select></div>
+            </div>
+            <label class="fld">Where from (optional)</label><input id="csSource" class="fin-in" style="width:100%;" placeholder="e.g. Chase statement, Credit Karma">
+            <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveScore()">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="csMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function saveScore() {
+        const msg=document.getElementById('csMsg');
+        const r=await fetch('/api/finance/credit/scores',{method:'POST',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({score:document.getElementById('csScore').value,
+                                 as_of:document.getElementById('csDate').value,
+                                 bureau:document.getElementById('csBureau').value,
+                                 scale:document.getElementById('csScale').value,
+                                 source:document.getElementById('csSource').value})});
+        if(!r.ok){ msg.textContent=(await r.json()).error||'Could not save.'; msg.className='neg'; return; }
+        closeModal(); loadBudgeting(); loadOverview();
+    }
+    function openScoreHistory() {
+        const rows=(CREDIT&&CREDIT.readings)||[];
+        showModal(`<h2 style="margin:0 0 8px;">Score history</h2>
+            <div style="max-height:50vh;overflow-y:auto;"><table class="fin-table"><thead><tr><th>Date</th><th>Bureau</th><th>Model</th><th style="text-align:right;">Score</th><th></th></tr></thead><tbody>
+            ${rows.map(x=>`<tr><td>${x.as_of}</td><td>${esc(x.bureau)}</td><td>${esc(x.scale)}</td><td style="text-align:right;"><strong>${x.score}</strong></td><td style="text-align:right;"><button class="link-btn danger" onclick="delScore(${x.id})">&#10005;</button></td></tr>`).join('')}
+            </tbody></table></div>
+            <div style="margin-top:14px;"><button class="btn2" onclick="closeModal()">Done</button></div>`);
+    }
+    async function delScore(id) {
+        if(!confirm('Remove this reading?')) return;
+        await fetch(`/api/finance/credit/scores/${id}`,{method:'DELETE',credentials:'same-origin'});
+        closeModal(); loadBudgeting(); loadOverview();
+    }
+
     /* ---- recurring charges detected in the ledger ---- */
     let REC = null;
     const CADENCE_LABEL = {weekly:'weekly', biweekly:'every 2 weeks', monthly:'monthly',

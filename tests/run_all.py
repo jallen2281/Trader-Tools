@@ -18,6 +18,17 @@ import subprocess
 import sys
 import time
 
+# The decode side of this was already handled per-suite; this is the encode side. A failing
+# suite's captured output contains the application's own log glyphs, which the Windows
+# console codec cannot represent — and printing them crashed the runner exactly when its
+# output mattered most. Replace rather than switch to UTF-8, so the console keeps its own
+# encoding and only the unrepresentable characters degrade.
+try:
+    sys.stdout.reconfigure(errors='replace')
+    sys.stderr.reconfigure(errors='replace')
+except (AttributeError, ValueError):
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
@@ -35,6 +46,8 @@ SUITES = [
     ('matchtiers', 'tiered employer match schedules'),
     ('recurring', 'recurring-charge detection arithmetic'),
     ('recurring_api', 'recurring charges: decisions, adoption, sharing'),
+    ('credit', 'credit utilization and score trends'),
+    ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),
     ('household', 'household sharing boundaries'),
     ('entities', 'separate books per entity'),

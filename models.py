@@ -985,12 +985,25 @@ class Debt(db.Model):
     apr = db.Column(db.Numeric(6, 3, asdecimal=False), default=0)   # annual %, e.g. 24.490
     min_payment = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
     secured = db.Column(db.Boolean, default=False)  # backed by collateral (lien)
+    # Revolving credit line. Only meaningful on a card, and the reason it is here rather
+    # than derived: utilization is roughly a third of a credit score and cannot be computed
+    # from a balance alone. NULL means "not recorded" and is treated as unknown rather than
+    # as zero — see credit.utilization, where the difference is the whole point.
+    credit_limit = db.Column(db.Numeric(15, 2, asdecimal=False))
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def monthly_interest(self):
         return round(float(self.balance or 0) * float(self.apr or 0) / 100.0 / 12.0, 2)
+
+    def utilization_pct(self):
+        """Percent of this line in use, or None when there is no line to measure against.
+        None rather than 0 so a card with no limit recorded never reads as a healthy one."""
+        limit = float(self.credit_limit or 0)
+        if limit <= 0:
+            return None
+        return round(max(float(self.balance or 0), 0.0) / limit * 100, 1)
 
     def to_dict(self):
         return {
@@ -999,8 +1012,53 @@ class Debt(db.Model):
             'id': self.id, 'name': self.name, 'type': self.type, 'lender': self.lender,
             'balance': float(self.balance or 0), 'apr': float(self.apr or 0),
             'min_payment': float(self.min_payment or 0), 'secured': bool(self.secured),
+            'credit_limit': float(self.credit_limit) if self.credit_limit is not None else None,
+            'utilization_pct': self.utilization_pct(),
             'monthly_interest': self.monthly_interest(), 'notes': self.notes,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class CreditScore(db.Model):
+    """One credit score reading, as reported by one bureau on one scale.
+
+    Stored as a reading rather than a current value, because a single number says almost
+    nothing: the useful questions are which way it is moving and how far. Bureau and scale
+    are part of the identity of the reading — a VantageScore 3.0 from a free app and a
+    FICO 8 from a card issuer routinely differ by tens of points for the same person on the
+    same day, so trends are only ever computed within a (bureau, scale) series. See
+    credit.series, which enforces that.
+    """
+    __tablename__ = 'credit_scores'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
+    # members see it; 'edit' lets them change it. Per-record rather than all-or-nothing,
+    # because "my spouse sees the joint checking but not my personal card" is the normal
+    # case, not the exotic one.
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    as_of = db.Column(db.Date, nullable=False, index=True)
+    score = db.Column(db.Integer, nullable=False)
+    bureau = db.Column(db.String(15), default='other')   # equifax|experian|transunion|other
+    scale = db.Column(db.String(12), default='other')    # fico8|fico9|fico2|vantage3|...
+    source = db.Column(db.String(80))                    # where it was read: issuer, app
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # One reading per bureau/scale per day. Re-checking the same score twice in an
+    # afternoon should not create a second point on the chart.
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'as_of', 'bureau', 'scale', name='uq_score_reading'),
+        db.Index('ix_score_user_date', 'user_id', 'as_of'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'share_level': self.share_level or 'none',
+            'as_of': self.as_of.isoformat() if self.as_of else None,
+            'score': self.score, 'bureau': self.bureau, 'scale': self.scale,
+            'source': self.source, 'notes': self.notes,
         }
 
 

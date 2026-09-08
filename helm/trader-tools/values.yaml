@@ -41,9 +41,15 @@ plaidKeysSecret: "plaid-keys"
 # its own database. See the comments in templates/networkpolicy.yaml before enabling.
 networkPolicy:
   enabled: false
-  # VERIFY THIS before enabling — the default is a guess. Find it with:
+  # VERIFY THIS before enabling. On this cluster the controller is the one Portainer
+  # installs, which lands in "ingress" rather than the upstream chart's "ingress-nginx".
+  # Confirm the namespace, and that it carries the label the selector matches on:
   #   kubectl get pods -A | grep -i ingress
-  ingressNamespace: "ingress-nginx"
+  #   kubectl get ns ingress -o jsonpath='{.metadata.labels}'
+  # kubernetes.io/metadata.name is set automatically by the API server on 1.21+, so it is
+  # there unless the namespace predates that; if it is missing, label it or the allow rule
+  # matches nothing and every request is dropped at the ingress hop.
+  ingressNamespace: "ingress"
   # Liveness and readiness probes come from the kubelet on the node, not from a pod, so
   # they need an explicit CIDR allowance. Getting this wrong kills every pod as unhealthy.
   #   kubectl get nodes -o wide      # use the range covering the INTERNAL-IP column

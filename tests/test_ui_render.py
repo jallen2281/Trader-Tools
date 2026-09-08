@@ -69,6 +69,9 @@ check('entity + household state load on boot',
       'loadHouseholdState().then(loadEntities)' in b)
 check('deductible is labelled as reported apart from expenses',
       'apart from total expenses' in b)
+check('credit card present', 'creditBody' in b)
+check('the score modal is wired', 'openScore()' in b and 'saveScore(' in b)
+check('a credit limit can be entered on a debt', "id=\"dLimit\"" in b)
 check('recurring-charges card present', 'recurringBody' in b)
 check('its actions are wired', 'recAdopt(' in b and 'recDecide(' in b)
 check('it is fetched alongside the rest of the budgeting load',
@@ -80,6 +83,7 @@ for method, path, body in (
         ('GET', '/api/finance/entities', None),
         ('GET', '/api/finance/entities/report', None),
         ('GET', '/api/finance/recurring', None),
+        ('GET', '/api/finance/credit', None),
 ):
     r = c.get(path) if method == 'GET' else c.post(path, json=body)
     check('%-5s %-34s -> 200' % (method, path), r.status_code == 200,

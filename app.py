@@ -19,6 +19,7 @@ from claude_analyzer import ClaudeAnalyzer
 from gemini_analyzer import GeminiAnalyzer
 from tax_analyzer import TaxAnalyzer
 import recurring_detector
+import credit as credit_lib
 from config import Config
 from datetime import datetime, timedelta, date
 import json
@@ -31,7 +32,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, RecurringDecision, PlaidItem, TaxDocument, TaxProfile, Household, HouseholdMember, Entity
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, RecurringDecision, CreditScore, PlaidItem, TaxDocument, TaxProfile, Household, HouseholdMember, Entity
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -696,6 +697,17 @@ def finance_modify_account(aid):
     return jsonify(a.to_dict())
 
 
+def _opt_float(v):
+    """A number, or None for anything blank. Distinguishing "not recorded" from zero is
+    what lets a missing credit limit be reported instead of silently flattering a ratio."""
+    if v in (None, ''):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.route('/api/finance/debts', methods=['GET'])
 @require_api_auth
 def finance_list_debts():
@@ -720,7 +732,8 @@ def finance_create_debt():
     x = Debt(user_id=uid, name=name[:120], type=t if t in DEBT_TYPES else 'other',
              lender=(d.get('lender') or None), balance=float(d.get('balance') or 0),
              apr=float(d.get('apr') or 0), min_payment=float(d.get('min_payment') or 0),
-             secured=bool(d.get('secured')), notes=(d.get('notes') or None))
+             secured=bool(d.get('secured')), notes=(d.get('notes') or None),
+             credit_limit=_opt_float(d.get('credit_limit')))
     db.session.add(x)
     db.session.commit()
     return jsonify(x.to_dict()), 201
@@ -753,6 +766,9 @@ def finance_modify_debt(did):
             setattr(x, f, float(d.get(f) or 0))
     if 'secured' in d:
         x.secured = bool(d.get('secured'))
+    if 'credit_limit' in d:
+        # Blank clears it back to unknown, which is a different state from a zero limit.
+        x.credit_limit = _opt_float(d.get('credit_limit'))
     db.session.commit()
     return jsonify(x.to_dict())
 
@@ -1398,6 +1414,7 @@ SHAREABLE_MODELS = {
     'budget': ('BudgetCategory', None),
     'transaction': ('SpendTransaction', None),
     'document': ('TaxDocument', None),
+    'credit_score': ('CreditScore', None),
 }
 
 
@@ -1405,7 +1422,8 @@ def _shareable_class(kind):
     name = (SHAREABLE_MODELS.get(kind) or (None, None))[0]
     return {'FinanceAccount': FinanceAccount, 'Debt': Debt, 'IncomeSource': IncomeSource,
             'RecurringBill': RecurringBill, 'BudgetCategory': BudgetCategory,
-            'SpendTransaction': SpendTransaction, 'TaxDocument': TaxDocument}.get(name)
+            'SpendTransaction': SpendTransaction, 'TaxDocument': TaxDocument,
+            'CreditScore': CreditScore}.get(name)
 
 
 @app.route('/api/household/share/<kind>/<int:rid>', methods=['PUT'])
@@ -2361,6 +2379,113 @@ def finance_recurring_adopt():
     return jsonify({'success': True, 'bill': bill.to_dict()}), 201
 
 
+# Which debts count as revolving credit for utilization. Deliberately just cards: a HELOC
+# is technically revolving, but scoring models generally treat it alongside mortgage debt
+# rather than in the bankcard ratio, and folding one in would swamp the figure with a
+# balance that does not behave like card debt.
+REVOLVING_TYPES = ('credit_card',)
+
+
+def _credit_picture(user_id, today=None):
+    """Utilization and score trends, computed from debts and recorded readings."""
+    today = today or date.today()
+    cards = [d for d in Debt.query.filter(_visible(Debt, user_id)).all()
+             if d.type in REVOLVING_TYPES]
+    util = credit_lib.utilization(
+        [{'id': d.id, 'name': d.name, 'balance': float(d.balance or 0),
+          'credit_limit': float(d.credit_limit or 0)} for d in cards])
+    rows = CreditScore.query.filter(_visible(CreditScore, user_id)).order_by(
+        CreditScore.as_of).all()
+    ser = credit_lib.series(
+        [{'as_of': r.as_of, 'score': r.score, 'bureau': r.bureau, 'scale': r.scale}
+         for r in rows])
+    found = credit_lib.findings(util, ser, today=today, has_revolving=bool(cards))
+    return {
+        'utilization': util,
+        'series': ser,
+        'findings': found,
+        'readings': [r.to_dict() for r in reversed(rows)],
+        # The headline number, when there is an unambiguous one. With readings from two
+        # bureaus there is no single "your score", so this stays None rather than picking
+        # a winner — the series list is the honest answer.
+        'headline': (ser[0]['latest'] if len(ser) == 1 else None),
+        'headline_band': (ser[0]['band'] if len(ser) == 1 else None),
+        'paydown_to_30': credit_lib.paydown_to(util),
+        'bureaus': list(credit_lib.BUREAUS),
+        'scales': [{'value': v, 'label': credit_lib.SCALE_LABEL[v]}
+                   for v in credit_lib.SCALES],
+    }
+
+
+@app.route('/api/finance/credit', methods=['GET'])
+@require_api_auth
+def finance_credit():
+    """Credit health: revolving utilization, score trends, and what to do about them."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    return jsonify(_credit_picture(uid))
+
+
+@app.route('/api/finance/credit/scores', methods=['POST'])
+@require_api_auth
+def finance_add_credit_score():
+    """Record a score reading.
+
+    Re-posting the same bureau/scale for a date updates that reading rather than failing,
+    because correcting a typo is the common case and a unique-constraint error is a poor
+    way to tell someone about it.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json() or {}
+    try:
+        score = int(d.get('score'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'score must be a number'}), 400
+    if not (credit_lib.SCORE_MIN <= score <= credit_lib.SCORE_MAX):
+        return jsonify({'error': 'score must be between %d and %d'
+                                 % (credit_lib.SCORE_MIN, credit_lib.SCORE_MAX)}), 400
+    raw = (d.get('as_of') or '').strip()
+    try:
+        as_of = datetime.strptime(raw, '%Y-%m-%d').date() if raw else date.today()
+    except ValueError:
+        return jsonify({'error': 'as_of must be YYYY-MM-DD'}), 400
+    if as_of > date.today():
+        return jsonify({'error': 'as_of cannot be in the future'}), 400
+    bureau = (d.get('bureau') or 'other').lower()
+    scale = (d.get('scale') or 'other').lower()
+    row = CreditScore.query.filter_by(user_id=uid, as_of=as_of, bureau=bureau,
+                                      scale=scale).first()
+    if not row:
+        row = CreditScore(user_id=uid, as_of=as_of, bureau=bureau, scale=scale, score=score)
+        db.session.add(row)
+    row.score = score
+    row.bureau = bureau if bureau in credit_lib.BUREAUS else 'other'
+    row.scale = scale if scale in credit_lib.SCALES else 'other'
+    row.source = (d.get('source') or None)
+    row.notes = (d.get('notes') or None)
+    if d.get('share_level') in ('none', 'view', 'edit'):
+        row.share_level = d['share_level']
+    db.session.commit()
+    return jsonify(row.to_dict()), 201
+
+
+@app.route('/api/finance/credit/scores/<int:sid>', methods=['DELETE'])
+@require_api_auth
+def finance_delete_credit_score(sid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    row = _get_editable(CreditScore, sid, uid)
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
 @app.route('/api/finance/cashflow', methods=['GET'])
 @require_api_auth
 def finance_cashflow():
@@ -2597,6 +2722,12 @@ def _finance_full_picture(user_id, month=None, days=60):
     }
 
     try:
+        picture['credit'] = _credit_picture(user_id)
+    except Exception as e:
+        logger.warning('overview: credit picture failed: %s', e)
+        picture['credit'] = None
+
+    try:
         picture['recurring'] = _detected_recurring(user_id)
     except Exception as e:
         logger.warning('overview: recurring detection failed: %s', e)
@@ -2794,6 +2925,12 @@ def _finance_observations(p):
              'Emergency fund is under three months',
              'Liquid savings cover %.1f months of bills and debt payments.' % runway, runway)
 
+    # --- credit: utilization moves faster than anything else here ---
+    for f in ((p.get('credit') or {}).get('findings') or []):
+        # credit.findings already carries a severity and a stable key, so it is passed
+        # through rather than re-derived — one place decides what counts as a warning.
+        _obs(out, f['severity'], f['key'], f['title'], f['detail'], f.get('amount'))
+
     # --- what the ledger shows repeating, as opposed to what was declared as a bill ---
     fnd = (p.get('recurring') or {}).get('findings') or []
     undeclared = [f for f in fnd if f['kind'] == 'undeclared']
@@ -2950,6 +3087,33 @@ def _overview_facts(p, obs):
     for m in (spend.get('top_merchants') or [])[:6]:
         L.append("  %s: %s" % (m['merchant'], _money(m['amount'])))
 
+    cr = p.get('credit') or {}
+    if cr.get('series') or (cr.get('utilization') or {}).get('cards'):
+        L.append("\n== CREDIT ==")
+        u = cr.get('utilization') or {}
+        if u.get('pct') is not None:
+            L.append("Revolving utilization %.0f%% (%s of %s across %d cards). %s to reach "
+                     "30%%. Utilization is about a third of a score and re-reports each "
+                     "statement, so it is the fastest lever available." % (
+                         u['pct'], _money(u['total_balance']), _money(u['total_limit']),
+                         len(u['cards']), _money(cr.get('paydown_to_30'))))
+            for c in u['cards'][:5]:
+                L.append("  %s: %s of %s (%.0f%%)" % (c['name'], _money(c['balance']),
+                                                      _money(c['credit_limit']), c['pct']))
+        for c in (u.get('cards_without_limit') or []):
+            L.append("  %s: %s, credit limit NOT recorded so it is outside the ratio above"
+                     % (c['name'], _money(c['balance'])))
+        # Series are listed separately on purpose: they are not comparable to each other,
+        # and a model given one merged number would reason about a trend that is an artefact.
+        for sr in (cr.get('series') or []):
+            L.append("  %s %s: %d (%s) on %s%s, %d readings since %s" % (
+                sr['bureau'], sr['scale_label'], sr['latest'], sr['band'], sr['latest_on'],
+                (', %+d since %s' % (sr['change'], sr['previous_on'])) if sr['change'] is not None else '',
+                sr['readings'], sr['first_on']))
+        if len(cr.get('series') or []) > 1:
+            L.append("  (scores from different bureaus/models are not comparable to each "
+                     "other — compare each series only against itself)")
+
     rec = p.get('recurring') or {}
     if rec.get('count'):
         L.append("\n== RECURRING CHARGES DETECTED IN THE LEDGER ==")
@@ -3028,8 +3192,18 @@ def _overview_facts(p, obs):
 
     if obs:
         L.append("\n== FLAGGED BY THE SYSTEM (already computed — do not re-derive) ==")
-        for x in obs:
-            L.append("  [%s] %s — %s" % (x['severity'].upper(), x['title'], x['detail']))
+        # Criticals and warnings keep their full detail; notes are titles only. A note's
+        # detail almost always restates a figure that is already in a section above, and
+        # this briefing is sent on every AI call — paying twice for the same sentence is the
+        # easiest cost in the feature to avoid. Capped for the same reason: past a dozen or
+        # so findings the model is being handed a list rather than a picture.
+        for x in obs[:14]:
+            if x['severity'] == 'note':
+                L.append("  [NOTE] %s" % x['title'])
+            else:
+                L.append("  [%s] %s — %s" % (x['severity'].upper(), x['title'], x['detail']))
+        if len(obs) > 14:
+            L.append("  (+%d further notes, omitted)" % (len(obs) - 14))
 
     return '\n'.join(L)
 
