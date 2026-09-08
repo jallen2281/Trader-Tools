@@ -3,7 +3,7 @@ INFORMATION SECURITY POLICY
 Trader Tools (tradertools.kegbot.net)
 ================================================================================
 
-Version:        1.1
+Version:        1.2
 Effective:      9/7/2026
 Owner:          Jared Allen, sole operator
 Next review:    9/7/2027
@@ -227,33 +227,52 @@ than a control, and this is recorded as a gap in Section 14.
 --------------------------------------------------------------------------------
 
 The application does not run on rented cloud capacity. It runs on physical server
-hardware owned outright by the operator, colocated in a commercial datacenter.
+hardware owned outright by the operator, colocated in a commercial datacenter
+that maintains PCI DSS, HIPAA and government compliance programs.
 
-This is a meaningful strength for several controls. There is no shared tenancy
-and no hypervisor neighbour. The facility provides the environmental and physical
-controls a colocation contract entails — controlled entry, monitoring, power and
-cooling redundancy — which are stronger than any self-hosted alternative and are
-maintained by an organization whose business it is.
+That matters because the physical and environmental layer is therefore covered by
+independently audited controls rather than by assertion. Facilities holding those
+programs are required to operate — and to evidence, to an auditor — controlled
+and logged entry, video monitoring with defined retention, visitor escort and
+authorization procedures, and power, cooling and fire suppression redundancy.
+Attestation documents (for example a SOC 2 report or a PCI Attestation of
+Compliance) can be requested from the facility and supplied as evidence where a
+counterparty needs it.
 
-It also creates one risk that renting does not, and it is stated plainly because
-it directly shapes the priorities in Section 14:
+There is also no shared tenancy and no hypervisor neighbour, which removes an
+entire class of risk that rented capacity carries.
 
-  DATACENTER PERSONNEL HAVE PHYSICAL ACCESS TO THE HARDWARE.
+WHAT THIS DOES NOT MEAN
+  The facility's certifications are the FACILITY's, not this application's. Under
+  the shared responsibility model that colocation implies, the datacenter is
+  accountable for physical and environmental security; the operator remains
+  accountable for everything above it — the operating system, the cluster, the
+  database, the application, and every control in the rest of this policy.
 
-  This is inherent to colocation, not a defect of this facility. But physical
-  access to a machine is access to whatever its disks hold in the clear. Software
-  access control is irrelevant to someone holding the drive.
+  Trader Tools is NOT PCI DSS or HIPAA compliant, and does not claim to be.
+  Neither regime applies to it in any case: the application handles no cardholder
+  data and no protected health information. Housing a server in an audited
+  facility does not transfer that audit to the software running on it, and
+  representing otherwise to a counterparty would be a material misstatement.
+
+RESIDUAL PHYSICAL RISK
+  Facility personnel can physically reach the hardware. This is inherent to
+  colocation, and in a facility of this standard that access is authorized,
+  logged and monitored rather than open — which substantially bounds the risk
+  but does not eliminate it, because physical possession of a drive defeats every
+  software access control above it.
 
   The operator is also employed by the facility. That is disclosed here because a
   control framework should record where operational and custodial roles overlap,
   rather than leave a reviewer to discover it.
 
-The consequence is that encryption at rest is not a defence-in-depth nicety in
-this deployment — it is the control that stands between physical access and
-readable Social Security numbers. It is why the unencrypted tax documents and
-unencrypted backups recorded in Section 14 are treated as the highest-priority
-remediation items in this policy, ahead of items that appear on external
-checklists.
+  The tenant-side control for this residual risk is encryption at rest, and it is
+  the operator's responsibility, not the facility's. It is also what both PCI DSS
+  and HIPAA would themselves require for stored sensitive data. This is why the
+  unencrypted tax documents and unencrypted backups recorded in Section 14 remain
+  the highest-priority remediation items in this policy: they are the one place
+  where a well-controlled physical environment still leaves Social Security
+  numbers readable to anyone holding the disk.
 
 Hardware disposal: drives are securely erased or destroyed before any machine
 leaves the operator's custody, and are never returned to a vendor or resold
@@ -324,13 +343,26 @@ is not a control.
                                        REMEDIATION: encrypt dumps at rest.
                                        Target: [DATE].
 
-  FULL-DISK ENCRYPTION ON NODES        NOT VERIFIED. Given that datacenter
-                                       personnel have physical access to owned
-                                       hardware (Section 12), unencrypted volumes
-                                       would expose stored data to anyone with the
-                                       drive. REMEDIATION: confirm whether cluster
-                                       node volumes are encrypted at rest and
-                                       enable it if not. Target: [DATE].
+  STORAGE ENCRYPTION AT REST (CEPH)    NOT VERIFIED. Persistent volumes are backed
+                                       by Ceph RBD. Ceph encrypts at rest via
+                                       dmcrypt/LUKS on each OSD, which is fixed at
+                                       OSD CREATION and is not a runtime setting.
+                                       Given that facility personnel can physically
+                                       reach the hardware (Section 12), unencrypted
+                                       OSDs would leave stored data readable to
+                                       anyone holding a drive.
+                                       VERIFY: `ceph-volume lvm list` reporting
+                                       `encrypted: 1`, or crypt devices in lsblk.
+                                       REMEDIATION IF ABSENT: re-provision each OSD
+                                       with --dmcrypt as a rolling operation,
+                                       draining and rebalancing one at a time.
+                                       Target: [DATE].
+                                       NOTE: application-level encryption of stored
+                                       documents (above) is NOT made redundant by
+                                       this. Disk encryption protects a drive that
+                                       leaves the building; it does nothing for a
+                                       database dump copied elsewhere, and the two
+                                       controls address different exposures.
 
   SECURE HARDWARE DISPOSAL             STATED, NOT YET EXERCISED. No machine has
                                        left custody. Procedure defined in
@@ -381,6 +413,12 @@ is not a control.
   DATE          VERSION   AUTHOR          NOTE
   ------------  --------  --------------  ---------------------------------
   9/7/2026      1.0       Jared Allen     Initial policy defined.
+  9/7/2026      1.2       Jared Allen     Recorded the facility's PCI DSS,
+                                          HIPAA and government compliance
+                                          programs, and stated the shared
+                                          responsibility boundary: those
+                                          certifications are the facility's and
+                                          are not claimed for this application.
   9/7/2026      1.1       Jared Allen     Added physical and environmental
                                           security (Section 12). Hardware is
                                           owned and colocated, so at-rest
