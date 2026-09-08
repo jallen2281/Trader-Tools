@@ -472,7 +472,7 @@
         showModal(`<h2 style="margin:0 0 8px;">${d?'Edit':'Add'} Debt</h2>
             <label class="fld">Name</label><input id="dName" class="fin-in" style="width:100%;" value="${esc(e.name||'')}">
             <label class="fld">Lender (optional)</label><input id="dLender" class="fin-in" style="width:100%;" value="${esc(e.lender||'')}">
-            <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Type</label><select id="dType" class="fin-in" style="width:100%;">${DEBT_TYPES.map(t=>`<option value="${t}" ${e.type===t?'selected':''}>${t.replace('_',' ')}</option>`).join('')}</select></div>
+            <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Type</label><select id="dType" class="fin-in" style="width:100%;" onchange="toggleDebtFields()">${DEBT_TYPES.map(t=>`<option value="${t}" ${e.type===t?'selected':''}>${t.replace('_',' ')}</option>`).join('')}</select></div>
             <div style="flex:1;display:flex;align-items:flex-end;gap:6px;padding-bottom:2px;"><label style="display:flex;align-items:center;gap:6px;font-size:0.85em;"><input type="checkbox" id="dSecured" ${e.secured?'checked':''}> secured (lien)</label></div></div>
             <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Balance $</label><input id="dBal" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.balance||0}"></div>
             <div style="flex:1;"><label class="fld">APR %</label><input id="dApr" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.apr||0}"></div>
@@ -480,11 +480,19 @@
             <div id="dLimitBox"><label class="fld">Credit limit $ <span class="muted">(cards only &mdash; drives utilization, about a third of a credit score)</span></label><input id="dLimit" type="number" step="100" class="fin-in" style="width:100%;" value="${e.credit_limit==null?'':e.credit_limit}" placeholder="leave blank if not known"></div>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveDebt(${d?d.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="dMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+        toggleDebtFields();
+    }
+    /* A credit limit only means something on a revolving line. Showing the field on a
+       mortgage invites someone to type the original loan amount into it, which would then
+       be read as available credit. */
+    function toggleDebtFields() {
+        const box=document.getElementById('dLimitBox'), t=document.getElementById('dType');
+        if(box && t) box.style.display = (t.value==='credit_card') ? '' : 'none';
     }
     async function saveDebt(id) {
         const body = {name:document.getElementById('dName').value.trim(),lender:document.getElementById('dLender').value.trim(),type:document.getElementById('dType').value,
             balance:parseFloat(document.getElementById('dBal').value)||0,apr:parseFloat(document.getElementById('dApr').value)||0,min_payment:parseFloat(document.getElementById('dPmt').value)||0,secured:document.getElementById('dSecured').checked,
-            credit_limit:(document.getElementById('dLimit').value===''?null:parseFloat(document.getElementById('dLimit').value))};
+            credit_limit:(document.getElementById('dType').value!=='credit_card'||document.getElementById('dLimit').value===''?null:parseFloat(document.getElementById('dLimit').value))};
         if(!body.name){ document.getElementById('dMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/debts/${id}`:'/api/finance/debts',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail');
