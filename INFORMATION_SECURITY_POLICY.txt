@@ -351,11 +351,19 @@ is not a control.
                                        reach the hardware (Section 12), unencrypted
                                        OSDs would leave stored data readable to
                                        anyone holding a drive.
-                                       VERIFY: `ceph-volume lvm list` reporting
-                                       `encrypted: 1`, or crypt devices in lsblk.
-                                       REMEDIATION IF ABSENT: re-provision each OSD
-                                       with --dmcrypt as a rolling operation,
-                                       draining and rebalancing one at a time.
+                                       Deployment is MicroCeph, where encryption is
+                                       requested at `microceph disk add` time and
+                                       likewise cannot be turned on afterwards.
+                                       VERIFY: LUKS devices appear as TYPE=crypt in
+                                       `lsblk` and crypto_LUKS in `blkid`; this is
+                                       authoritative regardless of Ceph packaging.
+                                       Also confirm the snap's dm-crypt interface is
+                                       connected, since encryption cannot work
+                                       without it.
+                                       REMEDIATION IF ABSENT: remove and re-add each
+                                       disk with encryption enabled, as a rolling
+                                       operation, draining and rebalancing one at a
+                                       time.
                                        Target: [DATE].
                                        NOTE: application-level encryption of stored
                                        documents (above) is NOT made redundant by
