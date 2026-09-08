@@ -1,0 +1,258 @@
+================================================================================
+ACCESS CONTROL POLICY
+Trader Tools (tradertools.kegbot.net)
+================================================================================
+
+Version:        1.0
+Effective:      9/7/2026
+Owner:          Jared Allen, sole operator
+Next review:    9/7/2027
+
+Companion documents: DATA_RETENTION_POLICY.txt, and the published privacy policy
+and terms of service at /privacy and /terms.
+
+--------------------------------------------------------------------------------
+1. PURPOSE AND SCOPE
+--------------------------------------------------------------------------------
+
+This policy defines who may access the application and its data, how that access
+is granted, changed and removed, and how it is reviewed.
+
+It covers three distinct layers, which are governed separately and deliberately:
+
+  a) APPLICATION ACCESS   - who may sign in and which features they may use
+  b) DATA ACCESS          - whose financial records a signed-in user may see
+  c) INFRASTRUCTURE ACCESS - who may reach the servers, cluster and database
+
+Conflating (a) and (b) is a common failure. A permission to use a feature must
+never imply permission to see another person's data, and this system keeps the
+two mechanisms entirely separate.
+
+--------------------------------------------------------------------------------
+2. GOVERNING PRINCIPLES
+--------------------------------------------------------------------------------
+
+LEAST PRIVILEGE
+    A newly registered account holds no permissions at all. It belongs to no
+    permission group, and therefore cannot use AI analysis, connect a bank
+    account, create API tokens, or reach any other gated feature. Capability is
+    added deliberately; it is never the default.
+
+DEFAULT DENY
+    Both the permission system and the data-sharing system fail closed. An
+    unrecognized permission key grants nothing. A financial record defaults to
+    private and stays private until its owner explicitly shares it.
+
+SEPARATION OF CAPABILITY FROM VISIBILITY
+    Permission groups control what a user may DO. Household sharing controls
+    whose data a user may SEE. Neither can substitute for the other.
+
+CREDENTIALS ARE NOT SHARED
+    The application stores no passwords. Bank access tokens are never shared
+    between users under any circumstance, regardless of household arrangements.
+
+--------------------------------------------------------------------------------
+3. APPLICATION ACCESS - AUTHENTICATION
+--------------------------------------------------------------------------------
+
+Authentication is delegated entirely to Google via OAuth 2.0 / OpenID Connect.
+The application has no independent login path and never creates, receives or
+stores a password. Multi-factor authentication is therefore enforced at the
+identity provider, on the Google account itself.
+
+Sign-in requests re-authentication rather than silently reusing an existing
+Google session, so the account's second factor is exercised at each sign-in.
+
+Session cookies are Secure, HttpOnly and SameSite=Lax, and sessions expire after
+24 hours. API clients may instead present a Personal Access Token as a bearer
+credential; those expire after 30 days and can be revoked at any time.
+
+--------------------------------------------------------------------------------
+4. APPLICATION ACCESS - AUTHORIZATION (ROLE-BASED)
+--------------------------------------------------------------------------------
+
+Authorization is role-based, implemented as named permission groups.
+
+  - A GROUP holds a set of permission keys.
+  - A USER belongs to zero or more groups.
+  - A user's effective permissions are the union of their groups' keys.
+  - Administrators implicitly hold every permission.
+
+Permission keys are drawn from a fixed registry; a key not in the registry
+grants nothing. Current keys gate AI analysis, paper trading, copy trading,
+community posting, the tax centre, faster refresh intervals, watchlist limits,
+data export, API token creation, and connecting accounts through Plaid.
+
+Gating is enforced server-side on the endpoint, not in the interface. Hiding a
+control in the UI is a usability choice, never an access control.
+
+Two capabilities are singled out because they carry direct cost or direct risk:
+
+  AI ANALYSIS   - gated because each call spends money with a paid provider.
+  PLAID LINKING - gated because it reaches live bank data. A newly registered
+                  account cannot reach it under any circumstance.
+
+--------------------------------------------------------------------------------
+5. DATA ACCESS - RECORD-LEVEL SHARING
+--------------------------------------------------------------------------------
+
+By default a user can see only their own records.
+
+A user may form a HOUSEHOLD and invite others. Membership by itself grants no
+visibility whatsoever. Each record carries its own share level:
+
+  none  - private to its owner, even within a household (the default)
+  view  - household members may see it and it counts toward household totals
+  edit  - household members may also modify it
+
+Only a record's OWNER may change its share level. A member holding 'edit' can
+change the record's contents but cannot widen who else sees it, so edit access
+can never escalate into the power to re-share another person's data.
+
+Two categories are never shareable, enforced in code rather than by policy:
+
+  - Plaid access tokens and connected-institution credentials
+  - Tax profiles, which describe one filer's return
+
+Invitations are addressed to an email address and claimed at sign-in by matching
+the address returned by the identity provider. Membership cannot be obtained by
+guessing an identifier.
+
+--------------------------------------------------------------------------------
+6. INFRASTRUCTURE ACCESS
+--------------------------------------------------------------------------------
+
+Production runs on a Kubernetes cluster operated solely by the owner. No other
+person holds credentials to the cluster, the host, the database or the container
+registry.
+
+  - Application containers run as an unprivileged, non-root user.
+  - Application credentials are injected at runtime as Kubernetes Secrets and are
+    never committed to source control or built into images.
+  - Third-party credentials are held in separately managed secrets so that AI
+    provider keys and Plaid credentials do not share a rotation cycle or a blast
+    radius with the application's own secret.
+  - Deployment is exclusively through a GitOps pipeline, giving every production
+    change an auditable, attributable history.
+  - Direct database access is not exposed publicly.
+
+Section 10 records honestly where infrastructure access falls short of this
+policy's own standard.
+
+--------------------------------------------------------------------------------
+7. GRANTING, MODIFYING AND REVOKING ACCESS
+--------------------------------------------------------------------------------
+
+GRANTING
+  Application access begins when a person signs in with Google, which creates an
+  account holding no permissions. Capability is granted only by an administrator
+  adding that account to a permission group. Data visibility is granted only by a
+  record's owner setting a share level.
+
+MODIFYING
+  Changing a user's group membership changes their effective permissions
+  immediately, on their next request. Changing a record's share level takes
+  effect immediately.
+
+REVOKING
+  Access is removed by any of the following, each effective at once:
+
+    - removing a user from a permission group (capability withdrawn)
+    - setting a record's share level back to 'none' (visibility withdrawn)
+    - removing a household member (all shared visibility withdrawn)
+    - revoking a Personal Access Token
+    - disconnecting a financial institution, which also revokes the token at
+      Plaid rather than merely deleting the local copy
+    - deleting an account, which disables sign-in immediately, scrubs personal
+      details, destroys all sessions, and revokes any connected bank items
+
+  Permanent purge of a deleted account is time-triggered by the scheduled
+  retention job, per DATA_RETENTION_POLICY.txt.
+
+--------------------------------------------------------------------------------
+8. PERIODIC ACCESS REVIEW
+--------------------------------------------------------------------------------
+
+An access review is performed at least ANNUALLY, and additionally whenever a
+person joins or leaves a household, or a new permission key is introduced.
+
+Each review works through the following checklist and records the outcome in
+Section 11, including reviews that result in no change:
+
+  [ ] List all user accounts. Confirm each is still expected to exist.
+  [ ] List each account's group memberships. Remove any capability no longer
+      needed. Confirm no account holds administrator rights unnecessarily.
+  [ ] List outstanding Personal Access Tokens. Revoke any that are unused or
+      unrecognized.
+  [ ] List household memberships and every record shared at 'view' or 'edit'.
+      Confirm each share is still intended.
+  [ ] List connected Plaid institutions. Disconnect any no longer in use.
+  [ ] Confirm multi-factor authentication is still enabled on the Google account
+      used to administer the system, and on the source-control account that can
+      deploy to production.
+  [ ] Confirm no credential has been committed to source control.
+  [ ] Confirm the scheduled retention job has run successfully.
+
+--------------------------------------------------------------------------------
+9. POLICY REVIEW
+--------------------------------------------------------------------------------
+
+This policy is reviewed at least annually and whenever a new permission key is
+added, a new category of data becomes shareable, a new third party gains access,
+or the deployment model changes. Outcomes are recorded in Section 11.
+
+--------------------------------------------------------------------------------
+10. IMPLEMENTATION STATUS AND KNOWN GAPS
+--------------------------------------------------------------------------------
+
+Recorded honestly. A policy that omits its own gaps is not a control.
+
+  CONTROL                              STATUS
+  -----------------------------------  ----------------------------------------
+  Least privilege by default           IMPLEMENTED. New accounts hold no
+                                       permissions; verified by automated test.
+
+  Role-based access control            IMPLEMENTED. Group/permission registry
+                                       enforced server-side.
+
+  Record-level data sharing            IMPLEMENTED. Default private; owner-only
+                                       control of share level; verified by test.
+
+  MFA on the consumer application      IMPLEMENTED, via the identity provider.
+                                       Depends on MFA remaining enabled on the
+                                       Google account; checked at each review.
+
+  Immediate revocation paths           IMPLEMENTED, including revocation of bank
+                                       tokens at the provider on disconnect.
+
+  Periodic access review               NEW. Cadence and checklist defined by this
+                                       policy; first review due within 12 months.
+
+  MFA on infrastructure                NOT IMPLEMENTED. Cluster and host access
+                                       use key- and file-based credentials
+                                       without a second factor. REMEDIATION:
+                                       enable MFA on the source-control account
+                                       that can deploy to production and on the
+                                       hosting account, and move off long-lived
+                                       cluster credentials. Target: [DATE].
+
+  Automated de-provisioning for         NOT APPLICABLE. There are no employees,
+  terminated employees                 contractors or third parties with access.
+                                       Revocation procedures for user accounts
+                                       are defined in Section 7.
+
+  Zero trust architecture              NOT IMPLEMENTED. Stating this plainly
+                                       rather than reinterpreting existing
+                                       controls to fit the term.
+
+--------------------------------------------------------------------------------
+11. REVIEW AND REVISION HISTORY
+--------------------------------------------------------------------------------
+
+  DATE          VERSION   AUTHOR          NOTE
+  ------------  --------  --------------  ---------------------------------
+  9/7/2026      1.0       Jared Allen     Initial policy defined.
+
+================================================================================
+END OF POLICY
+================================================================================
