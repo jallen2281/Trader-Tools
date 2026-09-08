@@ -14,8 +14,9 @@
 # LOSING THE KEY MAKES EVERY ENCRYPTED BACKUP UNRECOVERABLE. Store it somewhere that is
 # not only inside the cluster it protects.
 #
-# NOTE: this script exists in two places that must stay in step - backup.sh at the repo
-# root, and inline in the ConfigMap in k8s/backup-cronjob.yaml, which is what actually runs.
+# This is the ONLY copy. The chart reads it with .Files.Get and renders it into the
+# ConfigMap the CronJob mounts. It used to be duplicated at the repo root and inline in
+# k8s/backup-cronjob.yaml, with a note asking that they be kept in step; they were not.
 
 set -eu
 

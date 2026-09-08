@@ -83,6 +83,29 @@ for path in ('docKeySecret', 'plaidKeysSecret', 'aiKeysSecret'):
     tail = env_block[idx:idx + 200] if idx >= 0 else ''
     check('%s is mounted optional' % path, 'optional: true' in tail, tail[:120])
 
+print('\n--- everything the Dockerfile copies in still exists ---')
+# The build is the last place you want to discover a deleted file. Moving backup.sh into
+# the chart broke `COPY backup.sh ./` and the image failed to build for three commits
+# before anyone looked at the Actions tab — while ArgoCD happily kept deploying chart
+# changes, so the cluster looked healthy and the application code silently stopped shipping.
+dockerfile = os.path.join(os.getcwd(), 'Dockerfile')
+if os.path.exists(dockerfile):
+    for line in io.open(dockerfile, encoding='utf-8'):
+        line = line.strip()
+        if not line.upper().startswith(('COPY ', 'ADD ')):
+            continue
+        parts = [p for p in line.split()[1:] if not p.startswith('--')]
+        if len(parts) < 2 or any(p.startswith('/') for p in parts[:-1]):
+            continue          # multi-stage COPY --from, or an absolute source
+        for src in parts[:-1]:
+            if any(ch in src for ch in '*?['):
+                import glob as _glob
+                check('Dockerfile copies %s, which matches something' % src,
+                      bool(_glob.glob(src)), src)
+            else:
+                check('Dockerfile copies %s, which exists' % src,
+                      os.path.exists(os.path.join(os.getcwd(), src)), src)
+
 print('\n--- files referenced by templates exist ---')
 for name, text in template_text.items():
     for rel in sorted(set(re.findall(r'\.Files\.Get\s+"([^"]+)"', text))):

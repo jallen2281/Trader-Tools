@@ -45,7 +45,10 @@ ENV GIT_COMMIT=${GIT_COMMIT}
 # Copy application files
 COPY --chown=appuser:appuser *.py ./
 COPY --chown=appuser:appuser *.sql ./
-COPY --chown=appuser:appuser backup.sh ./
+# No backup.sh here on purpose. The database backup runs in a postgres:15-alpine container
+# with the script mounted from a ConfigMap the Helm chart renders (helm/trader-tools/
+# files/backup.sh); it has never executed inside this image, so copying it in was only ever
+# dead weight — and once the file moved into the chart, a build break.
 COPY --chown=appuser:appuser static ./static
 COPY --chown=appuser:appuser templates ./templates
 
