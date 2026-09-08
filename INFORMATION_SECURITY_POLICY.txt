@@ -403,10 +403,20 @@ is not a control.
                                        move off long-lived cluster credentials.
                                        Target: [DATE].
 
-  DEPENDENCY AND IMAGE SCANNING        NOT IMPLEMENTED. No automated
-                                       vulnerability scanning in CI.
-                                       REMEDIATION: add scanning to the build.
-                                       Target: [DATE].
+  DEPENDENCY AND IMAGE SCANNING        IMPLEMENTED 9/7/2026. pip-audit scans the
+                                       pinned requirements and Trivy scans the built
+                                       image for fixable HIGH/CRITICAL issues, with
+                                       results published to the repository's
+                                       Security tab. Runs on relevant pushes, on
+                                       pull requests, and WEEKLY on unchanged code —
+                                       the case that matters most is a vulnerability
+                                       disclosed against something that shipped
+                                       weeks ago, which per-commit scanning alone
+                                       never catches.
+                                       Kept as a separate workflow from the build on
+                                       purpose, so a newly-published CVE in a
+                                       transitive dependency cannot block an
+                                       unrelated deploy — including an urgent one.
 
   BACKUP RESTORE REHEARSAL             NOT PERFORMED. Now a PREREQUISITE for the
                                        OSD re-provisioning above, which deliberately

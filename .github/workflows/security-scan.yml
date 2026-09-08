@@ -1,0 +1,111 @@
+name: Security Scan
+
+# Vulnerability scanning for Python dependencies and the built container image.
+#
+# Deliberately a SEPARATE workflow from the build. Scanning inside build-ghcr.yml would put
+# a scanner between a push to master and the ArgoCD rollout, so a newly-published CVE in a
+# transitive dependency could block an unrelated deploy — including a deploy that fixes
+# something urgent. Findings should interrupt a person, not the pipeline.
+#
+# It also runs on a schedule, because the interesting case is not "this commit introduced a
+# vulnerability" but "a vulnerability was disclosed in code that shipped weeks ago", and
+# nothing catches that unless something re-scans unchanged code.
+
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - '.github/workflows/security-scan.yml'
+  pull_request:
+    branches: [ master, main ]
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write     # required to upload SARIF to the Security tab
+
+jobs:
+  dependencies:
+    name: Python dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'      # match the Dockerfile
+
+      - name: Install pip-audit
+        run: python -m pip install --quiet pip-audit
+
+      # Audits the pinned requirements rather than an installed environment, so the result
+      # describes what actually ships in the image.
+      - name: Audit requirements.txt
+        id: audit
+        continue-on-error: true
+        run: |
+          pip-audit --requirement requirements.txt --strict --progress-spinner off \
+            --format markdown > audit.md || echo "found=true" >> "$GITHUB_OUTPUT"
+          cat audit.md
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Python dependency audit"
+            if [ -s audit.md ]; then cat audit.md; else echo "No known vulnerabilities."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if vulnerabilities were found
+        if: steps.audit.outputs.found == 'true'
+        run: |
+          echo "pip-audit reported vulnerable dependencies - see the job summary."
+          exit 1
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Built locally rather than pulled: this must scan the image this commit produces,
+      # not whatever :latest happens to be in the registry.
+      - name: Build image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: trader-tools:scan
+          cache-from: type=gha
+
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: trader-tools:scan
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true          # no action is possible on an unfixed CVE
+          exit-code: '0'                # report, then decide below
+
+      - name: Upload results to the Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy.sarif
+
+      # A second pass that actually fails the job, so findings are not merely filed away.
+      - name: Fail on fixable HIGH/CRITICAL
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: trader-tools:scan
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
