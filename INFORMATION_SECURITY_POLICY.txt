@@ -330,18 +330,25 @@ is not a control.
 
   Enforced retention and deletion      IMPLEMENTED via a scheduled job.
 
-  ENCRYPTION AT REST FOR SENSITIVE     NOT IMPLEMENTED. Tax documents, which
-  DOCUMENTS                            contain Social Security numbers, are
-                                       stored unencrypted in the database.
-                                       REMEDIATION: encrypt document bytes at
-                                       rest using the same key-management pattern
-                                       already proven for Plaid tokens.
-                                       Target: [DATE].
+  ENCRYPTION AT REST FOR SENSITIVE     IMPLEMENTED 9/7/2026. Tax documents are
+  DOCUMENTS                            encrypted before storage with a key held in
+                                       the environment, never in the database, so
+                                       neither the live table nor any dump taken
+                                       from it contains readable Social Security
+                                       numbers. Uploads are REFUSED if the key is
+                                       absent rather than stored in the clear.
+                                       Verified by automated test, including a
+                                       table-wide scan asserting the plaintext does
+                                       not appear anywhere in the stored bytes.
 
-  ENCRYPTED BACKUPS                    NOT IMPLEMENTED. Nightly dumps are written
-                                       unencrypted and contain the above.
-                                       REMEDIATION: encrypt dumps at rest.
-                                       Target: [DATE].
+  ENCRYPTED BACKUPS                    PARTIALLY MITIGATED. Nightly dumps are still
+                                       written unencrypted, but the most sensitive
+                                       content within them — tax documents — is now
+                                       ciphertext, so a leaked dump no longer
+                                       exposes Social Security numbers. Financial
+                                       figures and email addresses in other tables
+                                       remain readable. REMEDIATION: encrypt the
+                                       dump itself. Target: [DATE].
 
   STORAGE ENCRYPTION AT REST (CEPH)    NOT IMPLEMENTED - CONFIRMED 9/7/2026.
                                        Persistent volumes are backed by MicroCeph.

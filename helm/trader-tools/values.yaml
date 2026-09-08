@@ -169,6 +169,10 @@ secrets:
   # without it the app refuses to start a bank connection at all. Generate one with:
   #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   # Rotating it makes every stored token undecryptable — users would have to reconnect.
+  # Encrypts stored tax documents at rest. Uploads are REFUSED without it, because these
+  # files contain Social Security numbers and the Ceph storage beneath them is not
+  # encrypted. Losing this key makes stored documents unrecoverable — back it up.
+  docEncryptionKey: ""
   plaidClientId: ""
   plaidSecret: ""
   plaidEncryptionKey: ""

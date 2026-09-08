@@ -3810,7 +3810,13 @@ def _tax_doc_extract(doc):
                   'issuer (employer or payer name), wages (number: W-2 box 1 wages, or the 1099 income amount), '
                   'federal_income_tax_withheld (number: W-2 box 2, or 1099 withholding; 0 if none). '
                   'Use 0 for any missing number. Return only the JSON object.')
-    raw = claude_analyzer.read_document(system, prompt, doc.data, doc.content_type, max_tokens=500)
+    import doc_crypto
+    try:
+        payload = doc_crypto.document_bytes(doc)
+    except doc_crypto.DocumentCryptoError as e:
+        logger.error('document %s could not be decrypted for extraction: %s', doc.id, e)
+        return None
+    raw = claude_analyzer.read_document(system, prompt, payload, doc.content_type, max_tokens=500)
     if not raw:
         return None
     txt = raw.strip()
@@ -3894,10 +3900,19 @@ def tax_documents():
     blob = f.read()
     if not blob:
         return jsonify({'error': 'empty file'}), 400
+    # These files carry Social Security numbers and the storage beneath them is not
+    # encrypted, so refusing the upload is the correct failure: storing one in the clear
+    # would be a silent, permanent exposure, whereas this is recoverable by setting a key.
+    import doc_crypto
+    if not doc_crypto.encryption_ready():
+        return jsonify({'error': 'Document storage encryption is not configured, so uploads '
+                                 'are refused. Set DOC_ENCRYPTION_KEY.',
+                        'code': 'encryption_unavailable'}), 503
     form = request.form
     dt = (form.get('doc_type') or 'other')
     doc = TaxDocument(
-        user_id=uid, data=blob, size=len(blob), content_type=ctype,
+        user_id=uid, data=doc_crypto.encrypt_document(blob), data_encrypted=True,
+        size=len(blob), content_type=ctype,
         filename=secure_filename(f.filename)[:255],
         doc_type=dt if dt in TAX_DOC_TYPES else 'other',
         tax_year=(form.get('tax_year', type=int) or datetime.now().year),
@@ -3955,6 +3970,35 @@ def tax_document_modify(did):
     return jsonify(doc.to_dict())
 
 
+@app.route('/api/tax/documents/encrypt-existing', methods=['POST'])
+@require_api_auth
+def tax_documents_encrypt_existing():
+    """Encrypt documents stored before encryption existed.
+
+    Scoped to the caller's own documents unless an administrator asks for all of them, and
+    idempotent — it only touches rows still marked unencrypted, so it can be run repeatedly
+    and interrupted without harm.
+    """
+    import doc_crypto
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    if not doc_crypto.encryption_ready():
+        return jsonify({'error': 'DOC_ENCRYPTION_KEY is not set.',
+                        'code': 'encryption_unavailable'}), 503
+    user = User.query.get(uid)
+    everyone = bool((request.get_json(silent=True) or {}).get('all')) and user and user.is_admin()
+    try:
+        result = doc_crypto.encrypt_existing(db, TaxDocument,
+                                             user_id=None if everyone else uid)
+    except Exception as e:
+        db.session.rollback()
+        logger.error('encrypt-existing failed: %s', e, exc_info=True)
+        return jsonify({'error': str(e)}), 500
+    result['scope'] = 'all users' if everyone else 'your documents'
+    return jsonify(result)
+
+
 @app.route('/api/tax/documents/<int:did>/download', methods=['GET'])
 @require_api_auth
 def tax_document_download(did):
@@ -3968,6 +4012,13 @@ def tax_document_download(did):
     # ALLOWED_DOC_MIMES, but the database is not a trust boundary: a row can predate that
     # check or arrive by another path, and this endpoint serves user-supplied bytes from
     # the app's own origin — where anything that executes runs with the viewer's session.
+    import doc_crypto
+    try:
+        payload = doc_crypto.document_bytes(doc)
+    except doc_crypto.DocumentCryptoError as e:
+        logger.error('document %s could not be decrypted: %s', doc.id, e)
+        return jsonify({'error': str(e), 'code': 'decrypt_failed'}), 500
+
     ctype = (doc.content_type or '').split(';')[0].strip().lower()
     if ctype in ALLOWED_DOC_MIMES:
         mimetype, disposition = ctype, 'inline'
@@ -3978,7 +4029,7 @@ def tax_document_download(did):
     # The filename lands inside a quoted header value, so strip anything that could close
     # the quote or inject a header.
     safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', doc.filename or 'document')[:100] or 'document'
-    return Response(doc.data, mimetype=mimetype, headers={
+    return Response(payload, mimetype=mimetype, headers={
         'Content-Disposition': '%s; filename="%s"' % (disposition, safe_name),
         # nosniff stops the browser second-guessing the type just declared; the CSP means
         # that even if something did render, it could load and execute nothing.

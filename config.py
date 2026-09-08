@@ -49,6 +49,13 @@ class Config:
     PLAID_SECRET = os.getenv('PLAID_SECRET', '')
     PLAID_ENV = os.getenv('PLAID_ENV', 'sandbox')
     PLAID_ENCRYPTION_KEY = os.getenv('PLAID_ENCRYPTION_KEY', '')
+
+    # Encrypts stored tax documents at rest. Separate from PLAID_ENCRYPTION_KEY on purpose:
+    # rotating the Plaid key costs a reconnect, rotating this one makes every stored
+    # document permanently unreadable unless they are re-encrypted first, so the cheap
+    # rotation must not be chained to the expensive one.
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    DOC_ENCRYPTION_KEY = os.getenv('DOC_ENCRYPTION_KEY', '')
     # Products requested at Link time. Anything you might enable later belongs in
     # PLAID_OPTIONAL_PRODUCTS instead — adding a product to `products` after the fact forces
     # every connected user back through Link to re-authorize.

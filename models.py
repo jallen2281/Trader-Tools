@@ -1414,7 +1414,10 @@ class TaxDocument(db.Model):
     filename = db.Column(db.String(255))
     content_type = db.Column(db.String(80))
     size = db.Column(db.Integer)
-    data = db.Column(db.LargeBinary)         # the raw file bytes (Postgres bytea)
+    data = db.Column(db.LargeBinary)         # file bytes, encrypted at rest (see below)
+    # False only for rows written before encryption existed. Kept rather than assumed so a
+    # historical document stays readable during the backfill instead of failing to decrypt.
+    data_encrypted = db.Column(db.Boolean, default=False)
     extracted = db.Column(JSON)              # AI-extracted structured fields (as read)
     # Key figures used by the income-tax estimate (W2/1099):
     wages = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
