@@ -35,6 +35,28 @@ aiKeysSecret: "ai-keys"
 # PLAID_ENV lives in the configmap (config.plaidEnv) since it is not sensitive.
 plaidKeysSecret: "plaid-keys"
 
+# Removes implicit network trust inside the cluster — the largest single gap between this
+# deployment and a zero-trust posture. DISABLED BY DEFAULT: a wrong NetworkPolicy does not
+# fail loudly, it silently drops traffic, and the usual symptom is the app unable to reach
+# its own database. See the comments in templates/networkpolicy.yaml before enabling.
+networkPolicy:
+  enabled: false
+  # VERIFY THIS before enabling — the default is a guess. Find it with:
+  #   kubectl get pods -A | grep -i ingress
+  ingressNamespace: "ingress-nginx"
+  # Liveness and readiness probes come from the kubelet on the node, not from a pod, so
+  # they need an explicit CIDR allowance. Getting this wrong kills every pod as unhealthy.
+  #   kubectl get nodes -o wide      # use the range covering the INTERNAL-IP column
+  nodeCidr: "10.0.0.0/8"
+  # Only used when restrictEgress is true.
+  restrictEgress: false
+  databaseNamespace: "supabase"
+  # Pod and service ranges, excluded from the "allow everything external" egress rule so it
+  # does not quietly re-permit lateral movement inside the cluster.
+  clusterCidrs:
+    - "10.42.0.0/16"
+    - "10.43.0.0/16"
+
 serviceAccount:
   create: true
   annotations: {}

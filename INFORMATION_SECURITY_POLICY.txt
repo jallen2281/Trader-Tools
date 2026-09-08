@@ -440,9 +440,28 @@ is not a control.
   Automated employee de-provisioning   NOT APPLICABLE. No employees. User-account
                                        revocation is defined in the Access
                                        Control Policy.
-  Zero trust architecture              NOT IMPLEMENTED. Stated plainly rather
-                                       than reinterpreting existing controls to
-                                       fit the term.
+  Zero trust architecture              PARTIAL, and stated plainly rather than
+                                       reinterpreting existing controls to fit the
+                                       term.
+                                       AT THE APPLICATION LAYER the properties
+                                       largely hold: no trust is granted by network
+                                       position, every request is authenticated and
+                                       authorized independently, a new account holds
+                                       no permissions, and authorization is enforced
+                                       per ROW on every query rather than at a
+                                       perimeter — a household member gets no
+                                       implicit access to a partner's records.
+                                       AT THE NETWORK LAYER it does not. Anything
+                                       inside the cluster can currently open a
+                                       connection to the application pods, which is
+                                       implicit trust based on position.
+                                       REMEDIATION: NetworkPolicies are written and
+                                       shipped DISABLED (networkPolicy.enabled), to
+                                       be enabled deliberately — ingress-only first,
+                                       egress afterwards. Target: [DATE].
+                                       Also outstanding for this attestation:
+                                       infrastructure MFA and short-lived cluster
+                                       credentials, tracked separately above.
 
 --------------------------------------------------------------------------------
 15. REVIEW, INCIDENT AND REVISION HISTORY
