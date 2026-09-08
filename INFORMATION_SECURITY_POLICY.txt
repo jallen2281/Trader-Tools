@@ -343,34 +343,31 @@ is not a control.
                                        REMEDIATION: encrypt dumps at rest.
                                        Target: [DATE].
 
-  STORAGE ENCRYPTION AT REST (CEPH)    NOT VERIFIED. Persistent volumes are backed
-                                       by Ceph RBD. Ceph encrypts at rest via
-                                       dmcrypt/LUKS on each OSD, which is fixed at
-                                       OSD CREATION and is not a runtime setting.
-                                       Given that facility personnel can physically
-                                       reach the hardware (Section 12), unencrypted
-                                       OSDs would leave stored data readable to
-                                       anyone holding a drive.
-                                       Deployment is MicroCeph, where encryption is
-                                       requested at `microceph disk add` time and
-                                       likewise cannot be turned on afterwards.
-                                       VERIFY: LUKS devices appear as TYPE=crypt in
-                                       `lsblk` and crypto_LUKS in `blkid`; this is
-                                       authoritative regardless of Ceph packaging.
-                                       Also confirm the snap's dm-crypt interface is
-                                       connected, since encryption cannot work
-                                       without it.
-                                       REMEDIATION IF ABSENT: remove and re-add each
-                                       disk with encryption enabled, as a rolling
-                                       operation, draining and rebalancing one at a
-                                       time.
-                                       Target: [DATE].
-                                       NOTE: application-level encryption of stored
-                                       documents (above) is NOT made redundant by
-                                       this. Disk encryption protects a drive that
-                                       leaves the building; it does nothing for a
-                                       database dump copied elsewhere, and the two
-                                       controls address different exposures.
+  STORAGE ENCRYPTION AT REST (CEPH)    NOT IMPLEMENTED - CONFIRMED 9/7/2026.
+                                       Persistent volumes are backed by MicroCeph.
+                                       Neither `lsblk` nor `blkid` reports any LUKS
+                                       or crypt device, so the OSDs were added
+                                       without encryption and all stored data —
+                                       including tax documents containing Social
+                                       Security numbers — is written to disk in the
+                                       clear. The snap's dm-crypt interface IS
+                                       connected, so encryption was available and
+                                       simply not enabled at disk-add time.
+                                       Checked on node1; node3 and node4 host the
+                                       other two OSDs and are expected to match.
+                                       REMEDIATION: re-provision each OSD with
+                                       encryption enabled — remove, zap, re-add,
+                                       rebalance, one at a time. With only three
+                                       OSDs a pool replicating three ways will run
+                                       undersized for the duration of each rebuild,
+                                       so this must not be attempted until the
+                                       backup restore below has actually been
+                                       rehearsed. Target: [DATE].
+                                       NOTE: this does NOT make application-level
+                                       document encryption redundant. Disk
+                                       encryption protects a drive that leaves the
+                                       building; it does nothing for a database dump
+                                       copied elsewhere. Different exposures.
 
   SECURE HARDWARE DISPOSAL             STATED, NOT YET EXERCISED. No machine has
                                        left custody. Procedure defined in
@@ -390,9 +387,11 @@ is not a control.
                                        REMEDIATION: add scanning to the build.
                                        Target: [DATE].
 
-  BACKUP RESTORE REHEARSAL             NOT PERFORMED. REMEDIATION: restore a dump
-                                       to a scratch database and verify.
-                                       Target: [DATE].
+  BACKUP RESTORE REHEARSAL             NOT PERFORMED. Now a PREREQUISITE for the
+                                       OSD re-provisioning above, which deliberately
+                                       degrades storage redundancy while it runs.
+                                       REMEDIATION: restore a dump to a scratch
+                                       database and verify it. Target: [DATE].
 
   LOG RETENTION VERIFICATION           NOT VERIFIED. Confirm the platform's log
                                        retention matches the 30 days stated in
