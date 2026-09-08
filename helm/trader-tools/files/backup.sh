@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Dump the tradertools PostgreSQL database to /data/backups.
 # Expects standard PG* env vars: PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE.
 # Retains the last 30 daily dumps; older files are pruned automatically.
@@ -17,7 +17,7 @@
 # NOTE: this script exists in two places that must stay in step - backup.sh at the repo
 # root, and inline in the ConfigMap in k8s/backup-cronjob.yaml, which is what actually runs.
 
-set -euo pipefail
+set -eu
 
 BACKUP_DIR="${BACKUP_DIR:-/data/backups}"
 DB_NAME="${PGDATABASE:-tradertools}"

@@ -68,16 +68,17 @@ networkPolicy:
   # CIDR 10.1.0.0/16, so it would admit every pod in the cluster and make the default-deny
   # above purely decorative.
   #
-  # node1 and node4 were confirmed directly with `ip route get`. node2 and node3 were not
-  # reachable over SSH at the time and are listed from their INTERNAL-IP on the assumption
-  # they behave like node1 — node4's loopback address is the outlier here, not the rule.
-  # Confirm them before trusting this in anger; the symptom of getting it wrong is those
-  # nodes' pods failing their probes and restarting.
+  # All four confirmed directly with `ip route get`, not inferred: node1 .143, node2 .144,
+  # node3 .145 all answer from their own public address, and node4 answers from 10.0.1.1.
+  # node2 and node3 carry only eth0 and vxlan.calico, which makes node4's extra loopback
+  # address the outlier rather than the pattern. node4's .146 is kept as well, so the rule
+  # still holds if that loopback address ever goes away.
+  # (node2/node3 are reachable by hopping through node1: ssh ubuntu@node1, then ssh node2.)
   nodeCidrs:
     - "69.16.214.143/32"    # node1, verified
-    - "69.16.214.144/32"    # node2, from INTERNAL-IP
-    - "69.16.214.145/32"    # node3, from INTERNAL-IP
-    - "69.16.214.146/32"    # node4
+    - "69.16.214.144/32"    # node2, verified
+    - "69.16.214.145/32"    # node3, verified
+    - "69.16.214.146/32"    # node4, belt-and-braces (see 10.0.1.1 below)
     - "10.0.1.1/32"         # node4 again: it prefers this loopback address as the source
   # Only used when restrictEgress is true.
   restrictEgress: false
@@ -273,6 +274,41 @@ affinity:
 # value here and change Section 3 of the policy to match, then note it in the
 # policy's revision history.
 # ---------------------------------------------------------------------------
+# Nightly encrypted pg_dump onto the shared volume. The script itself is a real file at
+# files/backup.sh — one copy, read by the template — not a heredoc, and not a second copy
+# kept "in step" with another by hand.
+#
+# Names below match the objects that already exist on the cluster, so ArgoCD adopts them
+# rather than creating duplicates. Do not rename them casually: a rename leaves the old
+# CronJob running, untracked, alongside the new one.
+backup:
+  enabled: true
+  name: "tradertools-db-backup"
+  scriptConfigMap: "tradertools-backup-script"
+  # 02:00 UTC, and the retention job below runs at 03:30 so a fresh dump always exists
+  # before anything is permanently destroyed.
+  schedule: "0 2 * * *"
+  image: "postgres:15-alpine"
+  # Supabase runs in its own namespace, hence the fully-qualified service name.
+  pgHost: "supabase-supabase-db.supabase.svc.cluster.local"
+  pgPort: 5432
+  dbSecret: "tradertools-db-secret"          # keys: username, password, database
+  # Holds BACKUP_ENCRYPTION_KEY. Mounted optional: without it the job still takes a backup
+  # and says loudly that it is unencrypted, rather than failing and leaving none at all.
+  # LOSING THIS KEY MAKES EVERY ENCRYPTED DUMP UNRECOVERABLE — keep a copy outside the
+  # cluster it protects.
+  encryptionSecret: "tradertools-backup-encryption"
+  dir: "/data/backups"
+  retentionDays: 30
+  claimName: "trader-tools-data"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
 retention:
   enabled: true
   # 03:30 UTC — deliberately after the 02:00 backup, so a fresh dump exists from
