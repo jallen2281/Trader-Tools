@@ -35,6 +35,15 @@ aiKeysSecret: "ai-keys"
 # PLAID_ENV lives in the configmap (config.plaidEnv) since it is not sensitive.
 plaidKeysSecret: "plaid-keys"
 
+# Name of a separately-managed secret holding DOC_ENCRYPTION_KEY, which encrypts uploaded
+# tax documents at rest. Mounted via envFrom as optional: without it the app refuses
+# uploads rather than storing W-2s in the clear, so an absent secret is safe but visible.
+#   kubectl -n trader-tools create secret generic trader-tools-doc-key \
+#     --from-literal=DOC_ENCRYPTION_KEY="$(python -c \
+#        'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+# LOSING THIS KEY MAKES EVERY STORED DOCUMENT UNREADABLE. Keep a copy outside the cluster.
+docKeySecret: "trader-tools-doc-key"
+
 # Removes implicit network trust inside the cluster — the largest single gap between this
 # deployment and a zero-trust posture. DISABLED BY DEFAULT: a wrong NetworkPolicy does not
 # fail loudly, it silently drops traffic, and the usual symptom is the app unable to reach

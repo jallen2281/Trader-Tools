@@ -34,6 +34,7 @@ ROOT = os.path.dirname(HERE)
 
 # Ordered roughly by what they cover: platform first, then features, then integrations.
 SUITES = [
+    ('chart', 'helm chart wiring: secrets are mounted, not just named'),
     ('schema_sync', 'database migration on an existing schema'),
     ('consent', 'privacy policy, terms, consent gate, landing page'),
     ('ai_gate', 'paid-AI permission gating and the SECRET_KEY guard'),

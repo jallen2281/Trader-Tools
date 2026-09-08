@@ -63,6 +63,13 @@ spec:
             - secretRef:
                 name: {{ .Values.plaidKeysSecret | default "plaid-keys" }}
                 optional: true
+            # DOC_ENCRYPTION_KEY, which encrypts uploaded tax documents at rest. Its own
+            # secret for the same reason as the two above, and optional for the same reason
+            # too: without it the app refuses uploads and says so, which is the correct
+            # behaviour — far better than accepting W-2s and storing them in the clear.
+            - secretRef:
+                name: {{ .Values.docKeySecret | default "trader-tools-doc-key" }}
+                optional: true
           volumeMounts:
             - name: data
               mountPath: /data
