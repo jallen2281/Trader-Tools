@@ -1,0 +1,338 @@
+================================================================================
+INFORMATION SECURITY POLICY
+Trader Tools (tradertools.kegbot.net)
+================================================================================
+
+Version:        1.0
+Effective:      9/7/2026
+Owner:          Jared Allen, sole operator
+Next review:    9/7/2027
+
+Companion documents:
+  ACCESS_CONTROL_POLICY.txt   - who may access what, and how that is granted
+  DATA_RETENTION_POLICY.txt   - how long data is kept and how it is destroyed
+  /privacy and /terms         - the published, user-facing commitments
+
+--------------------------------------------------------------------------------
+1. PURPOSE AND SCOPE
+--------------------------------------------------------------------------------
+
+This policy states how information security risk is identified, mitigated and
+monitored for Trader Tools: a personal financial dashboard that stores account
+balances, debts, income, spending, investment holdings, tax documents, and — where
+a user chooses to connect one — data retrieved from financial institutions
+through Plaid.
+
+It applies to the application, the database, the Kubernetes cluster it runs on,
+the source repository, the CI/CD pipeline, and every third party that receives
+data.
+
+It is written for an operation of one. Controls that presuppose an organization
+are marked NOT APPLICABLE rather than reworded to look satisfied; a policy that
+claims apparatus it does not have is worse than one that admits the gap.
+
+--------------------------------------------------------------------------------
+2. ROLES AND RESPONSIBILITIES
+--------------------------------------------------------------------------------
+
+The sole operator is accountable for every control in this document: maintaining
+it, verifying that automated enforcement is running, performing the reviews
+defined here, and responding to incidents.
+
+There are no employees, contractors, or other parties with access to production
+systems or stored data. Consequently there is no separation of duties, and no
+onboarding, offboarding or security-awareness-training apparatus. This is stated
+as a fact about the operation's size, not as a control.
+
+--------------------------------------------------------------------------------
+3. DATA CLASSIFICATION
+--------------------------------------------------------------------------------
+
+  SENSITIVE - handled with the strongest controls in this document
+    - Tax documents (W-2, 1099, 1098) which routinely contain Social Security
+      numbers, employer details and full wage information
+    - Plaid access tokens: long-lived bearer credentials for a bank account
+    - Session tokens and Personal Access Tokens
+
+  CONFIDENTIAL - private to a user, never public
+    - Account balances, debts, income, budgets, spending transactions
+    - Investment holdings, trades, cost basis
+    - Household membership and sharing arrangements
+
+  INTERNAL
+    - Application logs, operational metrics
+
+  PUBLIC
+    - The landing page, privacy policy and terms of service
+
+--------------------------------------------------------------------------------
+4. RISK MANAGEMENT
+--------------------------------------------------------------------------------
+
+Risks are identified from three sources and recorded with their treatment in
+Section 13:
+
+  a) REVIEW - the annual review defined in Section 12, and the access review in
+     the Access Control Policy.
+  b) CHANGE - every material change to authentication, data handling, third-party
+     processors or deployment is assessed for security impact before release.
+  c) OPERATION - failures surfaced by logging, failed jobs, or provider alerts.
+
+The principal risks accepted and treated by this policy are: unauthorized access
+to another user's financial data; theft of stored bank credentials; exposure of
+tax documents containing Social Security numbers; loss of data; and
+misconfiguration during deployment.
+
+--------------------------------------------------------------------------------
+5. ACCESS CONTROL
+--------------------------------------------------------------------------------
+
+Governed in full by ACCESS_CONTROL_POLICY.txt. In summary: authentication is
+delegated to Google, so no password is ever created or stored, and multi-factor
+authentication is enforced at the identity provider. Authorization is role-based
+with least privilege — a newly registered account holds no permissions at all.
+Visibility of another person's records requires an explicit, per-record share by
+that record's owner. Bank credentials and tax profiles are never shareable by any
+mechanism.
+
+--------------------------------------------------------------------------------
+6. DATA PROTECTION
+--------------------------------------------------------------------------------
+
+IN TRANSIT
+  All traffic is served over HTTPS with certificates issued and renewed
+  automatically, and plain HTTP is redirected. Traffic to third-party providers
+  is over TLS.
+
+AT REST
+  Plaid access tokens are stored ONLY as ciphertext, encrypted with a key held in
+  the environment and never in the database, so a database dump does not yield a
+  usable bank credential. The encryption key is deliberately separate from the
+  application's session key so the two do not share a rotation cycle or a blast
+  radius. The application refuses to begin a bank connection at all if that key
+  is absent, rather than storing a token it cannot protect.
+
+  Section 13 records where encryption at rest is NOT yet applied.
+
+SECRETS
+  Credentials are injected at runtime as Kubernetes Secrets. They are never
+  committed to source control and never built into container images; only
+  empty-valued templates are versioned. Third-party credentials (AI providers,
+  Plaid) live in separately managed secrets from the application's own.
+
+  The application refuses to start in production if the session signing key is
+  unset or still the built-in development value, because a known key makes every
+  session cookie forgeable.
+
+SERVING USER CONTENT
+  Uploaded documents are type-checked on upload and re-validated on download.
+  Anything outside the allowlist is served as an opaque attachment rather than
+  rendered, with nosniff and a restrictive Content-Security-Policy, so
+  user-supplied bytes cannot execute in the application's origin.
+
+--------------------------------------------------------------------------------
+7. SECURE DEVELOPMENT AND CHANGE MANAGEMENT
+--------------------------------------------------------------------------------
+
+All production changes are made through a GitOps pipeline: changes are committed
+to source control, built into an immutable image, and deployed by an automated
+controller. Every production change therefore has an auditable, attributable
+history, and manual edits to live cluster objects are reverted by the controller
+rather than persisting silently.
+
+An automated test suite covers authentication and consent gating, permission
+enforcement, record-level sharing boundaries, retention and deletion, document
+serving, database schema migration, and third-party integration behaviour. Tests
+are run before release. Negative assertions are treated as first-class: sharing
+and permission tests assert what a user must NOT be able to see or do, because
+those failures are silent.
+
+Database schema changes are applied automatically at startup by comparing the
+models against the live schema, so a forgotten migration cannot leave the
+application querying columns that do not exist.
+
+Configuration defaults fail safe: debug mode is off unless explicitly enabled,
+and authentication fails closed in production if the auth stack does not
+initialize.
+
+--------------------------------------------------------------------------------
+8. THIRD-PARTY MANAGEMENT
+--------------------------------------------------------------------------------
+
+Every third party receiving data is named in the published privacy policy, with
+what it receives and why. They are currently: Google (authentication), Anthropic
+and Google AI (analysis of financial summaries, and extraction of uploaded
+documents), Plaid (financial account connections), and market data providers
+(ticker symbols only, no personal data).
+
+Before any new processor is added, the privacy policy is updated to name it and
+what it receives. Data minimization is applied: analysis requests send summarized
+figures rather than whole records, and document extraction is user-initiated and
+can be declined in favour of manual entry.
+
+Access credentials for third parties are held in dedicated secrets and can be
+rotated independently.
+
+--------------------------------------------------------------------------------
+9. LOGGING AND MONITORING
+--------------------------------------------------------------------------------
+
+The application logs requests, responses and errors, including a full traceback
+for startup failures. Security-relevant events are logged explicitly: consent
+being recorded, bank connections being made and revoked, retention purges, and
+migration failures.
+
+Liveness and readiness are reported separately. A pod whose authentication stack
+failed to initialize reports itself NOT READY and is removed from service, so a
+broken release stalls on healthy previous instances instead of replacing them
+with instances that cannot authenticate anyone.
+
+Section 13 records the gap in log retention verification.
+
+--------------------------------------------------------------------------------
+10. INCIDENT RESPONSE
+--------------------------------------------------------------------------------
+
+On discovering a suspected compromise:
+
+  1. CONTAIN. Rotate the affected credential immediately — the session signing
+     key, the Plaid token encryption key, third-party API keys, or database
+     credentials as applicable. Rotating the session key invalidates all sessions;
+     rotating the Plaid encryption key requires users to reconnect institutions.
+  2. REVOKE. Disconnect affected Plaid items, which revokes the token at the
+     provider, and revoke outstanding Personal Access Tokens.
+  3. ASSESS. Determine which data classification was involved, whose data, and
+     over what period, using the logs in Section 9.
+  4. NOTIFY. Where sensitive data as defined in Section 3 was or may have been
+     exposed, notify affected users directly and without delay, and notify Plaid
+     if any connected-account data was involved.
+  5. REMEDIATE AND RECORD. Fix the cause, add a regression test where the cause
+     was a software defect, and record the incident and its resolution in
+     Section 14.
+
+Contact for security reports: admin@kegbot.net.
+
+--------------------------------------------------------------------------------
+11. BACKUP AND CONTINUITY
+--------------------------------------------------------------------------------
+
+The production database is backed up on an automated nightly schedule with a
+30-day retention window, older dumps being pruned automatically.
+
+Restoration has not been rehearsed. An untested backup is an assumption rather
+than a control, and this is recorded as a gap in Section 13.
+
+--------------------------------------------------------------------------------
+12. POLICY REVIEW
+--------------------------------------------------------------------------------
+
+This policy is reviewed at least ANNUALLY, and additionally whenever:
+
+  - a new category of personal data begins to be collected;
+  - a new third-party processor begins receiving data;
+  - the authentication or authorization model changes;
+  - the deployment or hosting model changes;
+  - an incident occurs.
+
+Each review confirms that the controls described here still match what the system
+does, that automated enforcement is running, and that Section 13 is current.
+Outcomes are recorded in Section 14, including reviews resulting in no change.
+
+--------------------------------------------------------------------------------
+13. IMPLEMENTATION STATUS AND KNOWN GAPS
+--------------------------------------------------------------------------------
+
+Recorded honestly, and reviewed at every cycle. A policy that omits its own gaps
+is not a control.
+
+  CONTROL                              STATUS
+  -----------------------------------  ----------------------------------------
+  TLS in transit                       IMPLEMENTED. Automatic issuance and
+                                       renewal; HTTP redirected.
+
+  No stored passwords                  IMPLEMENTED. Authentication fully
+                                       delegated to the identity provider.
+
+  Least privilege / RBAC               IMPLEMENTED and covered by automated
+                                       tests.
+
+  Record-level data isolation          IMPLEMENTED and covered by automated
+                                       tests, including negative cases.
+
+  Bank token encryption at rest        IMPLEMENTED. Ciphertext only; key held
+                                       outside the database.
+
+  Secrets outside source control       IMPLEMENTED.
+
+  Safe serving of uploaded files       IMPLEMENTED. Type re-validated on
+                                       download; nosniff and CSP applied.
+
+  Auditable change management          IMPLEMENTED via GitOps.
+
+  Automated test coverage of security  IMPLEMENTED.
+  boundaries
+
+  Enforced retention and deletion      IMPLEMENTED via a scheduled job.
+
+  ENCRYPTION AT REST FOR SENSITIVE     NOT IMPLEMENTED. Tax documents, which
+  DOCUMENTS                            contain Social Security numbers, are
+                                       stored unencrypted in the database.
+                                       REMEDIATION: encrypt document bytes at
+                                       rest using the same key-management pattern
+                                       already proven for Plaid tokens.
+                                       Target: [DATE].
+
+  ENCRYPTED BACKUPS                    NOT IMPLEMENTED. Nightly dumps are written
+                                       unencrypted and contain the above.
+                                       REMEDIATION: encrypt dumps at rest.
+                                       Target: [DATE].
+
+  MFA ON INFRASTRUCTURE                NOT IMPLEMENTED. Cluster, host and
+                                       database access use key- and file-based
+                                       credentials without a second factor.
+                                       REMEDIATION: enable MFA on the
+                                       source-control account able to deploy to
+                                       production and on the hosting account;
+                                       move off long-lived cluster credentials.
+                                       Target: [DATE].
+
+  DEPENDENCY AND IMAGE SCANNING        NOT IMPLEMENTED. No automated
+                                       vulnerability scanning in CI.
+                                       REMEDIATION: add scanning to the build.
+                                       Target: [DATE].
+
+  BACKUP RESTORE REHEARSAL             NOT PERFORMED. REMEDIATION: restore a dump
+                                       to a scratch database and verify.
+                                       Target: [DATE].
+
+  LOG RETENTION VERIFICATION           NOT VERIFIED. Confirm the platform's log
+                                       retention matches the 30 days stated in
+                                       the retention policy. Target: [DATE].
+
+  OPEN REGISTRATION                    ACCEPTED RISK. Any Google account may
+                                       register. Mitigated by least privilege: a
+                                       new account holds no permissions, cannot
+                                       spend AI credit, cannot connect a bank,
+                                       and can see only its own data. Revisit if
+                                       the service is opened beyond personal use.
+
+  Separation of duties                 NOT APPLICABLE. Single operator.
+  Security awareness training          NOT APPLICABLE. No personnel.
+  Automated employee de-provisioning   NOT APPLICABLE. No employees. User-account
+                                       revocation is defined in the Access
+                                       Control Policy.
+  Zero trust architecture              NOT IMPLEMENTED. Stated plainly rather
+                                       than reinterpreting existing controls to
+                                       fit the term.
+
+--------------------------------------------------------------------------------
+14. REVIEW, INCIDENT AND REVISION HISTORY
+--------------------------------------------------------------------------------
+
+  DATE          VERSION   AUTHOR          NOTE
+  ------------  --------  --------------  ---------------------------------
+  9/7/2026      1.0       Jared Allen     Initial policy defined.
+
+================================================================================
+END OF POLICY
+================================================================================
