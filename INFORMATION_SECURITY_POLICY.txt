@@ -341,14 +341,28 @@ is not a control.
                                        table-wide scan asserting the plaintext does
                                        not appear anywhere in the stored bytes.
 
-  ENCRYPTED BACKUPS                    PARTIALLY MITIGATED. Nightly dumps are still
-                                       written unencrypted, but the most sensitive
-                                       content within them — tax documents — is now
-                                       ciphertext, so a leaked dump no longer
-                                       exposes Social Security numbers. Financial
-                                       figures and email addresses in other tables
-                                       remain readable. REMEDIATION: encrypt the
-                                       dump itself. Target: [DATE].
+  ENCRYPTED BACKUPS                    IMPLEMENTED 9/7/2026, PENDING KEY. The backup
+                                       job encrypts the dump with AES-256 before it
+                                       touches disk whenever BACKUP_ENCRYPTION_KEY
+                                       is present, and prunes both encrypted and
+                                       legacy files. Encrypt/decrypt round trip
+                                       verified.
+                                       If the key is absent the job still runs and
+                                       writes an unencrypted dump, because losing
+                                       backups outright is a worse outcome than the
+                                       status quo — the .dump vs .dump.enc suffix
+                                       makes the state visible in a directory
+                                       listing. ACTION: create the secret so dumps
+                                       are actually encrypted, and store the key
+                                       OUTSIDE the cluster it protects.
+                                       Target: [DATE].
+
+  BACKUP INTEGRITY CHECK               IMPLEMENTED. The job now fails if the dump is
+                                       missing or zero-length and deletes the stub,
+                                       and the pipeline no longer reports success
+                                       when pg_dump fails mid-stream. A truncated
+                                       backup that looks healthy is worse than an
+                                       obviously failed one.
 
   STORAGE ENCRYPTION AT REST (CEPH)    NOT IMPLEMENTED - CONFIRMED 9/7/2026.
                                        Persistent volumes are backed by MicroCeph.
