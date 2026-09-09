@@ -57,6 +57,7 @@ SUITES = [
     ('plaid', 'Plaid client, sync and token handling'),
     ('batchfetch', 'batched market data fetching'),
     ('ui_render', 'pages render and controls are wired'),
+    ('budget_render', 'what the Budget card actually renders (runs under node)'),
 ]
 
 
