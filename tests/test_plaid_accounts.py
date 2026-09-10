@@ -151,6 +151,45 @@ with app.app_context():
     check('and the hand-entered balance is untouched until it is',
           float(A.Debt.query.get(20).balance) == 999.0)
 
+print('\n--- a wrong suggestion is worse than none ---')
+# Drawn from real data. Plaid returns the generic name "CREDIT CARD" for both Chase Visas,
+# and the user separately tracks a "Citi Card". Matching on the shared word "card" suggested
+# linking the Freedom Visa to the Citi Card — a different card, a different balance, and
+# accepting it would have overwritten a real figure.
+with app.app_context():
+    class _PA:
+        mask = None
+        name = 'CREDIT CARD'
+        official_name = None
+
+        def is_credit(self):
+            return True
+
+    class _R:
+        def __init__(self, i, n):
+            self.id, self.name = i, n
+
+    sid, score = A._suggest_link(_PA(), [_R(1, 'Citi Card'), _R(2, 'Amex')], [])
+    check('a generic card name suggests nothing at all', sid is None, (sid, score))
+
+    class _PA2(_PA):
+        mask = '8547'
+
+    sid, score = A._suggest_link(_PA2(), [_R(1, 'Citi Card'), _R(2, 'Freedom Visa 8547')], [])
+    check('but the last four digits are decisive when the user recorded them',
+          sid == 2, (sid, score))
+
+    class _PA3(_PA):
+        name = 'SoFi Savings'
+
+        def is_credit(self):
+            return False
+
+    sid, score = A._suggest_link(_PA3(), [], [_R(1, 'Sofi'), _R(2, 'Sofi')])
+    check('an ambiguous tie suggests nothing rather than guessing', sid is None, (sid, score))
+    sid, score = A._suggest_link(_PA3(), [], [_R(1, 'Sofi Savings'), _R(2, 'Chase')])
+    check('an unambiguous name still matches', sid == 1, (sid, score))
+
 print('\n--- linking refreshes the balance and the credit limit ---')
 r = c.put('/api/plaid/accounts/%d/link' % accts['Prime Visa']['id'],
           json={'kind': 'debt', 'id': 20})

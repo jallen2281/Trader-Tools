@@ -2112,36 +2112,60 @@ def _apply_plaid_balance(pa):
 
 
 def _suggest_link(pa, debts, accounts):
-    """Best guess at the record this account already corresponds to.
+    """Best guess at the record this account already corresponds to, or nothing.
 
-    Name-similarity only, and only as a SUGGESTION the user confirms. Linking the wrong card
-    would silently overwrite a real balance, so this never applies itself.
+    Deliberately conservative, because the first version was not and it showed: matching on
+    any shared word longer than three characters made "CREDIT CARD ...8547" suggest a
+    "Citi Card" that was a different card with a different balance, on the strength of the
+    word "card" alone. Linking that would have silently overwritten a real figure.
+
+    So a suggestion now needs either the last four digits (unambiguous when present) or a
+    name that genuinely contains the other. A generic name Plaid often returns for cards --
+    "CREDIT CARD" -- deliberately matches nothing, and a tie between equally good candidates
+    is reported as no suggestion rather than an arbitrary winner: several accounts may
+    legitimately be called "Sofi", and picking one of them is worse than picking none.
     """
     def norm(x):
         return ''.join(ch for ch in (x or '').lower() if ch.isalnum())
 
-    names = [norm(pa.name), norm(pa.official_name)]
     pool = debts if pa.is_credit() else accounts
-    best, best_score = None, 0
+    if not pool:
+        return None, 0
+
+    # The mask is the only thing that distinguishes two cards from the same issuer, so it
+    # outranks everything when the user put it in the record's name.
+    if pa.mask:
+        masked = [r for r in pool if pa.mask in (r.name or '')]
+        if len(masked) == 1:
+            return masked[0].id, 3
+
+    names = [n for n in (norm(pa.name), norm(pa.official_name)) if n]
+    # Names Plaid hands back for a generic card carry no information about WHICH card.
+    if all(n in ('creditcard', 'card', 'checking', 'savings', 'account') for n in names):
+        return None, 0
+
+    scored = []
     for rec in pool:
         rn = norm(rec.name)
-        if not rn:
+        if not rn or len(rn) < 3:
             continue
+        best = 0
         for n in names:
-            if not n:
-                continue
             if rn == n:
-                score = 3
-            elif rn in n or n in rn:
-                score = 2
-            else:
-                # A shared distinctive word ("freedom", "prime") is weak but usually right.
-                shared = set(w for w in (rec.name or '').lower().split() if len(w) > 3) & \
-                         set(w for w in ((pa.name or '') + ' ' + (pa.official_name or '')).lower().split() if len(w) > 3)
-                score = 1 if shared else 0
-            if score > best_score:
-                best, best_score = rec, score
-    return (best.id if best and best_score >= 1 else None), best_score
+                best = max(best, 3)
+            elif len(rn) >= 4 and (rn in n or n in rn):
+                best = max(best, 2)
+        if best:
+            scored.append((best, rec))
+    if not scored:
+        return None, 0
+    top = max(s for s, _ in scored)
+    tied = [r for s, r in scored if s == top]
+    # Ambiguous is not a suggestion. Five SoFi accounts against one record named "Sofi" is
+    # exactly this case, and offering any single one of them would be a coin flip.
+    if len(tied) != 1:
+        return None, 0
+    return tied[0].id, top
 
 
 def _plaid_sync_item(item, client=None):
