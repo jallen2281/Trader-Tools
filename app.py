@@ -2001,11 +2001,11 @@ def plaid_accounts():
         for f in ('linked_account_id', 'linked_debt_id', 'linked_portfolio_id'):
             if a.get(f):
                 seen.setdefault((f, a[f]), []).append(a['display_name'])
-    conflicts = [{'field': f, 'id': i, 'accounts': names}
-                 for (f, i), names in seen.items() if len(names) > 1]
+    rollups = [{'field': f, 'id': i, 'accounts': names}
+               for (f, i), names in seen.items() if len(names) > 1]
 
     return jsonify({'accounts': out,
-                    'conflicts': conflicts,
+                    'rollups': rollups,
                     'linkable': {
                         'debts': [{'id': x.id, 'name': x.name, 'balance': float(x.balance or 0)}
                                   for x in debts],
@@ -2049,32 +2049,16 @@ def plaid_link_account(aid):
     if kind == 'debt':
         if not Debt.query.filter_by(id=rid, user_id=uid).first():
             return jsonify({'error': 'Debt not found'}), 404
-        clash = _link_conflict(pa, uid, 'linked_debt_id', rid)
-        if clash:
-            return jsonify({'error': '%s is already linked to that debt. Two bank accounts '
-                                     'writing to one record overwrite each other every '
-                                     'sync — unlink that one first.'
-                                     % clash.display_name()}), 409
         pa.linked_debt_id, pa.linked_account_id = rid, None
         pa.linked_portfolio_id = None
     elif kind == 'account':
         if not FinanceAccount.query.filter_by(id=rid, user_id=uid).first():
             return jsonify({'error': 'Account not found'}), 404
-        clash = _link_conflict(pa, uid, 'linked_account_id', rid)
-        if clash:
-            return jsonify({'error': '%s is already linked to that account. Two bank '
-                                     'accounts writing to one record overwrite each other '
-                                     'every sync — unlink that one first, or give this one '
-                                     'its own record.' % clash.display_name()}), 409
         pa.linked_account_id, pa.linked_debt_id = rid, None
         pa.linked_portfolio_id = None
     elif kind == 'portfolio':
         if not PortfolioAccount.query.filter_by(id=rid, user_id=uid).first():
             return jsonify({'error': 'Portfolio account not found'}), 404
-        clash = _link_conflict(pa, uid, 'linked_portfolio_id', rid)
-        if clash:
-            return jsonify({'error': '%s is already linked to that portfolio account.'
-                                     % clash.display_name()}), 409
         pa.linked_portfolio_id = rid
         pa.linked_account_id = pa.linked_debt_id = None
     else:
@@ -2227,50 +2211,64 @@ def _plaid_link_health(user_id):
                     gaps.append({'id': acct.id, 'name': acct.name, 'tracked': tracked,
                                  'bank': round(float(pa.current_balance), 2),
                                  'variance': var})
-    conflicts = [{'field': f, 'id': i, 'accounts': names}
-                 for (f, i), names in seen.items() if len(names) > 1]
-    return conflicts, gaps
-
-
-def _link_conflict(pa, uid, field, rid):
-    """Another bank account already claiming the same record, if there is one.
-
-    One-to-one matters because linking WRITES. Three SoFi accounts pointed at a single
-    "Sofi Savings" record and overwrote each other on every sync, so it held whichever
-    balance happened to arrive last and the other two were silently lost. A shared link is
-    not a mild redundancy; it is a record that reports a number belonging to something else.
-    """
-    other = PlaidAccount.query.filter(PlaidAccount.user_id == uid,
-                                      PlaidAccount.id != pa.id,
-                                      getattr(PlaidAccount, field) == rid).first()
-    return other
+    # Several accounts on one record is a ROLL-UP, not a conflict: vaults, sub-accounts and
+    # an authorised user's card all legitimately land in one place. Reported so the total is
+    # explicable, not warned about.
+    rollups = [{'field': f, 'id': i, 'accounts': names}
+               for (f, i), names in seen.items() if len(names) > 1]
+    return rollups, gaps
 
 
 def _apply_plaid_balance(pa):
-    """Push a refreshed balance onto whatever record the user linked this account to.
+    """Push the bank's figures onto whatever record this account is linked to.
 
-    Only the figures the bank is authoritative for: balance, and the credit limit that
-    drives utilization. Name, category and APR stay the user's, because Plaid does not know
-    what they call it and is often wrong about the rate.
+    The balance written is the SUM of every connected account pointing at that record, not
+    this one's alone. Several bank accounts legitimately roll up into one: SoFi "Vaults" are
+    separate accounts to Plaid — distinct numbers, distinct balances — but one savings pot to
+    the person holding them, and a credit card with an authorised user works the same way.
 
-    A credit card's balance arrives POSITIVE from Plaid when money is owed, which is also
-    how Debt.balance is stored, so it transfers directly.
+    This was last-write-wins for a while, which is strictly wrong for that case: three vaults
+    linked to one record left it holding whichever balance synced last ($14.67 of a real
+    $151.49) and silently discarded the other two.
+
+    Only the figures the bank is authoritative for. Name, category and APR stay the user's —
+    Plaid does not know what they call it and is often wrong about the rate.
+
+    A portfolio account is deliberately absent: its value is holdings times price, and
+    writing one balance over that would destroy the position detail the module exists for.
+    It is compared instead — see _plaid_link_health.
     """
-    if pa.current_balance is None:
-        return
-    # A portfolio account is deliberately absent here. Its value is holdings times price,
-    # and writing a single bank balance over that would destroy the position detail the
-    # module exists for. It is compared instead — see _portfolio_value.
     if pa.linked_debt_id:
         d = Debt.query.filter_by(id=pa.linked_debt_id, user_id=pa.user_id).first()
-        if d:
-            d.balance = float(pa.current_balance)
-            if pa.credit_limit is not None:
-                d.credit_limit = float(pa.credit_limit)
+        if not d:
+            return
+        siblings = PlaidAccount.query.filter_by(user_id=pa.user_id,
+                                                linked_debt_id=pa.linked_debt_id).all()
+        total = _sum_balances(siblings)
+        if total is not None:
+            d.balance = total
+        limit = sum(float(x.credit_limit) for x in siblings if x.credit_limit is not None)
+        if limit > 0:
+            d.credit_limit = round(limit, 2)
     elif pa.linked_account_id:
-        a = FinanceAccount.query.filter_by(id=pa.linked_account_id, user_id=pa.user_id).first()
-        if a:
-            a.balance = float(pa.current_balance)
+        a = FinanceAccount.query.filter_by(id=pa.linked_account_id,
+                                           user_id=pa.user_id).first()
+        if not a:
+            return
+        total = _sum_balances(PlaidAccount.query.filter_by(
+            user_id=pa.user_id, linked_account_id=pa.linked_account_id).all())
+        if total is not None:
+            a.balance = total
+
+
+def _sum_balances(accounts):
+    """Total of the accounts that actually reported one, or None if none did.
+
+    None rather than 0.0 on purpose: a bank that returned no balance must not be allowed to
+    zero a record that holds real money.
+    """
+    known = [float(x.current_balance) for x in accounts if x.current_balance is not None]
+    return round(sum(known), 2) if known else None
 
 
 def _suggest_link(pa, debts, accounts):
@@ -3513,10 +3511,10 @@ def _finance_full_picture(user_id, month=None, days=60):
     }
 
     try:
-        picture['plaid_conflicts'], picture['portfolio_gaps'] = _plaid_link_health(user_id)
+        picture['plaid_rollups'], picture['portfolio_gaps'] = _plaid_link_health(user_id)
     except Exception as e:
         logger.warning('overview: plaid link health failed: %s', e)
-        picture['plaid_conflicts'], picture['portfolio_gaps'] = [], []
+        picture['plaid_rollups'], picture['portfolio_gaps'] = [], []
 
     try:
         picture['income_recon'] = _income_reconciliation(user_id)
@@ -3810,12 +3808,13 @@ def _finance_observations(p):
              round(sum(float(m.get('min_payment') or 0) for m in missing), 2))
 
     # --- connected accounts: linking writes, so a shared or drifting link matters ---
-    for c in (p.get('plaid_conflicts') or []):
-        _obs(out, 'warning', 'link_conflict:%s%s' % (c['field'], c['id']),
-             'Two connected accounts are writing to the same record',
-             '%s both point at one record, so it holds whichever balance synced last and '
-             'the other is lost. Give one of them its own record, or unlink it.'
-             % ' and '.join(c['accounts']))
+    for c in (p.get('plaid_rollups') or []):
+        _obs(out, 'note', 'link_rollup:%s%s' % (c['field'], c['id']),
+             '%d connected accounts roll up into one record' % len(c['accounts']),
+             'The balance is the sum of %s. That is the right answer for sub-accounts like '
+             'SoFi Vaults, which the bank reports separately but which are one pot; it '
+             'would be wrong if any of them were already counted inside another.'
+             % ', '.join(c['accounts']))
     for g in (p.get('portfolio_gaps') or []):
         _obs(out, 'note', 'portfolio_gap:%s' % g['id'],
              '%s is %s adrift from the broker' % (g['name'], _money(abs(g['variance']))),

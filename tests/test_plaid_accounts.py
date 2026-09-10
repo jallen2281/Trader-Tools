@@ -207,30 +207,64 @@ with app.app_context():
     check('a depository account updates its FinanceAccount',
           float(A.FinanceAccount.query.get(10).balance) == 2500.0)
 
-print('\n--- one record, one bank account ---')
-# Three SoFi accounts were linked to a single "Sofi Savings" record on the real data. They
-# overwrote each other every sync, so it held whichever balance arrived last and the other
-# two were silently lost. Linking WRITES, so sharing a target is not mild redundancy.
-r = c.put('/api/plaid/accounts/%d/link' % accts['Freedom Visa']['id'],
-          json={'kind': 'debt', 'id': 20})
-check('a second account cannot claim a record another already writes to',
-      r.status_code == 409, (r.status_code, r.get_json()))
-check('and the message names the account holding it, with the mask that identifies it',
-      'PRIME VISA' in (r.get_json().get('error') or '').upper()
-      and '4321' in (r.get_json().get('error') or ''), r.get_json())
+print('\n--- several accounts roll up into one record, summed ---')
+# SoFi "Vaults" are separate accounts to Plaid -- distinct numbers, distinct balances -- but
+# one savings pot to the person holding them. On the real data three of them were linked to
+# a single record which then held whichever balance synced last: $14.67 of a real $151.49.
 with app.app_context():
-    check('the existing link is left alone',
-          A.PlaidAccount.query.filter_by(account_id='acc-prime').first().linked_debt_id == 20)
-    check('and the one that lost is still unlinked',
-          A.PlaidAccount.query.filter_by(account_id='acc-freedom').first().linked_debt_id is None)
-check('unlinking the first frees it',
-      c.put('/api/plaid/accounts/%d/link' % accts['Prime Visa']['id'],
-            json={'kind': ''}).status_code == 200)
-check('and then the second can take it',
-      c.put('/api/plaid/accounts/%d/link' % accts['Freedom Visa']['id'],
-            json={'kind': 'debt', 'id': 20}).status_code == 200)
-c.put('/api/plaid/accounts/%d/link' % accts['Freedom Visa']['id'], json={'kind': ''})
-c.put('/api/plaid/accounts/%d/link' % accts['Prime Visa']['id'], json={'kind': 'debt', 'id': 20})
+    db.session.add_all([
+        A.FinanceAccount(id=11, user_id=1, name='Sofi Savings', type='savings', balance=0),
+        A.PlaidAccount(user_id=1, item_id=1, account_id='v-main', name='SoFi Savings',
+                       mask='3808', type='depository', subtype='savings',
+                       current_balance=136.39),
+        A.PlaidAccount(user_id=1, item_id=1, account_id='v-emg', name='Emergency Fund',
+                       mask='4501', type='depository', subtype='cash management',
+                       current_balance=0.43),
+        A.PlaidAccount(user_id=1, item_id=1, account_id='v-tax', name='Taxes',
+                       mask='4502', type='depository', subtype='cash management',
+                       current_balance=14.67),
+    ])
+    db.session.commit()
+    vaults = [p.id for p in
+              A.PlaidAccount.query.filter(A.PlaidAccount.account_id.like('v-%')).all()]
+
+for aid in vaults:
+    r = c.put('/api/plaid/accounts/%d/link' % aid, json={'kind': 'account', 'id': 11})
+    check('a second and third account may share a record', r.status_code == 200, r.get_json())
+with app.app_context():
+    check('the balance is the SUM, not the last one to arrive',
+          float(A.FinanceAccount.query.get(11).balance) == 151.49,
+          A.FinanceAccount.query.get(11).balance)
+
+print('\n--- a re-sync keeps the sum rather than reverting to one vault ---')
+FAKE.pages = []
+with app.app_context():
+    A._plaid_sync_item(A.PlaidItem.query.get(1))
+    db.session.commit()
+    check('still the total after a full sync',
+          float(A.FinanceAccount.query.get(11).balance) == 151.49,
+          A.FinanceAccount.query.get(11).balance)
+
+print('\n--- the roll-up is reported so the total is explicable ---')
+r = c.get('/api/plaid/accounts').get_json()
+roll = [x for x in (r.get('rollups') or []) if x['id'] == 11]
+check('it is listed as a roll-up', len(roll) == 1, r.get('rollups'))
+check('naming all three', len(roll[0]['accounts']) == 3, roll)
+obs = {o['key']: o for o in c.get('/api/finance/overview').get_json()['observations']}
+key = [k for k in obs if k.startswith('link_rollup')]
+check('and surfaced on the overview as a note, not a warning',
+      bool(key) and obs[key[0]]['severity'] == 'note', list(obs))
+
+print('\n--- a bank that reports no balance must not zero a real one ---')
+with app.app_context():
+    for pv in A.PlaidAccount.query.filter(A.PlaidAccount.account_id.like('v-%')).all():
+        pv.current_balance = None
+    db.session.commit()
+    A._apply_plaid_balance(A.PlaidAccount.query.filter_by(account_id='v-main').first())
+    db.session.commit()
+    check('the record keeps its money',
+          float(A.FinanceAccount.query.get(11).balance) == 151.49,
+          A.FinanceAccount.query.get(11).balance)
 
 print('\n--- linking refuses what it should ---')
 check('an unknown debt is a 404',
@@ -295,10 +329,14 @@ check('and it can be cleared', r.get_json()['deposit']['income_source_id'] is No
 print('\n--- re-syncing does not duplicate anything ---')
 FAKE.pages = []
 with app.app_context():
+    before_accounts = A.PlaidAccount.query.count()
     item = A.PlaidItem.query.get(1)
     again = A._plaid_sync_item(item)
     db.session.commit()
-    check('no new accounts', A.PlaidAccount.query.count() == 3, A.PlaidAccount.query.count())
+    # The three from accounts_get, plus the investment one and the three vaults added by
+    # the fixtures above — counted rather than hardcoded so adding a case does not break it.
+    check('no new accounts', A.PlaidAccount.query.count() == before_accounts,
+          (before_accounts, A.PlaidAccount.query.count()))
     check('no new deposits', A.PlaidDeposit.query.count() == 3, A.PlaidDeposit.query.count())
     check('no new transactions', A.SpendTransaction.query.count() == 4)
     check('but balances were refreshed again', again['accounts'] == 3, again)

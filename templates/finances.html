@@ -1195,11 +1195,11 @@
               </span>
             </div>
             <div class="muted" style="font-size:0.78em;margin-bottom:8px;line-height:1.5;">
-              Linking to an <strong>account or debt</strong> overwrites its balance from the bank on every sync &mdash; it stops being a figure you typed once, and a credit limit comes with it.
+              Linking to an <strong>account or debt</strong> replaces its balance from the bank on every sync &mdash; it stops being a figure you typed once, and a credit limit comes with it. Point several at one record and the balance is their <strong>sum</strong>, which is what sub-accounts like SoFi Vaults need.
               Linking to a <strong>portfolio</strong> only compares, because that value is holdings &times; price and one balance cannot say what is in them; the difference is shown instead.
               ${unlinked?` <strong>${unlinked} not linked yet.</strong>`:''}
             </div>
-            ${(d.conflicts||[]).length ? `<div class="fire" style="margin-bottom:10px;font-size:0.82em;">&#9888;&#65039; ${d.conflicts.map(c=>`<strong>${c.accounts.map(esc).join('</strong> and <strong>')}</strong>`).join('; ')} are linked to the same record. They overwrite each other every sync, so it holds whichever balance arrived last. Give one its own record, or unlink it.</div>` : ''}
+            ${(d.rollups||[]).length ? `<div class="muted" style="margin-bottom:10px;font-size:0.78em;border-left:3px solid var(--border);padding-left:8px;">${d.rollups.map(c=>`<strong>${c.accounts.map(esc).join('</strong> + <strong>')}</strong>`).join('; ')} roll up into one record &mdash; the balance is their sum. That is right for sub-accounts like SoFi Vaults, which the bank reports separately but which are one pot.</div>` : ''}
             <div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th style="text-align:right;">Balance</th><th>Linked to</th></tr></thead><tbody>${rows}</tbody></table></div>
         </div>`;
     }
