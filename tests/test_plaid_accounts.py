@@ -207,6 +207,31 @@ with app.app_context():
     check('a depository account updates its FinanceAccount',
           float(A.FinanceAccount.query.get(10).balance) == 2500.0)
 
+print('\n--- one record, one bank account ---')
+# Three SoFi accounts were linked to a single "Sofi Savings" record on the real data. They
+# overwrote each other every sync, so it held whichever balance arrived last and the other
+# two were silently lost. Linking WRITES, so sharing a target is not mild redundancy.
+r = c.put('/api/plaid/accounts/%d/link' % accts['Freedom Visa']['id'],
+          json={'kind': 'debt', 'id': 20})
+check('a second account cannot claim a record another already writes to',
+      r.status_code == 409, (r.status_code, r.get_json()))
+check('and the message names the account holding it, with the mask that identifies it',
+      'PRIME VISA' in (r.get_json().get('error') or '').upper()
+      and '4321' in (r.get_json().get('error') or ''), r.get_json())
+with app.app_context():
+    check('the existing link is left alone',
+          A.PlaidAccount.query.filter_by(account_id='acc-prime').first().linked_debt_id == 20)
+    check('and the one that lost is still unlinked',
+          A.PlaidAccount.query.filter_by(account_id='acc-freedom').first().linked_debt_id is None)
+check('unlinking the first frees it',
+      c.put('/api/plaid/accounts/%d/link' % accts['Prime Visa']['id'],
+            json={'kind': ''}).status_code == 200)
+check('and then the second can take it',
+      c.put('/api/plaid/accounts/%d/link' % accts['Freedom Visa']['id'],
+            json={'kind': 'debt', 'id': 20}).status_code == 200)
+c.put('/api/plaid/accounts/%d/link' % accts['Freedom Visa']['id'], json={'kind': ''})
+c.put('/api/plaid/accounts/%d/link' % accts['Prime Visa']['id'], json={'kind': 'debt', 'id': 20})
+
 print('\n--- linking refuses what it should ---')
 check('an unknown debt is a 404',
       c.put('/api/plaid/accounts/%d/link' % accts['Freedom Visa']['id'],

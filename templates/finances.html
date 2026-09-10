@@ -1154,7 +1154,10 @@
     function renderPlaidAccounts() {
         const d = PLAID_ACCOUNTS;
         if(!d || !d.accounts || !d.accounts.length) return '';
-        const unlinked = d.accounts.filter(a=>!a.linked_debt_id && !a.linked_account_id).length;
+        /* linked_portfolio_id was added later and this count was not updated, so an account
+               linked to a portfolio read as unlinked — "1 not linked yet" with nothing unlinked
+               on screen to act on. */
+            const unlinked = d.accounts.filter(a=>!a.linked_debt_id && !a.linked_account_id && !a.linked_portfolio_id).length;
         const rows = d.accounts.map(a=>{
             const linked = a.linked_debt_id ? 'debt:' + a.linked_debt_id
                          : a.linked_account_id ? 'account:' + a.linked_account_id
@@ -1191,7 +1194,12 @@
                 &middot; <button class="link-btn" onclick="backfillPlaid()">backfill history</button>
               </span>
             </div>
-            <div class="muted" style="font-size:0.78em;margin-bottom:8px;">Link each one to the debt or account you already track and its balance stops being a figure you typed once &mdash; the bank keeps it current, and the credit limit that utilization needs comes with it.${unlinked?` <strong>${unlinked} not linked yet.</strong>`:''}</div>
+            <div class="muted" style="font-size:0.78em;margin-bottom:8px;line-height:1.5;">
+              Linking to an <strong>account or debt</strong> overwrites its balance from the bank on every sync &mdash; it stops being a figure you typed once, and a credit limit comes with it.
+              Linking to a <strong>portfolio</strong> only compares, because that value is holdings &times; price and one balance cannot say what is in them; the difference is shown instead.
+              ${unlinked?` <strong>${unlinked} not linked yet.</strong>`:''}
+            </div>
+            ${(d.conflicts||[]).length ? `<div class="fire" style="margin-bottom:10px;font-size:0.82em;">&#9888;&#65039; ${d.conflicts.map(c=>`<strong>${c.accounts.map(esc).join('</strong> and <strong>')}</strong>`).join('; ')} are linked to the same record. They overwrite each other every sync, so it holds whichever balance arrived last. Give one its own record, or unlink it.</div>` : ''}
             <div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th style="text-align:right;">Balance</th><th>Linked to</th></tr></thead><tbody>${rows}</tbody></table></div>
         </div>`;
     }
@@ -1232,7 +1240,7 @@
         const r = await fetch(`/api/plaid/accounts/${id}/link`,{method:'PUT',credentials:'same-origin',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({kind: rid?kind:'', id: rid||null})});
-        if(!r.ok){ alert((await r.json()).error||'Could not link that.'); return; }
+        if(!r.ok){ alert((await r.json()).error||'Could not link that.'); await loadPlaid(); return; }
         await loadPlaid(); loadOutlook(); loadBudgeting(); loadOverview();
     }
     /* An ordinary sync only ever moves forward, so anything the app declined to store at

@@ -1994,7 +1994,18 @@ def plaid_accounts():
         d['transaction_count'] = SpendTransaction.query.filter_by(
             user_id=uid, plaid_account_id=pa.account_id).count()
         out.append(d)
+    # Collisions that already exist. Rejecting new ones does not undo the ones made before
+    # the rule, and a record quietly reporting another account's balance is worth saying.
+    seen = {}
+    for a in out:
+        for f in ('linked_account_id', 'linked_debt_id', 'linked_portfolio_id'):
+            if a.get(f):
+                seen.setdefault((f, a[f]), []).append(a['display_name'])
+    conflicts = [{'field': f, 'id': i, 'accounts': names}
+                 for (f, i), names in seen.items() if len(names) > 1]
+
     return jsonify({'accounts': out,
+                    'conflicts': conflicts,
                     'linkable': {
                         'debts': [{'id': x.id, 'name': x.name, 'balance': float(x.balance or 0)}
                                   for x in debts],
@@ -2038,16 +2049,32 @@ def plaid_link_account(aid):
     if kind == 'debt':
         if not Debt.query.filter_by(id=rid, user_id=uid).first():
             return jsonify({'error': 'Debt not found'}), 404
+        clash = _link_conflict(pa, uid, 'linked_debt_id', rid)
+        if clash:
+            return jsonify({'error': '%s is already linked to that debt. Two bank accounts '
+                                     'writing to one record overwrite each other every '
+                                     'sync — unlink that one first.'
+                                     % clash.display_name()}), 409
         pa.linked_debt_id, pa.linked_account_id = rid, None
         pa.linked_portfolio_id = None
     elif kind == 'account':
         if not FinanceAccount.query.filter_by(id=rid, user_id=uid).first():
             return jsonify({'error': 'Account not found'}), 404
+        clash = _link_conflict(pa, uid, 'linked_account_id', rid)
+        if clash:
+            return jsonify({'error': '%s is already linked to that account. Two bank '
+                                     'accounts writing to one record overwrite each other '
+                                     'every sync — unlink that one first, or give this one '
+                                     'its own record.' % clash.display_name()}), 409
         pa.linked_account_id, pa.linked_debt_id = rid, None
         pa.linked_portfolio_id = None
     elif kind == 'portfolio':
         if not PortfolioAccount.query.filter_by(id=rid, user_id=uid).first():
             return jsonify({'error': 'Portfolio account not found'}), 404
+        clash = _link_conflict(pa, uid, 'linked_portfolio_id', rid)
+        if clash:
+            return jsonify({'error': '%s is already linked to that portfolio account.'
+                                     % clash.display_name()}), 409
         pa.linked_portfolio_id = rid
         pa.linked_account_id = pa.linked_debt_id = None
     else:
@@ -2173,6 +2200,50 @@ def _portfolio_value(acct):
         px = float(h.current_price) if h.current_price else float(h.average_cost or 0)
         total += float(h.quantity or 0) * px
     return round(total, 2)
+
+
+def _plaid_link_health(user_id):
+    """Two things about linked accounts that are only visible by looking across them.
+
+    Returns (collisions, portfolio gaps). A collision is two bank accounts writing to one
+    record; a gap is the difference between what a broker says an account is worth and what
+    the tracked positions add up to. Neither shows up on any single account's own row.
+    """
+    rows = PlaidAccount.query.filter_by(user_id=user_id).all()
+    seen, gaps = {}, []
+    for pa in rows:
+        for f in ('linked_account_id', 'linked_debt_id', 'linked_portfolio_id'):
+            rid = getattr(pa, f)
+            if rid:
+                seen.setdefault((f, rid), []).append(pa.display_name())
+        if pa.linked_portfolio_id and pa.current_balance is not None:
+            acct = PortfolioAccount.query.filter_by(id=pa.linked_portfolio_id,
+                                                    user_id=user_id).first()
+            if acct:
+                tracked = _portfolio_value(acct)
+                var = round(float(pa.current_balance) - tracked, 2)
+                # Cents of drift are quotes moving, not a missing holding.
+                if abs(var) >= 25:
+                    gaps.append({'id': acct.id, 'name': acct.name, 'tracked': tracked,
+                                 'bank': round(float(pa.current_balance), 2),
+                                 'variance': var})
+    conflicts = [{'field': f, 'id': i, 'accounts': names}
+                 for (f, i), names in seen.items() if len(names) > 1]
+    return conflicts, gaps
+
+
+def _link_conflict(pa, uid, field, rid):
+    """Another bank account already claiming the same record, if there is one.
+
+    One-to-one matters because linking WRITES. Three SoFi accounts pointed at a single
+    "Sofi Savings" record and overwrote each other on every sync, so it held whichever
+    balance happened to arrive last and the other two were silently lost. A shared link is
+    not a mild redundancy; it is a record that reports a number belonging to something else.
+    """
+    other = PlaidAccount.query.filter(PlaidAccount.user_id == uid,
+                                      PlaidAccount.id != pa.id,
+                                      getattr(PlaidAccount, field) == rid).first()
+    return other
 
 
 def _apply_plaid_balance(pa):
@@ -3442,6 +3513,12 @@ def _finance_full_picture(user_id, month=None, days=60):
     }
 
     try:
+        picture['plaid_conflicts'], picture['portfolio_gaps'] = _plaid_link_health(user_id)
+    except Exception as e:
+        logger.warning('overview: plaid link health failed: %s', e)
+        picture['plaid_conflicts'], picture['portfolio_gaps'] = [], []
+
+    try:
         picture['income_recon'] = _income_reconciliation(user_id)
     except Exception as e:
         logger.warning('overview: income reconciliation failed: %s', e)
@@ -3731,6 +3808,22 @@ def _finance_observations(p):
                  _money(sum(float(m.get('min_payment') or 0) for m in missing)),
                  ', '.join(m.get('name') or '?' for m in missing[:3])),
              round(sum(float(m.get('min_payment') or 0) for m in missing), 2))
+
+    # --- connected accounts: linking writes, so a shared or drifting link matters ---
+    for c in (p.get('plaid_conflicts') or []):
+        _obs(out, 'warning', 'link_conflict:%s%s' % (c['field'], c['id']),
+             'Two connected accounts are writing to the same record',
+             '%s both point at one record, so it holds whichever balance synced last and '
+             'the other is lost. Give one of them its own record, or unlink it.'
+             % ' and '.join(c['accounts']))
+    for g in (p.get('portfolio_gaps') or []):
+        _obs(out, 'note', 'portfolio_gap:%s' % g['id'],
+             '%s is %s adrift from the broker' % (g['name'], _money(abs(g['variance']))),
+             'The broker reports %s and the tracked positions add up to %s. A gap that way '
+             'is usually cash or a holding that is not recorded — the positions are never '
+             'overwritten from the bank, because a single balance cannot say what is in '
+             'them.' % (_money(g['bank']), _money(g['tracked'])),
+             abs(g['variance']))
 
     # --- credit: utilization moves faster than anything else here ---
     for f in ((p.get('credit') or {}).get('findings') or []):
