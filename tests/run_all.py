@@ -60,6 +60,7 @@ SUITES = [
     ('batchfetch', 'batched market data fetching'),
     ('ui_render', 'pages render and controls are wired'),
     ('budget_render', 'what the Budget card actually renders (runs under node)'),
+    ('link_options', 'what the account-link dropdown offers (runs under node)'),
 ]
 
 

@@ -1156,20 +1156,20 @@
         if(!d || !d.accounts || !d.accounts.length) return '';
         const unlinked = d.accounts.filter(a=>!a.linked_debt_id && !a.linked_account_id).length;
         const rows = d.accounts.map(a=>{
-            /* An investment account is tracked in the portfolio module, not as a
-               FinanceAccount, so offering only the latter left the account actually being
-               managed absent from the dropdown entirely. */
-            const linked = a.linked_debt_id || a.linked_account_id || a.linked_portfolio_id;
-            const kind = a.is_credit ? 'debt' : (a.is_investment ? 'portfolio' : 'account');
-            const pool = kind === 'debt' ? d.linkable.debts
-                       : kind === 'portfolio' ? (d.linkable.portfolios || [])
-                       : d.linkable.accounts;
-            const sel = `<select class="fin-in" style="padding:3px 6px;font-size:0.82em;max-width:190px;" onchange="linkPlaidAccount(${a.id},'${kind}',this.value)">
+            const linked = a.linked_debt_id ? 'debt:' + a.linked_debt_id
+                         : a.linked_account_id ? 'account:' + a.linked_account_id
+                         : a.linked_portfolio_id ? 'portfolio:' + a.linked_portfolio_id : '';
+            const sel = `<select class="fin-in" style="padding:3px 6px;font-size:0.82em;max-width:210px;" onchange="linkPlaidAccount(${a.id},this.value)">
                     <option value="">not linked</option>
-                    ${pool.map(x=>`<option value="${x.id}" ${String(linked)===String(x.id)?'selected':(!linked&&String(a.suggested_link_id)===String(x.id)?'':'')}>${esc(x.name)}</option>`).join('')}
+                    ${linkOptions(a, d.linkable, linked)}
                  </select>`;
             const suggestion = (!linked && a.suggested_link_id)
-                ? `<div class="muted" style="font-size:0.74em;margin-top:2px;">looks like <strong>${esc((pool.find(x=>x.id===a.suggested_link_id)||{}).name||'')}</strong> &middot; <button class="link-btn" onclick="linkPlaidAccount(${a.id},'${kind}',${a.suggested_link_id})">link it</button></div>`
+                ? (() => {
+                    const sk = a.suggested_link_kind;
+                    const sp = sk === 'debt' ? d.linkable.debts : d.linkable.accounts;
+                    const nm = (sp.find(x=>x.id===a.suggested_link_id)||{}).name||'';
+                    return `<div class="muted" style="font-size:0.74em;margin-top:2px;">looks like <strong>${esc(nm)}</strong> &middot; <button class="link-btn" onclick="linkPlaidAccount(${a.id},'${sk}:${a.suggested_link_id}')">link it</button></div>`;
+                  })()
                 : '';
             const bal = a.current_balance==null ? '<span class="muted">&mdash;</span>' : fmt2(a.current_balance);
             return `<tr>
@@ -1195,10 +1195,43 @@
             <div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th style="text-align:right;">Balance</th><th>Linked to</th></tr></thead><tbody>${rows}</tbody></table></div>
         </div>`;
     }
-    async function linkPlaidAccount(id, kind, value) {
+    /* Which records a bank account may point at, grouped so the choice is navigable.
+       An investment account gets BOTH pools on purpose: some are tracked in the portfolio
+       module with holdings, others as a plain brokerage FinanceAccount, and offering only
+       one of those left the record the user actually keeps missing from the list. The two
+       behave differently once linked -- an account takes the bank's balance, a portfolio is
+       compared against it -- so they are labelled rather than merged into one flat list.
+       The value carries the kind, because the same id can exist in more than one pool. */
+    const CASH_TYPES = ['checking','savings','cash'];
+    const INVEST_TYPES = ['brokerage','retirement','other'];
+    function linkOptions(a, linkable, selected) {
+        const opt = (kind, x, extra) => {
+            const v = `${kind}:${x.id}`;
+            return `<option value="${v}" ${selected===v?'selected':''}>${esc(x.name)}${extra||''}</option>`;
+        };
+        const group = (label, html) => html ? `<optgroup label="${label}">${html}</optgroup>` : '';
+        if (a.is_credit) {
+            return (linkable.debts||[]).map(x=>opt('debt', x)).join('');
+        }
+        const accts = linkable.accounts || [];
+        const cash    = accts.filter(x=>CASH_TYPES.includes(x.type));
+        const invest  = accts.filter(x=>INVEST_TYPES.includes(x.type));
+        const other   = accts.filter(x=>!CASH_TYPES.includes(x.type) && !INVEST_TYPES.includes(x.type));
+        if (a.is_investment) {
+            return group('Investment accounts', invest.map(x=>opt('account', x)).join('')) +
+                   group('Portfolio (holdings tracked)', (linkable.portfolios||[]).map(x=>opt('portfolio', x, ' &mdash; compared, not overwritten')).join('')) +
+                   group('Cash accounts', cash.map(x=>opt('account', x)).join('')) +
+                   group('Other', other.map(x=>opt('account', x)).join(''));
+        }
+        return group('Cash accounts', cash.map(x=>opt('account', x)).join('')) +
+               group('Investment accounts', invest.map(x=>opt('account', x)).join('')) +
+               group('Other', other.map(x=>opt('account', x)).join(''));
+    }
+    async function linkPlaidAccount(id, value) {
+        const [kind, rid] = String(value||'').split(':');
         const r = await fetch(`/api/plaid/accounts/${id}/link`,{method:'PUT',credentials:'same-origin',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({kind: value?kind:'', id: value||null})});
+            body:JSON.stringify({kind: rid?kind:'', id: rid||null})});
         if(!r.ok){ alert((await r.json()).error||'Could not link that.'); return; }
         await loadPlaid(); loadOutlook(); loadBudgeting(); loadOverview();
     }
