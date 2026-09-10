@@ -1648,6 +1648,16 @@ class TaxDocument(db.Model):
     # Receipt fields:
     amount = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
     merchant = db.Column(db.String(160))
+    # The last four digits of the card used, read off the receipt. This is what ties a
+    # receipt to the ACCOUNT it was paid from: two connected Visas are indistinguishable by
+    # amount alone, and a last4 matching no connected card is positive evidence that the
+    # purchase is not in the bank feed at all, rather than a failure to find it.
+    card_last4 = db.Column(db.String(4))
+    # When the purchase happened, as opposed to when the photo was uploaded. The extractor
+    # was already being asked for this and the answer was being discarded, so receipts were
+    # dated by upload — which puts one photographed a week later well outside any sane
+    # matching window for the transaction it belongs to.
+    purchase_date = db.Column(db.Date)
     category = db.Column(db.String(50))
     deductible = db.Column(db.Boolean, default=False)
     notes = db.Column(db.Text)
@@ -1663,6 +1673,8 @@ class TaxDocument(db.Model):
             'size': self.size, 'extracted': self.extracted or {},
             'wages': float(self.wages or 0), 'fed_withheld': float(self.fed_withheld or 0),
             'amount': float(self.amount or 0), 'merchant': self.merchant,
+            'card_last4': self.card_last4,
+            'purchase_date': self.purchase_date.isoformat() if self.purchase_date else None,  # noqa
             'category': self.category, 'deductible': bool(self.deductible), 'notes': self.notes,
             'uploaded_at': self.uploaded_at.isoformat() if self.uploaded_at else None,
         }

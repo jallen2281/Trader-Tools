@@ -131,6 +131,7 @@
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                 <input type="month" id="spendMonth" class="fin-in" style="padding:4px 8px;" onchange="loadBudgeting()">
                 <button class="btn2" onclick="importReceipts()">&#8615; From receipts</button>
+                <button class="btn2" onclick="reconcileReceipts()">&#8644; Match receipts to bank</button>
                 <button class="btn2" onclick="openCsvImport()">&#8613; Import CSV</button>
                 <button class="btn2 primary" onclick="openTxn(null)">+ Add</button>
             </div>
@@ -1074,6 +1075,18 @@
             closeModal(); loadBudgeting();
             alert(`Imported ${d.imported} of ${d.total_rows} rows.\n\n${d.duplicates_skipped} already on file\n${d.income_rows_skipped} deposits skipped\n${d.unparseable_rows} unreadable`);
         }catch(e){ msg.textContent=e.message; }
+    }
+    /* A card purchase can arrive twice — photographed, and from the bank. This attaches the
+       receipt to the bank's own row and removes the duplicate, so the money is counted once
+       and the paper trail sits on the transaction that actually settled. */
+    async function reconcileReceipts() {
+        const r = await fetch('/api/finance/receipts/reconcile',{method:'POST',credentials:'same-origin'});
+        const d = await r.json();
+        const lines = (d.details||[]).filter(x=>x.result && x.result.indexOf('match')<0)
+            .slice(0,6).map(x=>`• ${x.merchant||'receipt'}: ${x.result}`).join('\n');
+        alert(`${d.duplicates_removed||0} duplicate transactions removed\n${d.attached||0} receipts attached to a bank transaction\n${d.unmatched||0} left unmatched` +
+              (lines ? `\n\n${lines}` : ''));
+        loadBudgeting(); loadOverview();
     }
     async function importReceipts() {
         try{

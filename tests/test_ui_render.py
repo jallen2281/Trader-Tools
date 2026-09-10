@@ -73,6 +73,7 @@ check('connected accounts are broken out, not just institutions',
       'renderPlaidAccounts' in b and 'linkPlaidAccount(' in b)
 check('balances can be refreshed from the bank', 'refreshPlaidBalances(' in b)
 check('history can be backfilled past the cursor', 'backfillPlaid(' in b)
+check('receipts can be reconciled against the bank feed', 'reconcileReceipts(' in b)
 check('payoff plan card present', 'debtPlanBody' in b)
 check('its strategy toggle and extra-payment input are wired',
       'planStrategy' in b and 'saveExtra(' in b)

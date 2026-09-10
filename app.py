@@ -2682,6 +2682,109 @@ def finance_import_transactions_csv():
                     'total_rows': len(rows)})
 
 
+# A card receipt and the bank's record of the same purchase agree to the cent, so the amount
+# is matched exactly. The dates need slack: a card authorises on one day and posts on
+# another, and a receipt may be photographed later still.
+RECEIPT_MATCH_DAYS = 5
+
+
+def _receipt_date(doc):
+    """When the purchase happened, preferring what the receipt itself says."""
+    if doc.purchase_date:
+        return doc.purchase_date
+    return doc.uploaded_at.date() if doc.uploaded_at else date.today()
+
+
+def _match_receipt_to_bank(doc, uid, window_days=RECEIPT_MATCH_DAYS):
+    """Find the imported bank transaction this receipt is evidence for.
+
+    Returns (transaction, reason). A match means the receipt should be ATTACHED to the
+    existing row rather than becoming a second transaction for the same money — that is the
+    double-count the card digits are here to prevent, and the attachment is the paper trail.
+
+    Ambiguity returns nothing. Two identical amounts on the same card within a few days is
+    rare but real (two coffees, same price), and picking one at random would attach a
+    receipt to the wrong purchase, which is worse for an audit than attaching it to none.
+    """
+    amt = round(float(doc.amount or 0), 2)
+    if amt <= 0:
+        return None, 'no amount on the receipt'
+    when = _receipt_date(doc)
+
+    q = SpendTransaction.query.filter(
+        SpendTransaction.user_id == uid,
+        SpendTransaction.source == 'plaid',
+        SpendTransaction.amount == amt,
+        SpendTransaction.posted_at >= when - timedelta(days=window_days),
+        SpendTransaction.posted_at <= when + timedelta(days=window_days))
+
+    if doc.card_last4:
+        masks = {a.account_id: a.mask for a in
+                 PlaidAccount.query.filter_by(user_id=uid).all() if a.mask}
+        ids = [aid for aid, m in masks.items() if m == doc.card_last4]
+        if not ids:
+            # The card on the receipt is not one of the connected accounts, so the bank feed
+            # cannot contain this purchase. That is a definite answer, not a failure.
+            return None, 'card ...%s is not a connected account' % doc.card_last4
+        q = q.filter(SpendTransaction.plaid_account_id.in_(ids))
+
+    rows = q.all()
+    if not rows:
+        return None, 'no bank transaction for %s within %d days' % (_money(amt), window_days)
+    if len(rows) > 1:
+        # Closest by date wins, but only if it wins outright.
+        rows.sort(key=lambda r: abs((r.posted_at - when).days))
+        if abs((rows[0].posted_at - when).days) == abs((rows[1].posted_at - when).days):
+            return None, '%d bank transactions match equally well' % len(rows)
+    return rows[0], 'matched'
+
+
+@app.route('/api/finance/receipts/reconcile', methods=['POST'])
+@require_api_auth
+def finance_reconcile_receipts():
+    """Attach receipts to the bank transactions they are evidence for, and undo doubles.
+
+    Runs in both directions: a receipt imported as its own transaction before the bank feed
+    caught up has that duplicate removed and the receipt attached to the real row instead.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    attached = merged = unmatched = 0
+    details = []
+    for doc in TaxDocument.query.filter_by(user_id=uid, doc_type='receipt').all():
+        if float(doc.amount or 0) <= 0:
+            continue
+        # Already attached to a bank row? Nothing to do.
+        if SpendTransaction.query.filter_by(user_id=uid, tax_document_id=doc.id,
+                                            source='plaid').first():
+            continue
+        match, reason = _match_receipt_to_bank(doc, uid)
+        if not match:
+            unmatched += 1
+            details.append({'document_id': doc.id, 'merchant': doc.merchant,
+                            'amount': float(doc.amount or 0), 'result': reason})
+            continue
+        dup = SpendTransaction.query.filter_by(
+            user_id=uid, external_id='receipt:%d' % doc.id).first()
+        if dup:
+            db.session.delete(dup)
+            merged += 1
+        else:
+            attached += 1
+        match.tax_document_id = doc.id
+        if doc.deductible:
+            match.notes = ((match.notes or '') + ' ').strip() + \
+                ' Receipt #%d attached (deductible).' % doc.id
+        details.append({'document_id': doc.id, 'merchant': doc.merchant,
+                        'amount': float(doc.amount or 0),
+                        'result': 'merged duplicate' if dup else 'attached',
+                        'transaction_id': match.id})
+    db.session.commit()
+    return jsonify({'attached': attached, 'duplicates_removed': merged,
+                    'unmatched': unmatched, 'details': details})
+
+
 @app.route('/api/finance/transactions/import-receipts', methods=['POST'])
 @require_api_auth
 def finance_import_receipts():
@@ -2695,7 +2798,7 @@ def finance_import_receipts():
     existing = {e for (e,) in db.session.query(SpendTransaction.external_id)
                 .filter(SpendTransaction.user_id == uid,
                         SpendTransaction.external_id.like('receipt:%')).all()}
-    imported, skipped, no_amount = 0, 0, 0
+    imported, skipped, no_amount, matched_to_bank = 0, 0, 0, 0
     for doc in docs:
         amt = round(float(doc.amount or 0), 2)
         if amt <= 0:
@@ -2705,12 +2808,19 @@ def finance_import_receipts():
         if key in existing:
             skipped += 1
             continue
+        # If the bank already imported this purchase, attach the receipt to that row instead
+        # of creating a second transaction for the same money.
+        match, _reason = _match_receipt_to_bank(doc, uid)
+        if match:
+            match.tax_document_id = doc.id
+            matched_to_bank += 1
+            continue
         merchant = doc.merchant or doc.issuer
         cat = (doc.category or '').lower()
         if cat not in BUDGET_CATEGORIES:
             cat = _guess_spend_category('{} {}'.format(merchant or '', doc.filename or ''))
         db.session.add(SpendTransaction(
-            user_id=uid, posted_at=(doc.uploaded_at.date() if doc.uploaded_at else date.today()),
+            user_id=uid, posted_at=_receipt_date(doc),
             description=(merchant or doc.filename or 'Receipt')[:200],
             merchant=(merchant or None), category=cat, amount=amt, source='receipt',
             external_id=key, tax_document_id=doc.id,
@@ -2718,6 +2828,7 @@ def finance_import_receipts():
         imported += 1
     db.session.commit()
     return jsonify({'imported': imported, 'already_imported': skipped,
+                    'matched_to_bank': matched_to_bank,
                     'receipts_without_amount': no_amount, 'receipts_seen': len(docs)})
 
 
@@ -4922,7 +5033,9 @@ def _tax_doc_extract(doc):
     if doc.doc_type == 'receipt':
         prompt = ('Extract this receipt as JSON with keys: merchant (string), date (YYYY-MM-DD or null), '
                   'amount (number: the total), category (one of housing, utilities, transportation, insurance, food, '
-                  'healthcare, subscriptions, entertainment, personal, other), tax_deductible (true or false, best guess). '
+                  'healthcare, subscriptions, entertainment, personal, other), tax_deductible (true or false, best guess), '
+                  'card_last4 (string: the last FOUR digits of the card used, often shown as "****1234" or '
+                  '"XXXX1234" near the payment line; null if paid in cash or not printed). '
                   'Return only the JSON object.')
     else:
         prompt = ('Extract this US tax form as JSON with keys: form_type (e.g. "W-2","1099-NEC"), tax_year (integer or null), '
@@ -4982,6 +5095,13 @@ def _apply_extracted_to_doc(doc, data):
             doc.category = str(data['category'])[:50]
         if isinstance(data.get('tax_deductible'), bool):
             doc.deductible = data['tax_deductible']
+        # Keep only four digits: models return "****1234", "x1234" and "1234" about equally.
+        last4 = ''.join(ch for ch in str(data.get('card_last4') or '') if ch.isdigit())
+        if len(last4) >= 4:
+            doc.card_last4 = last4[-4:]
+        d = _parse_csv_date(data.get('date'))
+        if d:
+            doc.purchase_date = d
     else:
         w = _num(data, 'wages', 'box1', 'income', 'amount')
         if w is not None:
