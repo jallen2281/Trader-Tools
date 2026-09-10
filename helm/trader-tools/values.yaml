@@ -193,7 +193,12 @@ config:
   # anything you might enable later in Plaid's additional_consented_products instead,
   # because adding a product here after the fact forces every connected user back
   # through Link to re-authorize.
-  plaidEnv: sandbox
+  # This has to match the keys in the plaid-keys secret. They are not interchangeable:
+  # production credentials sent to sandbox.plaid.com come back INVALID_API_KEYS, which reads
+  # like a bad secret rather than a wrong endpoint. Rotating the secret alone is not enough
+  # — change this in the same breath, and let ArgoCD roll the pods (a Secret or ConfigMap
+  # edit does not restart anything by itself; the commit-sha annotation is what does).
+  plaidEnv: production
   plaidProducts: "transactions"
   
   # LLM Provider: ollama or rkllm
