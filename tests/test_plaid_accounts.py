@@ -347,6 +347,7 @@ check('it reports itself as one', res.get('backfill') is True, res)
 check('the lost deposit is recovered', res['skipped_income'] == 1, res)
 check('a genuinely missing transaction is added', res['added'] == 1, res)
 check('one already held is left alone, not rewritten', res['unchanged'] == 1, res)
+check('nothing needed re-attributing here', res.get('attributed') == 0, res)
 check('and it did not run out of pages', res.get('truncated') is False, res)
 with app.app_context():
     check('the hand-set category survived the replay',
@@ -359,6 +360,28 @@ with app.app_context():
     check('and nothing was duplicated',
           A.SpendTransaction.query.count() == before_txns + 1,
           (before_txns, A.SpendTransaction.query.count()))
+
+print('\n--- backfill fills an EMPTY account id, which is a gap and not a choice ---')
+# Rows imported before plaid_account_id existed have none. Leaving them alone on a replay
+# meant the account breakout applied to nothing but the newest transactions — 165 of 238
+# rows unattributed on the real data.
+with app.app_context():
+    old_row = A.SpendTransaction.query.filter_by(external_id='plaid:t1').first()
+    old_row.plaid_account_id = None
+    old_row.category = 'entertainment'          # a hand edit that must survive
+    db.session.commit()
+FAKE.pages = [{
+    'added': [txn('t1', 'acc-prime', 51.20, 'STARBUCKS')],
+    'modified': [], 'removed': [], 'next_cursor': 'c', 'has_more': False,
+}]
+res3 = c.post('/api/plaid/items/1/backfill').get_json()
+check('the missing attribution is filled in', res3.get('attributed') == 1, res3)
+with app.app_context():
+    row = A.SpendTransaction.query.filter_by(external_id='plaid:t1').first()
+    check('the row now knows its account', row.plaid_account_id == 'acc-prime',
+          row.plaid_account_id)
+    check('but the hand-set category is STILL untouched', row.category == 'entertainment',
+          row.category)
 
 print('\n--- and running it twice finds nothing new ---')
 FAKE.pages = [{

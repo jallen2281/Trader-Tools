@@ -2290,7 +2290,7 @@ def _plaid_sync_item(item, client=None, backfill=False):
     # account_id -> type, so a deposit can be told apart from a card payment as it arrives.
     acct_types = {a.account_id: (a.type or '') for a in
                   PlaidAccount.query.filter_by(user_id=item.user_id).all()}
-    unchanged = 0
+    unchanged = attributed = 0
     cursor = None if backfill else item.cursor
     # A full replay reaches back much further than an incremental sync, so it needs a bigger
     # ceiling. Whether the ceiling was actually hit is reported, because silently stopping
@@ -2322,8 +2322,14 @@ def _plaid_sync_item(item, client=None, backfill=False):
                 db.session.add(row)
                 added += 1
             elif backfill:
-                # Already have it. Leave the row alone — see the note above about not
-                # rewriting hand-edited categories during a replay.
+                # Already have it, so leave what the user may have edited alone — see the
+                # note above. One exception: a field that is EMPTY is a gap, not a choice.
+                # plaid_account_id is bank-derived and never user-edited, and rows imported
+                # before that column existed have none, so the account breakout would apply
+                # to nothing but the newest transactions unless the replay fills it in.
+                if not row.plaid_account_id and txn.get('account_id'):
+                    row.plaid_account_id = txn.get('account_id')
+                    attributed += 1
                 unchanged += 1
                 continue
             else:
@@ -2356,6 +2362,7 @@ def _plaid_sync_item(item, client=None, backfill=False):
     if backfill:
         out['backfill'] = True
         out['unchanged'] = unchanged
+        out['attributed'] = attributed
         out['pages'] = pages
         # Hitting the ceiling means history remains unread; running it again continues from
         # the cursor this run saved rather than starting over.
