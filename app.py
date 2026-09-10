@@ -796,6 +796,26 @@ PAY_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly'}
 INCOME_TAX_FORMS = {'W2', '1099', 'none'}
 
 
+def _clean_match_tiers(raw):
+    """Normalise and bound an employer match schedule, or None if nothing usable is left.
+
+    Bounded here rather than trusted: a band with a nonsense width or rate would silently
+    distort every match figure downstream, and the schedule is entered by hand from a plan
+    document. Nothing about any particular plan is assumed — the shape is whatever the
+    document says.
+    """
+    tiers = []
+    for t in (raw or [])[:12]:
+        try:
+            w = round(float(t.get('employee_pct') or 0), 2)
+            m = round(float(t.get('match_pct') or 0), 2)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if 0 < w <= 100 and 0 <= m <= 500:
+            tiers.append({'employee_pct': w, 'match_pct': m})
+    return tiers or None
+
+
 def _apply_income_fields(x, d):
     """Copy validated income fields from request dict d onto IncomeSource x."""
     if 'name' in d and (d.get('name') or '').strip():
@@ -827,6 +847,34 @@ def _apply_income_fields(x, d):
             x.next_pay_date = datetime.strptime(npd, '%Y-%m-%d').date() if npd else None
         except ValueError:
             x.next_pay_date = None
+
+    # ---- payroll detail, which belongs to this job rather than to the household
+    if 'pretax_retirement_mode' in d:
+        m = (d.get('pretax_retirement_mode') or '').lower()
+        if m in ('amount', 'percent'):
+            x.pretax_retirement_mode = m
+    for f in ('pretax_retirement_pct', 'roth_retirement_pct'):
+        if f in d:
+            try:
+                # A deferral over 100% of pay is a typo, not a plan.
+                setattr(x, f, min(max(float(d.get(f) or 0), 0.0), 100.0))
+            except (TypeError, ValueError):
+                pass
+    for f in ('pretax_retirement_annual', 'roth_retirement_annual', 'pretax_other_annual',
+              'ytd_federal_withheld', 'ytd_state_withheld'):
+        if f in d:
+            try:
+                setattr(x, f, max(float(d.get(f) or 0), 0.0))
+            except (TypeError, ValueError):
+                pass
+    if 'employer_match_tiers' in d:
+        x.employer_match_tiers = _clean_match_tiers(d.get('employer_match_tiers'))
+    if 'ytd_as_of' in d:
+        raw = (d.get('ytd_as_of') or '').strip()
+        try:
+            x.ytd_as_of = datetime.strptime(raw, '%Y-%m-%d').date() if raw else None
+        except ValueError:
+            x.ytd_as_of = None
     if 'active' in d:
         x.active = bool(d.get('active'))
 
@@ -5442,7 +5490,7 @@ def _tax_profile(user_id):
                       ytd_federal_withheld=0, ytd_state_withheld=0)
 
 
-def _project_withholding(prof, user_id, yr):
+def _project_withholding(prof, user_id, yr, payroll=None):
     """Best available figure for federal withholding this year, plus how it was obtained.
 
     Order matters. Mid-year there is no W-2, so a YTD paystub figure annualized is the only
@@ -5451,14 +5499,22 @@ def _project_withholding(prof, user_id, yr):
     year's tax was owed.
     """
     today = date.today()
-    ytd = float(getattr(prof, 'ytd_federal_withheld', 0) or 0)
-    as_of = getattr(prof, 'ytd_as_of', None)
+    # Per-job figures win: each employer withholds against its own wages on its own W-4, so
+    # the household total is the sum of the paystubs rather than one number covering both.
+    payroll = payroll or {}
+    ytd = float(payroll.get('ytd_federal') or 0)
+    as_of = payroll.get('ytd_as_of')
+    if not ytd:
+        ytd = float(getattr(prof, 'ytd_federal_withheld', 0) or 0)
+        as_of = getattr(prof, 'ytd_as_of', None)
     if ytd > 0 and as_of and as_of.year == yr:
         elapsed = (as_of - date(yr, 1, 1)).days + 1
         if elapsed > 0:
+            n = len(payroll.get('per_source') or [])
             return round(ytd * 365.0 / elapsed, 2), True, (
-                'projected from %s withheld year-to-date as of %s' % (
-                    _money(ytd), as_of.isoformat()))
+                'projected from %s withheld year-to-date as of %s%s' % (
+                    _money(ytd), as_of.isoformat(),
+                    ' across %d jobs' % n if n > 1 else ''))
     docs = round(sum(float(d.fed_withheld or 0) for d in
                      TaxDocument.query.filter_by(user_id=user_id, tax_year=yr).all()), 2)
     if docs > 0:
@@ -5479,6 +5535,98 @@ def _bracket_tax(taxable, brackets):
         else:
             break
     return round(tax, 2)
+
+
+def _payroll_rollup(srcs, prof):
+    """Retirement, employer match and withholding, added up job by job.
+
+    Withholding and a 401(k) deferral come off a PAYCHECK, so they belong to the job. A
+    spouse's job has its own percentages, its own match schedule and its own W-4. All of it
+    used to live on TaxProfile — one row per user — so a second income had nowhere to record
+    any of it, and the match was computed as though a single employer matched the couple's
+    combined wages. On a tiered schedule that is not a rounding error: two $60k jobs each
+    matching the first 3% is a very different number from one employer matching $120k.
+
+    The IRS elective-deferral limit is per PERSON, not per job, so it is applied per owner.
+    Someone with two jobs shares one $23,500 allowance across both; a couple has two.
+
+    Falls back to the household profile only when NO income has payroll detail of its own,
+    so an estimate that worked before these fields existed keeps working unchanged. Mixing
+    the two would double-count, so it is deliberately one or the other.
+    """
+    w2 = [x for x in srcs if x.tax_form == 'W2']
+    detailed = [x for x in w2 if x.has_payroll_detail()]
+    w2_gross = round(sum(x.gross_annual() for x in w2), 2)
+
+    if not detailed:
+        roth = prof.roth_annual(w2_gross)
+        room = max(0.0, _401K_ELECTIVE_LIMIT - roth)
+        trad = prof.retirement_annual(w2_gross, room)
+        return {
+            'per_source': [],
+            'source': 'household profile',
+            'roth': roth,
+            'pretax_retirement': trad,
+            'capped': prof.retirement_annual(w2_gross) > trad + 0.005,
+            'pretax_other': round(float(prof.pretax_other_annual or 0), 2),
+            'employer_match': prof.employer_match_annual(w2_gross),
+            'unclaimed_match': prof.unclaimed_match_annual(w2_gross),
+            'ytd_federal': round(float(prof.ytd_federal_withheld or 0), 2),
+            'ytd_state': round(float(prof.ytd_state_withheld or 0), 2),
+            'ytd_as_of': prof.ytd_as_of,
+        }
+
+    rows, capped = [], False
+    # Group by owner so one person's two jobs share a single elective-deferral allowance.
+    by_owner = {}
+    for x in detailed:
+        by_owner.setdefault(x.owner or 'me', []).append(x)
+
+    for owner, jobs in by_owner.items():
+        room = float(_401K_ELECTIVE_LIMIT)
+        for x in sorted(jobs, key=lambda j: -j.gross_annual()):
+            g = x.gross_annual()
+            roth = x.roth_annual(g, room)
+            room = max(0.0, room - roth)
+            want = x.retirement_annual(g)
+            trad = x.retirement_annual(g, room)
+            room = max(0.0, room - trad)
+            if want > trad + 0.005:
+                capped = True
+            rows.append({
+                'id': x.id, 'name': x.name, 'owner': owner,
+                'gross': round(g, 2),
+                'pretax_retirement': trad,
+                'roth_retirement': roth,
+                'pretax_other': round(float(x.pretax_other_annual or 0), 2),
+                'employer_match': x.employer_match_annual(g),
+                'unclaimed_match': x.unclaimed_match_annual(g),
+                'full_match_pct': x.full_match_pct(),
+                'deferral_for_full_match': x.deferral_for_full_match(),
+                'total_deferral_pct': x.total_deferral_pct(g),
+                'ytd_federal_withheld': round(float(x.ytd_federal_withheld or 0), 2),
+                'ytd_state_withheld': round(float(x.ytd_state_withheld or 0), 2),
+                'ytd_as_of': x.ytd_as_of.isoformat() if x.ytd_as_of else None,
+            })
+
+    # A source with no detail of its own contributes only its wages, never the other job's
+    # percentages — applying one job's 6% to another's salary would invent a deduction.
+    dated = [x.ytd_as_of for x in detailed if x.ytd_as_of]
+    return {
+        'per_source': rows,
+        'source': 'per income source',
+        'roth': round(sum(r['roth_retirement'] for r in rows), 2),
+        'pretax_retirement': round(sum(r['pretax_retirement'] for r in rows), 2),
+        'capped': capped,
+        'pretax_other': round(sum(r['pretax_other'] for r in rows), 2),
+        'employer_match': round(sum(r['employer_match'] for r in rows), 2),
+        'unclaimed_match': round(sum(r['unclaimed_match'] for r in rows), 2),
+        'ytd_federal': round(sum(r['ytd_federal_withheld'] for r in rows), 2),
+        'ytd_state': round(sum(r['ytd_state_withheld'] for r in rows), 2),
+        # The oldest as-of date, so annualising never assumes more of the year has elapsed
+        # than the least current paystub actually covers.
+        'ytd_as_of': min(dated) if dated else None,
+    }
 
 
 def _income_tax_estimate(user_id, year=None, filing=None):
@@ -5504,16 +5652,20 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     # and feels identical, but it is post-tax — deducting it would understate the bill.
     # The IRS elective limit covers traditional and Roth together, so Roth consumes the
     # allowance first and traditional is capped at what remains.
-    roth_retirement = prof.roth_annual(w2_gross)
-    deferral_room = max(0.0, _401K_ELECTIVE_LIMIT - roth_retirement)
-    retirement = prof.retirement_annual(w2_gross, deferral_room)
-    retirement_capped = (prof.retirement_annual(w2_gross) > retirement + 0.005)
-    pretax = round(retirement + float(prof.pretax_other_annual or 0), 2)
+    payroll = _payroll_rollup(srcs, prof)
+    roth_retirement = payroll['roth']
+    retirement = payroll['pretax_retirement']
+    retirement_capped = payroll['capped']
+    pretax = round(retirement + payroll['pretax_other'], 2)
     w2_taxable = max(0.0, w2_gross - pretax)
 
-    employer_match = prof.employer_match_annual(w2_gross)
-    unclaimed_match = prof.unclaimed_match_annual(w2_gross)
-    if (prof.pretax_retirement_mode or 'amount') == 'percent':
+    employer_match = payroll['employer_match']
+    unclaimed_match = payroll['unclaimed_match']
+    if payroll['per_source']:
+        retirement_basis = '; '.join(
+            '%s %s%% of %s' % (r['name'], r['total_deferral_pct'], _money(r['gross']))
+            for r in payroll['per_source'])
+    elif (prof.pretax_retirement_mode or 'amount') == 'percent':
         retirement_basis = '%s%% traditional + %s%% Roth of %s wages' % (
             prof.pretax_retirement_pct or 0, prof.roth_retirement_pct or 0, _money(w2_gross))
     else:
@@ -5541,7 +5693,8 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     fed_income_tax = round(max(0.0, fed_before_credits - credits), 2)
 
     total_fed = round(fed_income_tax + se_tax, 2)
-    withheld, withholding_known, withholding_source = _project_withholding(prof, user_id, yr)
+    withheld, withholding_known, withholding_source = _project_withholding(
+        prof, user_id, yr, payroll)
     balance_due = round(total_fed - withheld, 2)
 
     rate = float(prof.state_tax_rate or 0)
@@ -5564,6 +5717,8 @@ def _income_tax_estimate(user_id, year=None, filing=None):
         'elective_deferral_limit': _401K_ELECTIVE_LIMIT,
         'employer_match': employer_match,
         'unclaimed_match': unclaimed_match,
+        'payroll_source': payroll['source'],
+        'payroll_by_source': payroll['per_source'],
         'match_tiers': [{'employee_pct': w, 'match_pct': m} for w, m in prof.match_tiers()],
         'full_match_pct': prof.full_match_pct(),
         'deferral_for_full_match': prof.deferral_for_full_match(),
@@ -5618,18 +5773,7 @@ def finance_tax_profile():
             except (TypeError, ValueError):
                 pass
     if 'employer_match_tiers' in d:
-        # Normalized and bounded here rather than trusted: a band with a nonsense width or
-        # rate would silently distort every match figure downstream.
-        tiers = []
-        for t in (d.get('employer_match_tiers') or [])[:12]:
-            try:
-                w = round(float(t.get('employee_pct') or 0), 2)
-                m = round(float(t.get('match_pct') or 0), 2)
-            except (AttributeError, TypeError, ValueError):
-                continue
-            if 0 < w <= 100 and 0 <= m <= 500:
-                tiers.append({'employee_pct': w, 'match_pct': m})
-        prof.employer_match_tiers = tiers or None
+        prof.employer_match_tiers = _clean_match_tiers(d.get('employer_match_tiers'))
 
     mode = (d.get('pretax_retirement_mode') or '').lower()
     if mode in ('amount', 'percent'):

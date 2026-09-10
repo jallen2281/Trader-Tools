@@ -1062,7 +1062,136 @@ class CreditScore(db.Model):
         }
 
 
-class IncomeSource(db.Model):
+class PayrollDeferralMixin(object):
+    """Retirement deferral and employer-match arithmetic, against whatever gross the caller
+    supplies.
+
+    Shared because these figures belong to a JOB, not to a household: withholding and a
+    401(k) deferral come off a paycheck, and a spouse's paycheck has its own percentages,
+    its own match schedule and its own withholding. They lived only on TaxProfile — one row
+    per user — so a second income had nowhere to put any of it, and the match was computed
+    as though a single employer matched the couple's combined wages.
+
+    TaxProfile keeps these methods as a fallback for a profile filled in before the fields
+    existed on the income itself; IncomeSource is where they belong now.
+    """
+
+    def match_tiers(self):
+        """The effective match schedule, as an ordered list of (employee_pct, match_pct).
+
+        Falls back to the legacy flat rate/limit pair as a single band, so anything saved
+        before tiers existed keeps producing the same numbers.
+        """
+        raw = self.employer_match_tiers
+        if isinstance(raw, list) and raw:
+            out = []
+            for t in raw:
+                try:
+                    w = float(t.get('employee_pct') or 0)
+                    m = float(t.get('match_pct') or 0)
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if w > 0:
+                    out.append((w, m))
+            if out:
+                return out
+        rate = float(self.employer_match_rate_pct or 0)
+        cap = float(self.employer_match_limit_pct or 0)
+        return [(cap, rate)] if (rate and cap) else []
+
+    def full_match_pct(self):
+        """Employer contribution, as a percent of pay, when every band is filled."""
+        return round(sum(w * m / 100.0 for w, m in self.match_tiers()), 4)
+
+    def deferral_for_full_match(self):
+        """Employee deferral percent needed to fill every band."""
+        return round(sum(w for w, _ in self.match_tiers()), 4)
+
+    def matched_pct(self, gross):
+        """Employer contribution as a percent of pay at the CURRENT deferral.
+
+        Bands are consumed in order, which is what makes a tiered schedule work: the first
+        3% is matched at 100% before any of it counts toward the 20% band.
+        """
+        remaining = self.total_deferral_pct(gross)
+        matched = 0.0
+        for width, rate in self.match_tiers():
+            if remaining <= 0:
+                break
+            take = min(remaining, width)
+            matched += take * rate / 100.0
+            remaining -= take
+        return round(matched, 4)
+
+    def employer_match_annual(self, gross):
+        if not gross:
+            return 0.0
+        return round(float(gross) * self.matched_pct(gross) / 100.0, 2)
+
+    def unclaimed_match_annual(self, gross):
+        """Employer money left behind by not filling every band.
+
+        Measured against the full schedule rather than a single cap, so a plan whose top
+        band matches at 10% is not reported as if that last percent were worth 100%.
+        """
+        if not gross:
+            return 0.0
+        shortfall = max(0.0, self.full_match_pct() - self.matched_pct(gross))
+        return round(float(gross) * shortfall / 100.0, 2)
+
+    def retirement_annual(self, gross, limit=None):
+        """Annual pre-tax retirement contribution in dollars.
+
+        In percent mode the figure resolves against gross wages, which is what a payroll
+        deferral percentage actually applies to. `limit` caps it at the IRS
+        elective-deferral maximum — without that, entering 50% would deduct an amount nobody
+        is allowed to contribute and quietly understate the tax.
+        """
+        return self._deferral(gross, self.pretax_retirement_pct,
+                              self.pretax_retirement_annual, limit)
+
+    def roth_annual(self, gross, limit=None):
+        """Annual Roth contribution. Tracked, but deliberately NOT deducted anywhere in the
+        tax estimate — Roth money is taxed now and withdrawn tax-free later."""
+        return self._deferral(gross, self.roth_retirement_pct,
+                              self.roth_retirement_annual, limit)
+
+    def _deferral(self, gross, pct, amount, limit=None):
+        if (self.pretax_retirement_mode or 'amount') == 'percent':
+            amt = float(gross or 0) * float(pct or 0) / 100.0
+        else:
+            amt = float(amount or 0)
+        if limit is not None:
+            amt = min(amt, float(limit))
+        return round(amt, 2)
+
+    def total_deferral_pct(self, gross):
+        """Combined traditional + Roth deferral as a percent of wages — the figure an
+        employer match is actually measured against."""
+        if (self.pretax_retirement_mode or 'amount') == 'percent':
+            return round(float(self.pretax_retirement_pct or 0)
+                         + float(self.roth_retirement_pct or 0), 2)
+        if not gross:
+            return 0.0
+        total = float(self.pretax_retirement_annual or 0) + float(self.roth_retirement_annual or 0)
+        return round(total / float(gross) * 100.0, 2)
+
+    def has_payroll_detail(self):
+        """Whether anything payroll-specific has actually been entered here.
+
+        Used to decide whether to fall back to the household profile: a source with nothing
+        set must not silently contribute zero and dilute an estimate that used to work.
+        """
+        return any([
+            float(self.pretax_retirement_pct or 0), float(self.pretax_retirement_annual or 0),
+            float(self.roth_retirement_pct or 0), float(self.roth_retirement_annual or 0),
+            float(self.employer_match_rate_pct or 0), bool(self.employer_match_tiers),
+            float(self.ytd_federal_withheld or 0), float(self.ytd_state_withheld or 0),
+            float(self.pretax_other_annual or 0),
+        ])
+
+
+class IncomeSource(PayrollDeferralMixin, db.Model):
     """One income stream for the finances module — a salaried or hourly job (per person).
     Hourly folds overtime at ot_multiplier for hours beyond ot_threshold_hours. Feeds the
     net-worth/DTI outlook, the pay-date calendar, and (Phase 3) the income-tax estimate."""
@@ -1101,6 +1230,27 @@ class IncomeSource(db.Model):
     irregular = db.Column(db.Boolean, default=False)
     estimated_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
     est_tax_rate = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)  # e.g. 28.00
+
+    # ---- payroll detail, per job. Withholding comes off a paycheck, so it belongs to the
+    # paycheck: a spouse's job has its own deferral percentages, its own match schedule and
+    # its own withholding. These lived on TaxProfile, one row per user, which left a second
+    # income with nowhere to record any of it.
+    pretax_retirement_mode = db.Column(db.String(10), default='percent')   # amount | percent
+    pretax_retirement_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
+    pretax_retirement_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    roth_retirement_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
+    roth_retirement_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    employer_match_tiers = db.Column(JSON)     # [{"employee_pct": 3, "match_pct": 100}, ...]
+    employer_match_rate_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
+    employer_match_limit_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
+    # Health insurance, HSA, and anything else deducted before tax. Also what the income
+    # reconciliation needs to stop attributing a normal payslip gap to a missing deposit.
+    pretax_other_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    # Withheld so far this year, from a recent paystub. Per job, because each employer
+    # withholds against its own wages on its own W-4.
+    ytd_federal_withheld = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    ytd_state_withheld = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    ytd_as_of = db.Column(db.Date)
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1193,6 +1343,20 @@ class IncomeSource(db.Model):
             'next_pay_date': self.next_pay_date.isoformat() if self.next_pay_date else None,
             'tax_form': self.tax_form, 'irregular': bool(self.irregular),
             'estimated_annual': float(self.estimated_annual or 0), 'est_tax_rate': float(self.est_tax_rate or 0),
+            'pretax_retirement_mode': self.pretax_retirement_mode or 'percent',
+            'pretax_retirement_pct': float(self.pretax_retirement_pct or 0),
+            'pretax_retirement_annual': float(self.pretax_retirement_annual or 0),
+            'roth_retirement_pct': float(self.roth_retirement_pct or 0),
+            'roth_retirement_annual': float(self.roth_retirement_annual or 0),
+            'employer_match_tiers': [{'employee_pct': w, 'match_pct': m}
+                                     for w, m in self.match_tiers()],
+            'full_match_pct': self.full_match_pct(),
+            'deferral_for_full_match': self.deferral_for_full_match(),
+            'pretax_other_annual': float(self.pretax_other_annual or 0),
+            'ytd_federal_withheld': float(self.ytd_federal_withheld or 0),
+            'ytd_state_withheld': float(self.ytd_state_withheld or 0),
+            'ytd_as_of': self.ytd_as_of.isoformat() if self.ytd_as_of else None,
+            'has_payroll_detail': self.has_payroll_detail(),
             'active': bool(self.active),
             'weekly_gross': self.weekly_gross(), 'gross_monthly': self.gross_monthly(),
             'gross_annual': self.gross_annual(), 'paycheck_estimate': self.paycheck_estimate(),
@@ -1680,7 +1844,7 @@ class TaxDocument(db.Model):
         }
 
 
-class TaxProfile(db.Model):
+class TaxProfile(PayrollDeferralMixin, db.Model):
     """The household facts a tax estimate needs and income alone cannot supply.
 
     Without this the estimator assumed married-filing-jointly, no dependents, no pre-tax
@@ -1755,104 +1919,9 @@ class TaxProfile(db.Model):
     notes = db.Column(db.Text)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    def retirement_annual(self, w2_gross, limit=None):
-        """Annual pre-tax retirement contribution in dollars.
-
-        In percent mode the figure is resolved against W2 gross wages, which is what a
-        payroll deferral percentage actually applies to. `limit` caps it at the IRS
-        elective-deferral maximum — without that, entering 50% would deduct an amount
-        nobody is allowed to contribute and quietly understate the tax.
-        """
-        return self._deferral(w2_gross, self.pretax_retirement_pct,
-                              self.pretax_retirement_annual, limit)
-
-    def roth_annual(self, w2_gross, limit=None):
-        """Annual Roth contribution. Tracked, but deliberately NOT deducted anywhere in the
-        tax estimate — Roth money is taxed now and withdrawn tax-free later."""
-        return self._deferral(w2_gross, self.roth_retirement_pct,
-                              self.roth_retirement_annual, limit)
-
-    def _deferral(self, w2_gross, pct, amount, limit=None):
-        if (self.pretax_retirement_mode or 'amount') == 'percent':
-            amt = float(w2_gross or 0) * float(pct or 0) / 100.0
-        else:
-            amt = float(amount or 0)
-        if limit:
-            amt = min(amt, float(limit))
-        return round(amt, 2)
-
-    def total_deferral_pct(self, w2_gross):
-        """Combined traditional + Roth deferral as a percent of W2 wages — the figure an
-        employer match is actually measured against."""
-        if (self.pretax_retirement_mode or 'amount') == 'percent':
-            return round(float(self.pretax_retirement_pct or 0) + float(self.roth_retirement_pct or 0), 2)
-        if not w2_gross:
-            return 0.0
-        total = float(self.pretax_retirement_annual or 0) + float(self.roth_retirement_annual or 0)
-        return round(total / float(w2_gross) * 100.0, 2)
-
-    def match_tiers(self):
-        """The effective match schedule, as an ordered list of (employee_pct, match_pct).
-
-        Falls back to the legacy flat rate/limit pair as a single band, so a profile saved
-        before tiers existed keeps producing the same numbers.
-        """
-        raw = self.employer_match_tiers
-        if isinstance(raw, list) and raw:
-            out = []
-            for t in raw:
-                try:
-                    w = float(t.get('employee_pct') or 0)
-                    m = float(t.get('match_pct') or 0)
-                except (AttributeError, TypeError, ValueError):
-                    continue
-                if w > 0:
-                    out.append((w, m))
-            if out:
-                return out
-        rate = float(self.employer_match_rate_pct or 0)
-        cap = float(self.employer_match_limit_pct or 0)
-        return [(cap, rate)] if (rate and cap) else []
-
-    def full_match_pct(self):
-        """Employer contribution, as a percent of pay, when every band is filled."""
-        return round(sum(w * m / 100.0 for w, m in self.match_tiers()), 4)
-
-    def deferral_for_full_match(self):
-        """Employee deferral percent needed to fill every band."""
-        return round(sum(w for w, _ in self.match_tiers()), 4)
-
-    def matched_pct(self, w2_gross):
-        """Employer contribution as a percent of pay at the CURRENT deferral.
-
-        Bands are consumed in order, which is what makes a tiered schedule work: the first
-        3% is matched at 100% before any of it counts toward the 20% band.
-        """
-        remaining = self.total_deferral_pct(w2_gross)
-        matched = 0.0
-        for width, rate in self.match_tiers():
-            if remaining <= 0:
-                break
-            take = min(remaining, width)
-            matched += take * rate / 100.0
-            remaining -= take
-        return round(matched, 4)
-
-    def employer_match_annual(self, w2_gross):
-        if not w2_gross:
-            return 0.0
-        return round(float(w2_gross) * self.matched_pct(w2_gross) / 100.0, 2)
-
-    def unclaimed_match_annual(self, w2_gross):
-        """Employer money left behind by not filling every band.
-
-        Measured against the full schedule rather than a single cap, so a plan whose top
-        band matches at 10% is not reported as if that last percent were worth 100%.
-        """
-        if not w2_gross:
-            return 0.0
-        shortfall = max(0.0, self.full_match_pct() - self.matched_pct(w2_gross))
-        return round(float(w2_gross) * shortfall / 100.0, 2)
+    # retirement_annual / roth_annual / match_tiers and the rest now come from
+    # PayrollDeferralMixin, shared with IncomeSource. They remain here as the FALLBACK for a
+    # profile filled in before those fields existed on the income itself.
 
     def household_size(self):
         filers = 2 if self.filing_status in ('mfj', 'qss') else 1

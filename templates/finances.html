@@ -366,9 +366,73 @@
               <div style="flex:1;"><label class="fld">Next pay date</label><input id="iNext" type="date" class="fin-in" style="width:100%;" value="${e.next_pay_date||''}"></div>
             </div>
             <div id="iTaxRateBox"><label class="fld">Tax set-aside % <span class="muted">(1099 — covers income + ~15.3% self-employment tax; ~25–30% typical)</span></label><input id="iTaxRate" type="number" step="1" class="fin-in" style="width:100%;" value="${e.est_tax_rate||28}" oninput="incPreview()"></div>
+            <div id="iPayrollBox" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
+                <strong style="font-size:0.9em;">Payroll &mdash; this job</strong>
+                <button type="button" class="btn2" onclick="addIncTier()">+ Add match band</button>
+              </div>
+              <div class="muted" style="font-size:0.76em;margin:4px 0 10px;line-height:1.5;">
+                Withholding and a 401(k) deferral come off <em>this</em> paycheck, so they live here rather than once per household &mdash; a second job has its own percentages, its own match schedule and its own W-4.
+              </div>
+              <div style="display:flex;gap:10px;">
+                <div style="flex:1;"><label class="fld">Traditional %</label><input id="iPreTaxPct" type="number" step="0.5" min="0" max="100" class="fin-in" style="width:100%;" value="${e.pretax_retirement_pct||0}"></div>
+                <div style="flex:1;"><label class="fld">Roth %</label><input id="iRothPct" type="number" step="0.5" min="0" max="100" class="fin-in" style="width:100%;" value="${e.roth_retirement_pct||0}"></div>
+                <div style="flex:1;"><label class="fld">Other pre-tax $/yr <span class="muted">(insurance, HSA)</span></label><input id="iPreTaxOther" type="number" step="100" min="0" class="fin-in" style="width:100%;" value="${e.pretax_other_annual||0}"></div>
+              </div>
+              <div id="iTiers" style="margin-top:8px;"></div>
+              <div class="muted" id="iMatchSummary" style="font-size:0.78em;margin-top:4px;"></div>
+              <div style="display:flex;gap:10px;margin-top:8px;">
+                <div style="flex:1;"><label class="fld">Federal withheld YTD $</label><input id="iYtdFed" type="number" step="100" min="0" class="fin-in" style="width:100%;" value="${e.ytd_federal_withheld||0}"></div>
+                <div style="flex:1;"><label class="fld">State withheld YTD $</label><input id="iYtdState" type="number" step="100" min="0" class="fin-in" style="width:100%;" value="${e.ytd_state_withheld||0}"></div>
+                <div style="flex:1;"><label class="fld">As of <span class="muted">(paystub date)</span></label><input id="iYtdAsOf" type="date" class="fin-in" style="width:100%;" value="${e.ytd_as_of||''}"></div>
+              </div>
+            </div>
             <div id="iPreview" class="muted" style="margin-top:10px;font-size:0.85em;"></div>
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveIncome(${x?x.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="iMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
         toggleIncFields();
+        renderIncTiers((x && x.employer_match_tiers) || []);
+    }
+    /* The match schedule is entered as data, copied off a plan document. Nothing about any
+       particular plan is assumed, because the next job's is different. */
+    function renderIncTiers(tiers) {
+        const box = document.getElementById('iTiers');
+        if (!box) return;
+        box.innerHTML = (tiers || []).map((t, i) => `
+            <div style="display:flex;gap:8px;align-items:end;margin-bottom:6px;">
+              <div style="flex:1;"><label class="fld">${i === 0 ? 'First' : 'Next'} % of pay</label>
+                <input type="number" min="0" step="0.5" class="fin-in inc-tier-w" style="width:100%;" value="${t.employee_pct}" oninput="incMatchSummary()"></div>
+              <div style="flex:1;"><label class="fld">matched at %</label>
+                <input type="number" min="0" step="5" class="fin-in inc-tier-m" style="width:100%;" value="${t.match_pct}" oninput="incMatchSummary()"></div>
+              <button type="button" class="link-btn danger" style="padding-bottom:8px;" onclick="removeIncTier(${i})">remove</button>
+            </div>`).join('') ||
+            '<div class="muted" style="font-size:0.78em;">No employer match recorded for this job.</div>';
+        incMatchSummary();
+    }
+    function collectIncTiers() {
+        const w = [...document.querySelectorAll('.inc-tier-w')];
+        const m = [...document.querySelectorAll('.inc-tier-m')];
+        const out = [];
+        for (let i = 0; i < w.length; i++) {
+            const ep = parseFloat(w[i].value), mp = parseFloat(m[i].value);
+            if (ep > 0) out.push({employee_pct: ep, match_pct: isNaN(mp) ? 0 : mp});
+        }
+        return out;
+    }
+    function addIncTier() { renderIncTiers(collectIncTiers().concat([{employee_pct: 1, match_pct: 100}])); }
+    function removeIncTier(i) { const t = collectIncTiers(); t.splice(i, 1); renderIncTiers(t); }
+    /* Live total, so the bands can be checked against the figure the plan document states
+       before saving — a transcription slip is otherwise invisible. */
+    function incMatchSummary() {
+        const el = document.getElementById('iMatchSummary');
+        if (!el) return;
+        const t = collectIncTiers();
+        if (!t.length) { el.textContent = ''; return; }
+        const total = t.reduce((a, x) => a + x.employee_pct * x.match_pct / 100, 0);
+        const need = t.reduce((a, x) => a + x.employee_pct, 0);
+        const have = (parseFloat((document.getElementById('iPreTaxPct')||{}).value) || 0) +
+                     (parseFloat((document.getElementById('iRothPct')||{}).value) || 0);
+        el.innerHTML = `Full match <b>${Math.round(total*100)/100}% of pay</b>, which needs a <b>${Math.round(need*100)/100}%</b> contribution` +
+            (have < need ? ` &mdash; <span class="neg">you are at ${Math.round(have*100)/100}%</span>` : ' &mdash; <span class="pos">covered</span>');
     }
     async function saveIncome(id) {
         const g=i=>document.getElementById(i);
@@ -376,7 +440,15 @@
             irregular:g('iIrregular').checked,estimated_annual:parseFloat(g('iEstAnnual').value)||0,est_tax_rate:parseFloat(g('iTaxRate').value)||0,
             annual_salary:parseFloat(g('iSalary').value)||0,hourly_rate:parseFloat(g('iRate').value)||0,
             hours_per_week:parseFloat(g('iHours').value)||0,ot_multiplier:parseFloat(g('iOtMult').value)||1.5,
-            ot_threshold_hours:parseFloat(g('iOtThresh').value)||40,pay_frequency:g('iFreq').value,next_pay_date:g('iNext').value};
+            ot_threshold_hours:parseFloat(g('iOtThresh').value)||40,pay_frequency:g('iFreq').value,next_pay_date:g('iNext').value,
+            pretax_retirement_mode:'percent',
+            pretax_retirement_pct:parseFloat(g('iPreTaxPct').value)||0,
+            roth_retirement_pct:parseFloat(g('iRothPct').value)||0,
+            pretax_other_annual:parseFloat(g('iPreTaxOther').value)||0,
+            employer_match_tiers:collectIncTiers(),
+            ytd_federal_withheld:parseFloat(g('iYtdFed').value)||0,
+            ytd_state_withheld:parseFloat(g('iYtdState').value)||0,
+            ytd_as_of:g('iYtdAsOf').value};
         if(!body.name){ g('iMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/incomes/${id}`:'/api/finance/incomes',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadOutlook();

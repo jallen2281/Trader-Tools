@@ -74,6 +74,9 @@ check('connected accounts are broken out, not just institutions',
 check('balances can be refreshed from the bank', 'refreshPlaidBalances(' in b)
 check('history can be backfilled past the cursor', 'backfillPlaid(' in b)
 check('receipts can be reconciled against the bank feed', 'reconcileReceipts(' in b)
+check('each income carries its own payroll detail', 'iPayrollBox' in b)
+check('with its own match schedule', 'collectIncTiers(' in b and 'id="iTiers"' in b)
+check('and its own withholding', 'id="iYtdFed"' in b and 'id="iYtdAsOf"' in b)
 check('payoff plan card present', 'debtPlanBody' in b)
 check('its strategy toggle and extra-payment input are wired',
       'planStrategy' in b and 'saveExtra(' in b)

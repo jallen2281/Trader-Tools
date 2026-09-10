@@ -119,7 +119,9 @@
             </div>
         </div>
 
-        <div class="tp-section">
+        <div id="payrollPerSource"></div>
+
+        <div class="tp-section" id="tpLegacyPayroll">
             <div class="tp-legend">Retirement contributions</div>
             <div class="tp-note">
                 <strong>Only traditional contributions reduce your taxable wages.</strong>
@@ -195,7 +197,7 @@
             </div>
         </div>
 
-        <div class="tp-section">
+        <div class="tp-section" id="tpLegacyWithholding">
             <div class="tp-legend">Withholding to date</div>
             <div class="tp-note">
                 Mid-year there's no W-2 yet, so without this the estimate can't tell what you
@@ -442,6 +444,49 @@
         document.querySelectorAll('.tp-when-pct').forEach(e => { e.style.display = pct ? '' : 'none'; });
         document.querySelectorAll('.tp-when-amt').forEach(e => { e.style.display = pct ? 'none' : ''; });
     }
+    /* Withholding and retirement moved onto each income, because they come off a PAYCHECK:
+       a spouse's job has its own percentages, its own match schedule and its own W-4, and
+       one household row could hold only one of each. The fields below still work as a
+       fallback for a profile filled in before that, but once any income carries its own
+       detail they stop being used — so showing them as editable would invite entering a
+       number that changes nothing. */
+    function renderPayrollPerSource(d) {
+        const box = document.getElementById('payrollPerSource');
+        if (!box) return;
+        const rows = d.payroll_by_source || [];
+        const perSource = d.payroll_source === 'per income source';
+        document.getElementById('tpLegacyPayroll').style.display = perSource ? 'none' : '';
+        document.getElementById('tpLegacyWithholding').style.display = perSource ? 'none' : '';
+        if (!perSource) {
+            box.innerHTML = `<div class="tp-note" style="margin-bottom:14px;">
+                Retirement and withholding now belong to each <a href="/finances#income">income source</a>,
+                since they come off a paycheck &mdash; a second job has its own percentages, match schedule and W-4.
+                The fields below are still being used because no income has its own detail yet.
+              </div>`;
+            return;
+        }
+        box.innerHTML = `<div class="tp-section">
+            <div class="tp-legend">Payroll, per job</div>
+            <div class="tp-note">Entered on each <a href="/finances#income">income source</a>, because withholding and a 401(k) deferral come off that paycheck. Edit them there.</div>
+            <div style="overflow-x:auto;"><table class="fin-table" style="width:100%;font-size:0.86em;">
+              <thead><tr><th>Job</th><th style="text-align:right;">Wages</th><th style="text-align:right;">Deferral</th><th style="text-align:right;">Employer match</th><th style="text-align:right;">Withheld YTD</th></tr></thead>
+              <tbody>${rows.map(r=>`<tr>
+                <td><strong>${r.name}</strong><div class="muted" style="font-size:0.82em;">${r.owner}</div></td>
+                <td style="text-align:right;">${fmt(r.gross)}</td>
+                <td style="text-align:right;">${r.total_deferral_pct}%<div class="muted" style="font-size:0.82em;">${fmt(r.pretax_retirement)} + ${fmt(r.roth_retirement)} Roth</div></td>
+                <td style="text-align:right;">${fmt(r.employer_match)}${r.unclaimed_match>0?`<div class="muted gain-neg" style="font-size:0.82em;">${fmt(r.unclaimed_match)} left behind</div>`:''}</td>
+                <td style="text-align:right;">${fmt(r.ytd_federal_withheld)}${r.ytd_as_of?`<div class="muted" style="font-size:0.82em;">as of ${r.ytd_as_of}</div>`:''}</td>
+              </tr>`).join('')}</tbody>
+              <tfoot><tr style="border-top:2px solid var(--border);font-weight:600;">
+                <td>Total</td><td style="text-align:right;">${fmt(d.w2_wages)}</td>
+                <td style="text-align:right;">${fmt(d.pretax_retirement)}</td>
+                <td style="text-align:right;">${fmt(d.employer_match)}</td>
+                <td style="text-align:right;">${fmt(d.withheld)}</td>
+              </tr></tfoot>
+            </table></div>
+          </div>`;
+    }
+
     async function loadTaxProfile() {
         try {
             const r = await fetch('/api/finance/tax-profile', {credentials:'same-origin'});
@@ -575,6 +620,7 @@
             ];
             grid.innerHTML = tiles.map(t=>`<div class="summary-tile"><div class="lbl">${t[0]}</div><div class="val ${t[2]}">${t[1]}</div><div class="sub">${t[3]}</div></div>`).join('');
             renderRetirementResolved(d);
+            renderPayrollPerSource(d);
             const st = document.getElementById('incEstStatus');
             if (st) st.textContent = `${d.filing_status} · household of ${d.household_size} · ${d.constants_vintage} brackets`;
             note.textContent = (d.note || '') + (d.withholding_source ? '  Withholding: ' + d.withholding_source : '');
