@@ -72,10 +72,25 @@ class FakePlaid:
         return self.pages.pop(0) if self.pages else {
             'added': [], 'modified': [], 'removed': [], 'next_cursor': cursor, 'has_more': False}
 
+    def accounts_get(self, token):
+        self.calls.append(('accounts_get', token))
+        return {'accounts': self.accounts}
+
     def item_remove(self, token):
         self.calls.append(('item_remove', token))
         return {'removed': True}
 
+
+FakePlaid.accounts = [
+    {'account_id': 'acc-chk', 'name': 'Total Checking', 'official_name': 'CHASE TOTAL CHECKING',
+     'mask': '1234', 'type': 'depository', 'subtype': 'checking',
+     'balances': {'current': 2500.00, 'available': 2450.00, 'limit': None,
+                  'iso_currency_code': 'USD'}},
+    {'account_id': 'acc-visa', 'name': 'Freedom Visa', 'official_name': 'CHASE FREEDOM',
+     'mask': '9876', 'type': 'credit', 'subtype': 'credit card',
+     'balances': {'current': 640.25, 'available': 359.75, 'limit': 1000.00,
+                  'iso_currency_code': 'USD'}},
+]
 
 FAKE = FakePlaid()
 A._plaid = lambda: FAKE          # every endpoint resolves the client through this
@@ -201,8 +216,11 @@ with app.app_context():
 FAKE.pages = []          # empty response => nothing changes
 r = admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
 res = r.get_json()
-check('re-sync with no changes is a no-op', res == {'added': 0, 'updated': 0, 'removed': 0,
-                                                    'skipped_income': 0}, res)
+check('re-sync with no changes imports nothing new',
+      {k: res[k] for k in ('added', 'updated', 'removed', 'skipped_income')}
+      == {'added': 0, 'updated': 0, 'removed': 0, 'skipped_income': 0}, res)
+check('but accounts are still refreshed, since balances move without transactions',
+      res['accounts'] == 2, res)
 
 print('\n--- pagination follows has_more ---')
 FAKE.pages = [

@@ -115,7 +115,7 @@ def purge_user_record(db, user):
                         IncomeSource, IncomeEvent, RecurringBill, BudgetCategory,
                         SpendTransaction, RecurringDecision, CreditScore, TaxDocument,
                         AIInsight,
-                        PlaidItem, TaxProfile,
+                        PlaidItem, PlaidAccount, PlaidDeposit, TaxProfile,
                         Household, HouseholdMember, Entity)
     uid = user.id
     _detach_household(db, uid)
@@ -139,6 +139,8 @@ def purge_user_record(db, user):
         Debt,
         FinanceAccount,
         AIInsight,
+        PlaidDeposit,       # -> income_sources
+        PlaidAccount,       # -> plaid_items, finance_accounts, debts
         PlaidItem,          # bank access tokens die with the account, per the retention policy
         TaxProfile,
         Entity,             # after the records that reference entities.id

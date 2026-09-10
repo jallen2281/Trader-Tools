@@ -55,6 +55,7 @@ SUITES = [
     ('household', 'household sharing boundaries'),
     ('entities', 'separate books per entity'),
     ('plaid', 'Plaid client, sync and token handling'),
+    ('plaid_accounts', 'accounts inside a connection, deposits, income reconciliation'),
     ('batchfetch', 'batched market data fetching'),
     ('ui_render', 'pages render and controls are wired'),
     ('budget_render', 'what the Budget card actually renders (runs under node)'),

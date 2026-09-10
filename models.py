@@ -1380,6 +1380,10 @@ class SpendTransaction(db.Model):
     account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
     source = db.Column(db.String(10), default='manual')     # manual|csv|receipt|plaid
     external_id = db.Column(db.String(120), index=True)     # dedupe key; NULL for manual rows
+    # Plaid's own account id. Kept as the raw string rather than a foreign key so a
+    # transaction stays attributed even if the PlaidAccount row is rebuilt on a re-sync —
+    # the same reasoning as external_id. NULL for anything not from Plaid.
+    plaid_account_id = db.Column(db.String(80), index=True)
     tax_document_id = db.Column(db.Integer, db.ForeignKey('tax_documents.id'))
     pending = db.Column(db.Boolean, default=False)
     notes = db.Column(db.Text)
@@ -1401,7 +1405,8 @@ class SpendTransaction(db.Model):
             'description': self.description, 'merchant': self.merchant,
             'category': self.category, 'amount': float(self.amount or 0),
             'account_id': self.account_id, 'source': self.source,
-            'external_id': self.external_id, 'tax_document_id': self.tax_document_id,
+            'external_id': self.external_id, 'plaid_account_id': self.plaid_account_id,
+            'tax_document_id': self.tax_document_id,
             'pending': bool(self.pending), 'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
@@ -1479,6 +1484,121 @@ class PlaidItem(db.Model):
             'has_cursor': bool(self.cursor),
             'last_synced_at': self.last_synced_at.isoformat() if self.last_synced_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class PlaidAccount(db.Model):
+    """One account inside a connected institution.
+
+    A PlaidItem is a login, not an account: connecting Chase can bring back a checking
+    account and two credit cards at once. Without this row they collapse into a single
+    "connection" and every transaction from all three lands in one undifferentiated pile.
+
+    It deliberately does NOT become a FinanceAccount or a Debt on its own. People have
+    usually already entered those by hand, and auto-creating would duplicate the card they
+    are already tracking — with a different balance. Instead each row can be LINKED to an
+    existing record, and once linked the balance and credit limit are refreshed from the
+    bank, which is the point: a hand-typed balance is stale the moment it is saved.
+    """
+    __tablename__ = 'plaid_accounts'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    item_id = db.Column(db.Integer, db.ForeignKey('plaid_items.id'), nullable=False, index=True)
+    account_id = db.Column(db.String(80), nullable=False, index=True)   # Plaid's id
+    name = db.Column(db.String(160))
+    official_name = db.Column(db.String(200))
+    mask = db.Column(db.String(10))              # last 4, the only way to tell two cards apart
+    type = db.Column(db.String(30))              # depository | credit | loan | investment
+    subtype = db.Column(db.String(40))           # checking | savings | credit card | ...
+    current_balance = db.Column(db.Numeric(15, 2, asdecimal=False))
+    available_balance = db.Column(db.Numeric(15, 2, asdecimal=False))
+    credit_limit = db.Column(db.Numeric(15, 2, asdecimal=False))
+    currency = db.Column(db.String(5))
+    # Where this account's figures should land, if anywhere. Exactly one is expected to be
+    # set; both NULL simply means "seen but not linked to anything yet".
+    linked_account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
+    linked_debt_id = db.Column(db.Integer, db.ForeignKey('debts.id'))
+    last_refreshed_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'account_id', name='uq_plaid_account'),
+    )
+
+    def display_name(self):
+        base = self.official_name or self.name or 'Account'
+        return '%s ...%s' % (base, self.mask) if self.mask else base
+
+    def is_credit(self):
+        return (self.type or '') == 'credit'
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'item_id': self.item_id, 'account_id': self.account_id,
+            'name': self.name, 'official_name': self.official_name, 'mask': self.mask,
+            'display_name': self.display_name(),
+            'type': self.type, 'subtype': self.subtype,
+            'current_balance': float(self.current_balance) if self.current_balance is not None else None,
+            'available_balance': float(self.available_balance) if self.available_balance is not None else None,
+            'credit_limit': float(self.credit_limit) if self.credit_limit is not None else None,
+            'currency': self.currency,
+            'linked_account_id': self.linked_account_id,
+            'linked_debt_id': self.linked_debt_id,
+            'is_credit': self.is_credit(),
+            'last_refreshed_at': self.last_refreshed_at.isoformat() if self.last_refreshed_at else None,
+        }
+
+
+class PlaidDeposit(db.Model):
+    """Money arriving in a connected account.
+
+    These used to be counted and thrown away — "7 deposits skipped (income is tracked
+    separately)". That message is right for a paycheck and wrong for everything else, and on
+    a CREDIT CARD it is exactly backwards: a credit there is a payment TO the card, the
+    inward half of a transfer whose outward half was already imported as spending. Discarding
+    them made the pairing impossible and left the income estimate with nothing to be checked
+    against.
+
+    So they are kept, in their own table rather than in the spending ledger, because they are
+    not spending and must never be summed into it. `kind` records what the deposit looks
+    like; the classification is deliberately re-derivable, since Plaid's category can change
+    under us and a stored verdict would go stale.
+    """
+    __tablename__ = 'plaid_deposits'
+
+    KINDS = ('income', 'card_payment', 'transfer_in', 'refund', 'unknown')
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    external_id = db.Column(db.String(120), nullable=False, index=True)   # plaid:<txn id>
+    plaid_account_id = db.Column(db.String(80), index=True)
+    posted_at = db.Column(db.Date, nullable=False, index=True)
+    description = db.Column(db.String(200))
+    merchant = db.Column(db.String(160))
+    amount = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)   # positive = money in
+    pfc_primary = db.Column(db.String(40))
+    pfc_detailed = db.Column(db.String(80))
+    kind = db.Column(db.String(15), default='unknown', index=True)
+    # Set when the user attributes a deposit to a declared income source, which is what
+    # turns an estimate into a measured figure.
+    income_source_id = db.Column(db.Integer, db.ForeignKey('income_sources.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'external_id', name='uq_plaid_deposit'),
+        db.Index('ix_deposit_user_date', 'user_id', 'posted_at'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'external_id': self.external_id,
+            'plaid_account_id': self.plaid_account_id,
+            'posted_at': self.posted_at.isoformat() if self.posted_at else None,
+            'description': self.description, 'merchant': self.merchant,
+            'amount': float(self.amount or 0), 'kind': self.kind,
+            'pfc_primary': self.pfc_primary, 'pfc_detailed': self.pfc_detailed,
+            'income_source_id': self.income_source_id,
         }
 
 

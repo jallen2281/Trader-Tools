@@ -69,6 +69,9 @@ check('entity + household state load on boot',
       'loadHouseholdState().then(loadEntities)' in b)
 check('deductible is labelled as reported apart from expenses',
       'apart from total expenses' in b)
+check('connected accounts are broken out, not just institutions',
+      'renderPlaidAccounts' in b and 'linkPlaidAccount(' in b)
+check('balances can be refreshed from the bank', 'refreshPlaidBalances(' in b)
 check('payoff plan card present', 'debtPlanBody' in b)
 check('its strategy toggle and extra-payment input are wired',
       'planStrategy' in b and 'saveExtra(' in b)
@@ -92,6 +95,8 @@ for method, path, body in (
         ('GET', '/api/finance/recurring', None),
         ('GET', '/api/finance/credit', None),
         ('GET', '/api/finance/debt-plan', None),
+        ('GET', '/api/finance/income/reconciliation', None),
+        ('GET', '/api/finance/deposits', None),
 ):
     r = c.get(path) if method == 'GET' else c.post(path, json=body)
     check('%-5s %-34s -> 200' % (method, path), r.status_code == 200,

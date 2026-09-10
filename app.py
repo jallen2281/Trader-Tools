@@ -33,7 +33,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, RecurringDecision, CreditScore, PlaidItem, TaxDocument, TaxProfile, Household, HouseholdMember, Entity
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, RecurringDecision, CreditScore, PlaidItem, PlaidAccount, PlaidDeposit, TaxDocument, TaxProfile, Household, HouseholdMember, Entity
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -1765,6 +1765,385 @@ def plaid_items():
     return jsonify({'items': [i.to_dict() for i in rows]})
 
 
+# Enough months for a monthly average to mean something without reaching back to a job the
+# person no longer has.
+INCOME_RECON_MONTHS = 3
+
+
+def _income_reconciliation(user_id, months=INCOME_RECON_MONTHS, today=None):
+    """Measured deposits against the estimated income, which is the point of keeping them.
+
+    The comparison is NET, not gross. IncomeSource records a salary before tax; what lands
+    in a checking account is after withholding, and comparing the two directly would report
+    a 25% shortfall for someone whose pay is entirely normal. IncomeSource.net_monthly()
+    already models the deductions, so that is the side used.
+
+    Card payments are excluded outright. A payment to a credit card is money moving between
+    the user's own accounts, and counting it as income would inflate the figure by roughly
+    the amount they spend.
+    """
+    today = today or date.today()
+    since = today - timedelta(days=months * 31)
+    rows = PlaidDeposit.query.filter(PlaidDeposit.user_id == user_id,
+                                     PlaidDeposit.posted_at >= since).all()
+
+    by_kind = {}
+    for d in rows:
+        by_kind.setdefault(d.kind or 'unknown', []).append(d)
+    counted = [d for d in rows if d.kind == 'income']
+    observed_monthly = round(sum(float(d.amount or 0) for d in counted) / float(months), 2) \
+        if counted else 0.0
+
+    sources = IncomeSource.query.filter(_visible(IncomeSource, user_id),
+                                        IncomeSource.active.is_(True)).all()
+    # Irregular sources are excluded from the expectation: they have no schedule, so their
+    # absence over three months is not evidence of anything.
+    regular = [r for r in sources if not r.irregular]
+    gross_monthly = round(sum(r.gross_monthly() for r in regular), 2)
+
+    # IncomeSource.net_monthly() is NOT take-home. It deducts a set-aside for 1099 income and
+    # returns GROSS for anything withheld at source, which is most people — comparing bank
+    # deposits against it would report a 30% shortfall for a perfectly ordinary W2 paycheck.
+    # The tax estimate already models withholding and retirement deferrals, so take-home is
+    # derived from that instead.
+    expected_monthly = gross_monthly
+    basis = 'gross'
+    try:
+        est = _income_tax_estimate(user_id) or {}
+        annual_tax = ((est.get('total_federal_tax') or 0) + (est.get('state_tax') or 0))
+        deferrals = ((est.get('pretax_retirement') or 0) + (est.get('roth_retirement') or 0))
+        if gross_monthly > 0 and annual_tax >= 0:
+            expected_monthly = round(gross_monthly - (annual_tax + deferrals) / 12.0, 2)
+            basis = 'after estimated tax and retirement'
+    except Exception as e:
+        logger.warning('income reconciliation: tax estimate unavailable: %s', e)
+
+    variance = round(observed_monthly - expected_monthly, 2) if expected_monthly else None
+    variance_pct = (round(variance / expected_monthly * 100, 1)
+                    if expected_monthly and variance is not None else None)
+    return {
+        'months': months,
+        'since': since.isoformat(),
+        'observed_monthly_net': observed_monthly,
+        'expected_monthly_net': expected_monthly,
+        'expected_basis': basis,
+        'gross_monthly': gross_monthly,
+        'variance': variance,
+        'variance_pct': variance_pct,
+        'counted_deposits': len(counted),
+        'has_data': bool(rows),
+        'has_estimate': bool(regular),
+        'by_kind': {k: {'count': len(v),
+                        'total': round(sum(float(x.amount or 0) for x in v), 2)}
+                    for k, v in sorted(by_kind.items())},
+        'unattributed': [d.to_dict() for d in rows
+                         if d.kind == 'income' and not d.income_source_id][:20],
+        'irregular_excluded': len(sources) - len(regular),
+    }
+
+
+@app.route('/api/finance/income/reconciliation', methods=['GET'])
+@require_api_auth
+def finance_income_reconciliation():
+    """What actually landed, against what the income module predicted."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        months = min(max(int(request.args.get('months', INCOME_RECON_MONTHS)), 1), 24)
+    except (TypeError, ValueError):
+        months = INCOME_RECON_MONTHS
+    return jsonify(_income_reconciliation(uid, months=months))
+
+
+@app.route('/api/finance/deposits', methods=['GET'])
+@require_api_auth
+def finance_deposits():
+    """Incoming amounts, which are deliberately NOT in the spending ledger."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    q = PlaidDeposit.query.filter_by(user_id=uid)
+    kind = (request.args.get('kind') or '').lower()
+    if kind in PlaidDeposit.KINDS:
+        q = q.filter(PlaidDeposit.kind == kind)
+    rows = q.order_by(PlaidDeposit.posted_at.desc()).limit(300).all()
+    names = {a.account_id: a.display_name()
+             for a in PlaidAccount.query.filter_by(user_id=uid).all()}
+    out = []
+    for d in rows:
+        r = d.to_dict()
+        r['account_name'] = names.get(d.plaid_account_id)
+        out.append(r)
+    return jsonify({'deposits': out, 'count': len(out)})
+
+
+@app.route('/api/finance/deposits/<int:did>/attribute', methods=['PUT'])
+@require_api_auth
+def finance_attribute_deposit(did):
+    """Tie a deposit to the income source it came from, or clear that."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    row = PlaidDeposit.query.filter_by(id=did, user_id=uid).first()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    sid = (request.get_json() or {}).get('income_source_id')
+    if sid in (None, ''):
+        row.income_source_id = None
+    else:
+        try:
+            sid = int(sid)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'income_source_id must be a number'}), 400
+        if not IncomeSource.query.filter(IncomeSource.id == sid,
+                                         _visible(IncomeSource, uid)).first():
+            return jsonify({'error': 'Income source not found'}), 404
+        row.income_source_id = sid
+    db.session.commit()
+    return jsonify({'success': True, 'deposit': row.to_dict()})
+
+
+@app.route('/api/plaid/accounts', methods=['GET'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_accounts():
+    """Every account inside every connection, with a suggested link for the unlinked ones.
+
+    This is what turns "1 connection: Chase" into the three accounts that connection
+    actually brought back.
+    """
+    uid = _get_current_user_id()
+    items = {i.id: i for i in PlaidItem.query.filter_by(user_id=uid).all()}
+    debts = Debt.query.filter_by(user_id=uid).all()
+    accounts = FinanceAccount.query.filter_by(user_id=uid).all()
+    out = []
+    for pa in PlaidAccount.query.filter_by(user_id=uid).order_by(PlaidAccount.item_id,
+                                                                PlaidAccount.type).all():
+        d = pa.to_dict()
+        item = items.get(pa.item_id)
+        d['institution_name'] = item.institution_name if item else None
+        if not (pa.linked_debt_id or pa.linked_account_id):
+            sid, score = _suggest_link(pa, debts, accounts)
+            d['suggested_link_id'] = sid
+            d['suggested_link_kind'] = 'debt' if pa.is_credit() else 'account'
+            d['suggested_confidence'] = score
+        # How much of the ledger came from this account, so an unlinked one with hundreds of
+        # transactions is obviously worth linking.
+        d['transaction_count'] = SpendTransaction.query.filter_by(
+            user_id=uid, plaid_account_id=pa.account_id).count()
+        out.append(d)
+    return jsonify({'accounts': out,
+                    'linkable': {
+                        'debts': [{'id': x.id, 'name': x.name, 'balance': float(x.balance or 0)}
+                                  for x in debts],
+                        'accounts': [{'id': x.id, 'name': x.name, 'type': x.type,
+                                      'balance': float(x.balance or 0)} for x in accounts],
+                    }})
+
+
+@app.route('/api/plaid/accounts/<int:aid>/link', methods=['PUT'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_link_account(aid):
+    """Point a bank account at the Debt or FinanceAccount it corresponds to.
+
+    Linking immediately refreshes that record's balance from the bank, which is the whole
+    reason to do it — and is also why this is never applied automatically from a name guess:
+    linking the wrong card silently overwrites a real balance.
+    """
+    uid = _get_current_user_id()
+    pa = PlaidAccount.query.filter_by(id=aid, user_id=uid).first()
+    if not pa:
+        return jsonify({'error': 'Not found'}), 404
+    d = request.get_json() or {}
+    kind = (d.get('kind') or '').lower()
+    rid = d.get('id')
+
+    if kind in ('', 'none') or rid in (None, ''):
+        pa.linked_debt_id = pa.linked_account_id = None
+        db.session.commit()
+        return jsonify({'success': True, 'account': pa.to_dict()})
+    try:
+        rid = int(rid)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'id must be a number'}), 400
+
+    if kind == 'debt':
+        if not Debt.query.filter_by(id=rid, user_id=uid).first():
+            return jsonify({'error': 'Debt not found'}), 404
+        pa.linked_debt_id, pa.linked_account_id = rid, None
+    elif kind == 'account':
+        if not FinanceAccount.query.filter_by(id=rid, user_id=uid).first():
+            return jsonify({'error': 'Account not found'}), 404
+        pa.linked_account_id, pa.linked_debt_id = rid, None
+    else:
+        return jsonify({'error': "kind must be 'debt', 'account', or empty to unlink"}), 400
+
+    _apply_plaid_balance(pa)
+    db.session.commit()
+    return jsonify({'success': True, 'account': pa.to_dict()})
+
+
+@app.route('/api/plaid/accounts/refresh', methods=['POST'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_refresh_accounts():
+    """Re-fetch balances for every connection without pulling transactions.
+
+    Cheap next to a full sync, and it is the call worth making often: a linked balance that
+    is a week stale makes utilization and runway quietly wrong.
+    """
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    seen, errors = 0, []
+    for item in PlaidItem.query.filter_by(user_id=uid).all():
+        try:
+            seen += _sync_plaid_accounts(item)
+        except pc.PlaidError as e:
+            item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
+            item.last_error = str(e)[:255]
+            errors.append({'institution': item.institution_name, 'error': str(e)})
+        except Exception as e:
+            errors.append({'institution': item.institution_name, 'error': str(e)})
+    db.session.commit()
+    return jsonify({'success': not errors, 'accounts_refreshed': seen, 'errors': errors})
+
+
+def _classify_deposit(txn, account_type):
+    """What an incoming amount actually is.
+
+    The account it landed in settles most of it: money arriving on a CREDIT card is a
+    payment to that card, whatever Plaid calls it. Only after that does the category matter.
+    """
+    pfc = (txn.get('personal_finance_category') or {})
+    primary = (pfc.get('primary') or '').upper()
+    if (account_type or '') == 'credit':
+        return 'card_payment'
+    if primary == 'INCOME':
+        return 'income'
+    if primary == 'TRANSFER_IN':
+        return 'transfer_in'
+    return 'unknown'
+
+
+def _record_deposit(item, txn, acct_types):
+    """Store an incoming amount. Never touches SpendTransaction: this is not spending."""
+    ext = 'plaid:%s' % txn.get('transaction_id')
+    posted = _parse_csv_date(txn.get('date'))
+    if not posted:
+        return
+    row = PlaidDeposit.query.filter_by(user_id=item.user_id, external_id=ext).first()
+    if row is None:
+        row = PlaidDeposit(user_id=item.user_id, external_id=ext)
+        db.session.add(row)
+    pfc = (txn.get('personal_finance_category') or {})
+    aid = txn.get('account_id')
+    row.plaid_account_id = aid
+    row.posted_at = posted
+    row.description = (txn.get('name') or 'Deposit')[:200]
+    row.merchant = (txn.get('merchant_name') or None)
+    # Plaid is positive when money LEAVES; an inbound amount is therefore negative. Store it
+    # positive, because "a deposit of -2400" reads as a mistake in every report it appears in.
+    row.amount = round(abs(float(txn.get('amount') or 0)), 2)
+    row.pfc_primary = (pfc.get('primary') or None)
+    row.pfc_detailed = (pfc.get('detailed') or None)
+    row.kind = _classify_deposit(txn, acct_types.get(aid))
+
+
+def _sync_plaid_accounts(item, client=None, token=None):
+    """Fetch the accounts inside a connected institution and upsert them.
+
+    /accounts/get was already on the client and had never been called, so a connection knew
+    its institution and nothing about what was in it. Balances come back on the same call,
+    which is what makes a linked record self-updating instead of a figure typed in once.
+    """
+    import plaid_client as pc
+    client = client or _plaid()
+    token = token or pc.decrypt_token(item.access_token_enc)
+    seen = 0
+    for acct in (client.accounts_get(token) or {}).get('accounts', []):
+        aid = acct.get('account_id')
+        if not aid:
+            continue
+        row = PlaidAccount.query.filter_by(user_id=item.user_id, account_id=aid).first()
+        if row is None:
+            row = PlaidAccount(user_id=item.user_id, item_id=item.id, account_id=aid)
+            db.session.add(row)
+        bal = acct.get('balances') or {}
+        row.item_id = item.id
+        row.name = (acct.get('name') or None)
+        row.official_name = (acct.get('official_name') or None)
+        row.mask = (acct.get('mask') or None)
+        row.type = (acct.get('type') or None)
+        row.subtype = (acct.get('subtype') or None)
+        row.current_balance = bal.get('current')
+        row.available_balance = bal.get('available')
+        row.credit_limit = bal.get('limit')
+        row.currency = (bal.get('iso_currency_code') or None)
+        row.last_refreshed_at = datetime.utcnow()
+        _apply_plaid_balance(row)
+        seen += 1
+    return seen
+
+
+def _apply_plaid_balance(pa):
+    """Push a refreshed balance onto whatever record the user linked this account to.
+
+    Only the figures the bank is authoritative for: balance, and the credit limit that
+    drives utilization. Name, category and APR stay the user's, because Plaid does not know
+    what they call it and is often wrong about the rate.
+
+    A credit card's balance arrives POSITIVE from Plaid when money is owed, which is also
+    how Debt.balance is stored, so it transfers directly.
+    """
+    if pa.current_balance is None:
+        return
+    if pa.linked_debt_id:
+        d = Debt.query.filter_by(id=pa.linked_debt_id, user_id=pa.user_id).first()
+        if d:
+            d.balance = float(pa.current_balance)
+            if pa.credit_limit is not None:
+                d.credit_limit = float(pa.credit_limit)
+    elif pa.linked_account_id:
+        a = FinanceAccount.query.filter_by(id=pa.linked_account_id, user_id=pa.user_id).first()
+        if a:
+            a.balance = float(pa.current_balance)
+
+
+def _suggest_link(pa, debts, accounts):
+    """Best guess at the record this account already corresponds to.
+
+    Name-similarity only, and only as a SUGGESTION the user confirms. Linking the wrong card
+    would silently overwrite a real balance, so this never applies itself.
+    """
+    def norm(x):
+        return ''.join(ch for ch in (x or '').lower() if ch.isalnum())
+
+    names = [norm(pa.name), norm(pa.official_name)]
+    pool = debts if pa.is_credit() else accounts
+    best, best_score = None, 0
+    for rec in pool:
+        rn = norm(rec.name)
+        if not rn:
+            continue
+        for n in names:
+            if not n:
+                continue
+            if rn == n:
+                score = 3
+            elif rn in n or n in rn:
+                score = 2
+            else:
+                # A shared distinctive word ("freedom", "prime") is weak but usually right.
+                shared = set(w for w in (rec.name or '').lower().split() if len(w) > 3) & \
+                         set(w for w in ((pa.name or '') + ' ' + (pa.official_name or '')).lower().split() if len(w) > 3)
+                score = 1 if shared else 0
+            if score > best_score:
+                best, best_score = rec, score
+    return (best.id if best and best_score >= 1 else None), best_score
+
+
 def _plaid_sync_item(item, client=None):
     """Pull everything new for one item into the spending ledger.
 
@@ -1777,11 +2156,25 @@ def _plaid_sync_item(item, client=None):
     client = client or _plaid()
     token = pc.decrypt_token(item.access_token_enc)
     added = updated = removed = skipped = 0
+    # Accounts first: the transactions below reference them, and a balance refresh is worth
+    # having even if the transaction sync later fails.
+    try:
+        accounts_seen = _sync_plaid_accounts(item, client=client, token=token)
+    except Exception as e:
+        logger.warning('plaid: account fetch failed for item %s: %s', item.id, e)
+        accounts_seen = 0
+    # account_id -> type, so a deposit can be told apart from a card payment as it arrives.
+    acct_types = {a.account_id: (a.type or '') for a in
+                  PlaidAccount.query.filter_by(user_id=item.user_id).all()}
     cursor = item.cursor
     for _ in range(50):                     # bounded: 50 * 500 transactions is plenty
         out = client.transactions_sync(token, cursor=cursor)
         for txn in out.get('added', []) + out.get('modified', []):
             if pc.is_income(txn):
+                # Recorded, not discarded. See PlaidDeposit: on a credit card these are
+                # card payments, not income, and throwing them away made that impossible
+                # to tell and left the income estimate unverifiable.
+                _record_deposit(item, txn, acct_types)
                 skipped += 1
                 continue
             ext = 'plaid:%s' % txn.get('transaction_id')
@@ -1806,6 +2199,10 @@ def _plaid_sync_item(item, client=None):
             row.category = cat
             row.amount = round(float(txn.get('amount') or 0), 2)
             row.pending = bool(txn.get('pending'))
+            # Which of the institution's accounts this came from. Plaid sends it on every
+            # transaction; it was being discarded, so three Chase accounts pooled into one
+            # undifferentiated list.
+            row.plaid_account_id = txn.get('account_id')
         for txn in out.get('removed', []):
             ext = 'plaid:%s' % txn.get('transaction_id')
             n = SpendTransaction.query.filter_by(user_id=item.user_id, external_id=ext).delete(
@@ -1819,7 +2216,8 @@ def _plaid_sync_item(item, client=None):
     item.status = 'active'
     item.last_error = None
     db.session.commit()
-    return {'added': added, 'updated': updated, 'removed': removed, 'skipped_income': skipped}
+    return {'accounts': accounts_seen,
+            'added': added, 'updated': updated, 'removed': removed, 'skipped_income': skipped}
 
 
 @app.route('/api/plaid/items/<int:iid>/sync', methods=['POST'])
@@ -2783,6 +3181,12 @@ def _finance_full_picture(user_id, month=None, days=60):
     }
 
     try:
+        picture['income_recon'] = _income_reconciliation(user_id)
+    except Exception as e:
+        logger.warning('overview: income reconciliation failed: %s', e)
+        picture['income_recon'] = None
+
+    try:
         picture['credit'] = _credit_picture(user_id)
     except Exception as e:
         logger.warning('overview: credit picture failed: %s', e)
@@ -3015,6 +3419,42 @@ def _finance_observations(p):
         _obs(out, 'warning', 'thin_runway',
              'Emergency fund is under three months',
              'Liquid savings cover %.1f months of bills and debt payments.' % runway, runway)
+
+    # --- estimated income vs what actually arrived ---
+    ir = p.get('income_recon') or {}
+    if ir.get('has_data') and ir.get('has_estimate') and ir.get('variance') is not None:
+        pct = ir.get('variance_pct') or 0
+        # A payroll month lands 2 or 3 paychecks depending on the calendar, so a band this
+        # wide is normal variation rather than a finding worth raising.
+        # Deposits ABOVE the estimate are unambiguous — you cannot take home more than
+        # gross less tax, so the income record is wrong or something else is arriving.
+        # Below is much softer: payroll also deducts health insurance, HSA and the rest,
+        # which this app never sees, so a gap of a few hundred is expected and only a large
+        # one is worth raising.
+        if pct >= 12 or pct <= -25:
+            short = ir['variance'] < 0
+            _obs(out, 'note' if short else 'warning', 'income_variance',
+                 'Deposits are %s%% %s than expected' % (
+                     abs(round(pct)), 'lower' if short else 'higher'),
+                 'Over the last %d months %s/mo actually landed, against %s/mo expected '
+                 '(%s of %s/mo gross). %s Card payments are excluded, so this is money in, '
+                 'not transfers between your own accounts.' % (
+                     ir['months'], _money(ir['observed_monthly_net']),
+                     _money(ir['expected_monthly_net']), ir.get('expected_basis', 'estimate'),
+                     _money(ir.get('gross_monthly')),
+                     'Payroll deductions this app cannot see — health insurance, HSA — '
+                     'explain some of a shortfall, but a gap this size is worth checking '
+                     'against a payslip.' if short else
+                     'Taking home more than gross less tax is not possible, so the recorded '
+                     'income is probably understated or another source is not recorded.'),
+                 abs(ir['variance']))
+    elif ir.get('has_data') and not ir.get('has_estimate'):
+        _obs(out, 'note', 'no_income_estimate',
+             'Deposits are arriving with no income source recorded',
+             '%d deposits landed in the last %d months but no regular income is set up, so '
+             'there is nothing to check them against and cash-flow cannot project pay.' % (
+                 (ir.get('by_kind', {}).get('income', {}) or {}).get('count', 0),
+                 ir.get('months', 3)))
 
     # --- debt payoff ---
     for f in ((p.get('debt_plan') or {}).get('findings') or []):

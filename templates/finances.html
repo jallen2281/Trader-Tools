@@ -1095,7 +1095,7 @@
             if (!r.ok) throw new Error('load failed');
             card.style.display = '';
             const d = await r.json();
-            renderPlaid(d.items || []);
+            await loadPlaidAccounts(); renderPlaid(d.items || []);
             fetch('/api/plaid/status', {credentials:'same-origin'})
                 .then(x => x.ok ? x.json() : null)
                 .then(st => { if (st) document.getElementById('plaidEnv').textContent =
@@ -1126,7 +1126,62 @@
                         <button class="link-btn danger" onclick="disconnectPlaid(${i.id},'${esc(i.institution_name)}')">disconnect</button>
                     </td>
                 </tr>`;
-            }).join('') + '</tbody></table></div>';
+            }).join('') + '</tbody></table></div>' + renderPlaidAccounts();
+    }
+
+    /* A connection is a login, not an account: one Chase login can return a checking
+       account and two cards. Listing them individually is the only way to see which card a
+       charge came from — and to link each to the Debt already being tracked by hand, after
+       which the balance and credit limit come from the bank instead of from memory. */
+    let PLAID_ACCOUNTS = null;
+    async function loadPlaidAccounts() {
+        try { PLAID_ACCOUNTS = await fetch('/api/plaid/accounts',{credentials:'same-origin'}).then(r=>r.json()); }
+        catch(e){ PLAID_ACCOUNTS = null; }
+    }
+    function renderPlaidAccounts() {
+        const d = PLAID_ACCOUNTS;
+        if(!d || !d.accounts || !d.accounts.length) return '';
+        const unlinked = d.accounts.filter(a=>!a.linked_debt_id && !a.linked_account_id).length;
+        const rows = d.accounts.map(a=>{
+            const linked = a.linked_debt_id || a.linked_account_id;
+            const pool = a.is_credit ? d.linkable.debts : d.linkable.accounts;
+            const kind = a.is_credit ? 'debt' : 'account';
+            const sel = `<select class="fin-in" style="padding:3px 6px;font-size:0.82em;max-width:190px;" onchange="linkPlaidAccount(${a.id},'${kind}',this.value)">
+                    <option value="">not linked</option>
+                    ${pool.map(x=>`<option value="${x.id}" ${String(linked)===String(x.id)?'selected':(!linked&&String(a.suggested_link_id)===String(x.id)?'':'')}>${esc(x.name)}</option>`).join('')}
+                 </select>`;
+            const suggestion = (!linked && a.suggested_link_id)
+                ? `<div class="muted" style="font-size:0.74em;margin-top:2px;">looks like <strong>${esc((pool.find(x=>x.id===a.suggested_link_id)||{}).name||'')}</strong> &middot; <button class="link-btn" onclick="linkPlaidAccount(${a.id},'${kind}',${a.suggested_link_id})">link it</button></div>`
+                : '';
+            const bal = a.current_balance==null ? '<span class="muted">&mdash;</span>' : fmt2(a.current_balance);
+            return `<tr>
+                <td><strong>${esc(a.name||'Account')}</strong>${a.mask?` <span class="muted">&middot;&middot;&middot;${esc(a.mask)}</span>`:''}
+                    <div class="muted" style="font-size:0.76em;">${esc(a.institution_name||'')} &middot; ${esc(a.subtype||a.type||'')}${a.transaction_count?` &middot; ${a.transaction_count} txns`:''}</div></td>
+                <td style="text-align:right;">${bal}${a.credit_limit?`<div class="muted" style="font-size:0.76em;">of ${fmt(a.credit_limit)}</div>`:''}</td>
+                <td>${sel}${suggestion}</td>
+            </tr>`;
+        }).join('');
+        return `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
+              <strong style="font-size:0.9em;">Accounts in these connections</strong>
+              <button class="link-btn" onclick="refreshPlaidBalances()">refresh balances</button>
+            </div>
+            <div class="muted" style="font-size:0.78em;margin-bottom:8px;">Link each one to the debt or account you already track and its balance stops being a figure you typed once &mdash; the bank keeps it current, and the credit limit that utilization needs comes with it.${unlinked?` <strong>${unlinked} not linked yet.</strong>`:''}</div>
+            <div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th style="text-align:right;">Balance</th><th>Linked to</th></tr></thead><tbody>${rows}</tbody></table></div>
+        </div>`;
+    }
+    async function linkPlaidAccount(id, kind, value) {
+        const r = await fetch(`/api/plaid/accounts/${id}/link`,{method:'PUT',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({kind: value?kind:'', id: value||null})});
+        if(!r.ok){ alert((await r.json()).error||'Could not link that.'); return; }
+        await loadPlaid(); loadOutlook(); loadBudgeting(); loadOverview();
+    }
+    async function refreshPlaidBalances() {
+        const r = await fetch('/api/plaid/accounts/refresh',{method:'POST',credentials:'same-origin'});
+        const d = await r.json();
+        if(d.errors && d.errors.length) alert(d.errors.map(e=>`${e.institution}: ${e.error}`).join('\n'));
+        await loadPlaid(); loadOutlook(); loadBudgeting(); loadOverview();
     }
     /* itemId set => Link opens in update mode to repair an existing connection. */
     async function connectPlaid(itemId) {
