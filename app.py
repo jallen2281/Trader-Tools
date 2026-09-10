@@ -1904,6 +1904,59 @@ def finance_attribute_deposit(did):
     return jsonify({'success': True, 'deposit': row.to_dict()})
 
 
+@app.route('/api/plaid/items/<int:iid>/backfill', methods=['POST'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_backfill(iid):
+    """Replay an institution's whole history from a null cursor.
+
+    Needed because /transactions/sync only ever moves forward: anything the app declined to
+    store at the time — every deposit, before they were kept — is behind the cursor and an
+    ordinary sync will never offer it again.
+
+    Safe to run repeatedly. Dedupe is by external_id, and a backfill skips rows that already
+    exist rather than rewriting them, so the worst case is that it finds nothing new.
+    """
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    item = _plaid_item_or_404(uid, iid)
+    if not item:
+        return jsonify({'error': 'Not found'}), 404
+    try:
+        return jsonify(_plaid_sync_item(item, backfill=True))
+    except pc.PlaidError as e:
+        db.session.rollback()
+        item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
+        item.last_error = str(e)[:255]
+        db.session.commit()
+        return jsonify({'error': str(e), 'code': e.code, 'status': item.status}), 502
+
+
+@app.route('/api/plaid/backfill', methods=['POST'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_backfill_all():
+    """Backfill every connection. One failing institution must not abort the others."""
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    results = []
+    totals = {'added': 0, 'skipped_income': 0, 'unchanged': 0}
+    for item in PlaidItem.query.filter_by(user_id=uid).all():
+        try:
+            r = _plaid_sync_item(item, backfill=True)
+            for k in totals:
+                totals[k] += r.get(k, 0)
+            results.append({'institution': item.institution_name, **r})
+        except pc.PlaidError as e:
+            db.session.rollback()
+            item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
+            item.last_error = str(e)[:255]
+            db.session.commit()
+            results.append({'institution': item.institution_name, 'error': str(e),
+                            'code': e.code})
+    return jsonify({'totals': totals, 'results': results})
+
+
 @app.route('/api/plaid/accounts', methods=['GET'])
 @require_api_auth
 @require_perm('plaid_link')
@@ -1917,13 +1970,21 @@ def plaid_accounts():
     items = {i.id: i for i in PlaidItem.query.filter_by(user_id=uid).all()}
     debts = Debt.query.filter_by(user_id=uid).all()
     accounts = FinanceAccount.query.filter_by(user_id=uid).all()
+    portfolios = PortfolioAccount.query.filter_by(user_id=uid).all()
     out = []
     for pa in PlaidAccount.query.filter_by(user_id=uid).order_by(PlaidAccount.item_id,
                                                                 PlaidAccount.type).all():
         d = pa.to_dict()
         item = items.get(pa.item_id)
         d['institution_name'] = item.institution_name if item else None
-        if not (pa.linked_debt_id or pa.linked_account_id):
+        if pa.linked_portfolio_id:
+            pf = next((x for x in portfolios if x.id == pa.linked_portfolio_id), None)
+            if pf:
+                d['portfolio_value'] = _portfolio_value(pf)
+                d['portfolio_variance'] = (round(float(pa.current_balance or 0)
+                                                 - d['portfolio_value'], 2)
+                                           if pa.current_balance is not None else None)
+        if not (pa.linked_debt_id or pa.linked_account_id or pa.linked_portfolio_id):
             sid, score = _suggest_link(pa, debts, accounts)
             d['suggested_link_id'] = sid
             d['suggested_link_kind'] = 'debt' if pa.is_credit() else 'account'
@@ -1939,6 +2000,11 @@ def plaid_accounts():
                                   for x in debts],
                         'accounts': [{'id': x.id, 'name': x.name, 'type': x.type,
                                       'balance': float(x.balance or 0)} for x in accounts],
+                        # A brokerage or IRA is tracked in the portfolio module, not as a
+                        # FinanceAccount, so offering only the latter left the account the
+                        # user actually manages missing from the list entirely.
+                        'portfolios': [{'id': x.id, 'name': x.name,
+                                        'value': _portfolio_value(x)} for x in portfolios],
                     }})
 
 
@@ -1961,7 +2027,7 @@ def plaid_link_account(aid):
     rid = d.get('id')
 
     if kind in ('', 'none') or rid in (None, ''):
-        pa.linked_debt_id = pa.linked_account_id = None
+        pa.linked_debt_id = pa.linked_account_id = pa.linked_portfolio_id = None
         db.session.commit()
         return jsonify({'success': True, 'account': pa.to_dict()})
     try:
@@ -1973,12 +2039,20 @@ def plaid_link_account(aid):
         if not Debt.query.filter_by(id=rid, user_id=uid).first():
             return jsonify({'error': 'Debt not found'}), 404
         pa.linked_debt_id, pa.linked_account_id = rid, None
+        pa.linked_portfolio_id = None
     elif kind == 'account':
         if not FinanceAccount.query.filter_by(id=rid, user_id=uid).first():
             return jsonify({'error': 'Account not found'}), 404
         pa.linked_account_id, pa.linked_debt_id = rid, None
+        pa.linked_portfolio_id = None
+    elif kind == 'portfolio':
+        if not PortfolioAccount.query.filter_by(id=rid, user_id=uid).first():
+            return jsonify({'error': 'Portfolio account not found'}), 404
+        pa.linked_portfolio_id = rid
+        pa.linked_account_id = pa.linked_debt_id = None
     else:
-        return jsonify({'error': "kind must be 'debt', 'account', or empty to unlink"}), 400
+        return jsonify({'error': "kind must be 'debt', 'account', 'portfolio', or empty "
+                                 "to unlink"}), 400
 
     _apply_plaid_balance(pa)
     db.session.commit()
@@ -2087,6 +2161,20 @@ def _sync_plaid_accounts(item, client=None, token=None):
     return seen
 
 
+def _portfolio_value(acct):
+    """Cash plus holdings at the best price available.
+
+    Mirrors the outlook's own calculation, including its fallback to cost basis: a holding
+    with no live quote (a 401k tracked as one lump) would otherwise be valued at zero and
+    make the account look far smaller than it is.
+    """
+    total = float(acct.cash_balance or 0)
+    for h in Portfolio.query.filter_by(user_id=acct.user_id, account_id=acct.id).all():
+        px = float(h.current_price) if h.current_price else float(h.average_cost or 0)
+        total += float(h.quantity or 0) * px
+    return round(total, 2)
+
+
 def _apply_plaid_balance(pa):
     """Push a refreshed balance onto whatever record the user linked this account to.
 
@@ -2099,6 +2187,9 @@ def _apply_plaid_balance(pa):
     """
     if pa.current_balance is None:
         return
+    # A portfolio account is deliberately absent here. Its value is holdings times price,
+    # and writing a single bank balance over that would destroy the position detail the
+    # module exists for. It is compared instead — see _portfolio_value.
     if pa.linked_debt_id:
         d = Debt.query.filter_by(id=pa.linked_debt_id, user_id=pa.user_id).first()
         if d:
@@ -2168,13 +2259,22 @@ def _suggest_link(pa, debts, accounts):
     return tied[0].id, top
 
 
-def _plaid_sync_item(item, client=None):
+def _plaid_sync_item(item, client=None, backfill=False):
     """Pull everything new for one item into the spending ledger.
 
     Plaid's amount sign already matches SpendTransaction's: positive when money leaves the
-    account. Income and transfers-in are skipped, exactly as the CSV importer skips deposits
-    — money coming in belongs to the income module. Dedupe is by external_id
-    'plaid:<transaction_id>', which is also what makes `removed` and `modified` resolvable.
+    account. Dedupe is by external_id 'plaid:<transaction_id>', which is also what makes
+    `removed` and `modified` resolvable.
+
+    `backfill` starts from a null cursor, which makes Plaid replay the item's whole history
+    rather than only what changed. That is how deposits recorded before this app kept them
+    get recovered — the cursor had already advanced past them, so an ordinary sync never
+    sees them again.
+
+    A backfill is deliberately ADDITIVE: rows that already exist are left exactly as they
+    are. A replay would otherwise rewrite the category on every transaction ever imported,
+    including any the user recategorized by hand, which is a silent way to destroy work the
+    person did. The point of the replay is the rows that are MISSING.
     """
     import plaid_client as pc
     client = client or _plaid()
@@ -2190,9 +2290,15 @@ def _plaid_sync_item(item, client=None):
     # account_id -> type, so a deposit can be told apart from a card payment as it arrives.
     acct_types = {a.account_id: (a.type or '') for a in
                   PlaidAccount.query.filter_by(user_id=item.user_id).all()}
-    cursor = item.cursor
-    for _ in range(50):                     # bounded: 50 * 500 transactions is plenty
+    unchanged = 0
+    cursor = None if backfill else item.cursor
+    # A full replay reaches back much further than an incremental sync, so it needs a bigger
+    # ceiling. Whether the ceiling was actually hit is reported, because silently stopping
+    # half way through a backfill would look identical to one that finished.
+    pages, max_pages = 0, (200 if backfill else 50)
+    for _ in range(max_pages):
         out = client.transactions_sync(token, cursor=cursor)
+        pages += 1
         for txn in out.get('added', []) + out.get('modified', []):
             if pc.is_income(txn):
                 # Recorded, not discarded. See PlaidDeposit: on a credit card these are
@@ -2215,6 +2321,11 @@ def _plaid_sync_item(item, client=None):
                 row = SpendTransaction(user_id=item.user_id, external_id=ext, source='plaid')
                 db.session.add(row)
                 added += 1
+            elif backfill:
+                # Already have it. Leave the row alone — see the note above about not
+                # rewriting hand-edited categories during a replay.
+                unchanged += 1
+                continue
             else:
                 updated += 1
             row.posted_at = posted
@@ -2240,8 +2351,16 @@ def _plaid_sync_item(item, client=None):
     item.status = 'active'
     item.last_error = None
     db.session.commit()
-    return {'accounts': accounts_seen,
-            'added': added, 'updated': updated, 'removed': removed, 'skipped_income': skipped}
+    out = {'accounts': accounts_seen, 'added': added, 'updated': updated,
+           'removed': removed, 'skipped_income': skipped}
+    if backfill:
+        out['backfill'] = True
+        out['unchanged'] = unchanged
+        out['pages'] = pages
+        # Hitting the ceiling means history remains unread; running it again continues from
+        # the cursor this run saved rather than starting over.
+        out['truncated'] = pages >= max_pages
+    return out
 
 
 @app.route('/api/plaid/items/<int:iid>/sync', methods=['POST'])

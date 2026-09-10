@@ -1515,10 +1515,16 @@ class PlaidAccount(db.Model):
     available_balance = db.Column(db.Numeric(15, 2, asdecimal=False))
     credit_limit = db.Column(db.Numeric(15, 2, asdecimal=False))
     currency = db.Column(db.String(5))
-    # Where this account's figures should land, if anywhere. Exactly one is expected to be
-    # set; both NULL simply means "seen but not linked to anything yet".
+    # Where this account's figures should land, if anywhere. At most one is set; all NULL
+    # simply means "seen but not linked to anything yet".
     linked_account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
     linked_debt_id = db.Column(db.Integer, db.ForeignKey('debts.id'))
+    # An investment account belongs to the portfolio module, not to FinanceAccount, so
+    # offering only the latter left the account actually being managed missing from the
+    # list. Linking one never OVERWRITES it: a PortfolioAccount's value is holdings times
+    # price, and a single bank balance cannot express that. It is compared instead — a gap
+    # means a position or some cash is untracked, which is worth knowing.
+    linked_portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolio_accounts.id'))
     last_refreshed_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -1533,6 +1539,9 @@ class PlaidAccount(db.Model):
     def is_credit(self):
         return (self.type or '') == 'credit'
 
+    def is_investment(self):
+        return (self.type or '') in ('investment', 'brokerage')
+
     def to_dict(self):
         return {
             'id': self.id, 'item_id': self.item_id, 'account_id': self.account_id,
@@ -1545,7 +1554,9 @@ class PlaidAccount(db.Model):
             'currency': self.currency,
             'linked_account_id': self.linked_account_id,
             'linked_debt_id': self.linked_debt_id,
+            'linked_portfolio_id': self.linked_portfolio_id,
             'is_credit': self.is_credit(),
+            'is_investment': self.is_investment(),
             'last_refreshed_at': self.last_refreshed_at.isoformat() if self.last_refreshed_at else None,
         }
 

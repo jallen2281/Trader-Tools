@@ -1143,9 +1143,14 @@
         if(!d || !d.accounts || !d.accounts.length) return '';
         const unlinked = d.accounts.filter(a=>!a.linked_debt_id && !a.linked_account_id).length;
         const rows = d.accounts.map(a=>{
-            const linked = a.linked_debt_id || a.linked_account_id;
-            const pool = a.is_credit ? d.linkable.debts : d.linkable.accounts;
-            const kind = a.is_credit ? 'debt' : 'account';
+            /* An investment account is tracked in the portfolio module, not as a
+               FinanceAccount, so offering only the latter left the account actually being
+               managed absent from the dropdown entirely. */
+            const linked = a.linked_debt_id || a.linked_account_id || a.linked_portfolio_id;
+            const kind = a.is_credit ? 'debt' : (a.is_investment ? 'portfolio' : 'account');
+            const pool = kind === 'debt' ? d.linkable.debts
+                       : kind === 'portfolio' ? (d.linkable.portfolios || [])
+                       : d.linkable.accounts;
             const sel = `<select class="fin-in" style="padding:3px 6px;font-size:0.82em;max-width:190px;" onchange="linkPlaidAccount(${a.id},'${kind}',this.value)">
                     <option value="">not linked</option>
                     ${pool.map(x=>`<option value="${x.id}" ${String(linked)===String(x.id)?'selected':(!linked&&String(a.suggested_link_id)===String(x.id)?'':'')}>${esc(x.name)}</option>`).join('')}
@@ -1157,14 +1162,21 @@
             return `<tr>
                 <td><strong>${esc(a.name||'Account')}</strong>${a.mask?` <span class="muted">&middot;&middot;&middot;${esc(a.mask)}</span>`:''}
                     <div class="muted" style="font-size:0.76em;">${esc(a.institution_name||'')} &middot; ${esc(a.subtype||a.type||'')}${a.transaction_count?` &middot; ${a.transaction_count} txns`:''}</div></td>
-                <td style="text-align:right;">${bal}${a.credit_limit?`<div class="muted" style="font-size:0.76em;">of ${fmt(a.credit_limit)}</div>`:''}</td>
+                <td style="text-align:right;">${bal}${a.credit_limit?`<div class="muted" style="font-size:0.76em;">of ${fmt(a.credit_limit)}</div>`:''}${
+                    /* A linked portfolio is compared, never overwritten: a gap between what
+                       the broker says and what the tracked positions add up to is an
+                       untracked holding or some cash, which is the useful signal. */
+                    a.portfolio_variance ? `<div class="muted" style="font-size:0.74em;">tracked ${fmt(a.portfolio_value)} &middot; <span class="${Math.abs(a.portfolio_variance)>1?'neg':''}">${a.portfolio_variance>0?'+':''}${fmt(a.portfolio_variance)}</span></div>` : ''}</td>
                 <td>${sel}${suggestion}</td>
             </tr>`;
         }).join('');
         return `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
             <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
               <strong style="font-size:0.9em;">Accounts in these connections</strong>
-              <button class="link-btn" onclick="refreshPlaidBalances()">refresh balances</button>
+              <span style="white-space:nowrap;">
+                <button class="link-btn" onclick="refreshPlaidBalances()">refresh balances</button>
+                &middot; <button class="link-btn" onclick="backfillPlaid()">backfill history</button>
+              </span>
             </div>
             <div class="muted" style="font-size:0.78em;margin-bottom:8px;">Link each one to the debt or account you already track and its balance stops being a figure you typed once &mdash; the bank keeps it current, and the credit limit that utilization needs comes with it.${unlinked?` <strong>${unlinked} not linked yet.</strong>`:''}</div>
             <div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th style="text-align:right;">Balance</th><th>Linked to</th></tr></thead><tbody>${rows}</tbody></table></div>
@@ -1175,6 +1187,20 @@
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({kind: value?kind:'', id: value||null})});
         if(!r.ok){ alert((await r.json()).error||'Could not link that.'); return; }
+        await loadPlaid(); loadOutlook(); loadBudgeting(); loadOverview();
+    }
+    /* An ordinary sync only ever moves forward, so anything the app declined to store at
+       the time is behind the cursor and will never be offered again. This replays each
+       institution from the beginning. It is additive: rows already held are left untouched,
+       so a hand-corrected category is not overwritten. */
+    async function backfillPlaid() {
+        if(!confirm('Re-read the full history from every connected bank?\n\nThis recovers deposits and transactions that were skipped when they first arrived. Anything already imported is left exactly as it is, including categories you have corrected.')) return;
+        const r = await fetch('/api/plaid/backfill',{method:'POST',credentials:'same-origin'});
+        const d = await r.json();
+        const t = d.totals || {};
+        const trunc = (d.results||[]).some(x=>x.truncated);
+        alert(`Backfill complete.\n\n${t.added||0} transactions recovered\n${t.skipped_income||0} deposits recovered\n${t.unchanged||0} already held (left untouched)` +
+              (trunc ? '\n\nSome history was not reached — run it again to continue.' : ''));
         await loadPlaid(); loadOutlook(); loadBudgeting(); loadOverview();
     }
     async function refreshPlaidBalances() {

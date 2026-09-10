@@ -280,6 +280,99 @@ with app.app_context():
     check('and the link survived a re-sync',
           A.PlaidAccount.query.filter_by(account_id='acc-prime').first().linked_debt_id == 20)
 
+print('\n--- an investment account links to the portfolio, not to a FinanceAccount ---')
+with app.app_context():
+    db.session.add(A.PortfolioAccount(id=50, user_id=1, name='Sofi', cash_balance=9.65))
+    db.session.flush()
+    db.session.add(A.Portfolio(user_id=1, account_id=50, symbol='VOO', asset_type='etf', quantity=40,
+                               average_cost=400.0, current_price=500.0))
+    inv = A.PlaidAccount(user_id=1, item_id=1, account_id='acc-inv',
+                         name='SoFi Self-directed', mask='5930', type='investment',
+                         subtype='brokerage', current_balance=31546.27)
+    db.session.add(inv)
+    db.session.commit()
+    inv_id = inv.id
+
+r = c.get('/api/plaid/accounts').get_json()
+check('portfolio accounts are offered at all', 'portfolios' in r['linkable'], list(r['linkable']))
+check('and the one being managed is in the list',
+      any(x['name'] == 'Sofi' for x in r['linkable']['portfolios']), r['linkable']['portfolios'])
+check('its value is holdings plus cash, not cash alone',
+      r['linkable']['portfolios'][0]['value'] == round(9.65 + 40 * 500.0, 2),
+      r['linkable']['portfolios'][0])
+inv_row = [a for a in r['accounts'] if a['id'] == inv_id][0]
+check('the plaid account is marked as an investment', inv_row['is_investment'] is True, inv_row)
+check('and not as credit', inv_row['is_credit'] is False)
+
+rr = c.put('/api/plaid/accounts/%d/link' % inv_id, json={'kind': 'portfolio', 'id': 50})
+check('linking to a portfolio is accepted', rr.status_code == 200, rr.get_json())
+check('an unknown portfolio is refused',
+      c.put('/api/plaid/accounts/%d/link' % inv_id,
+            json={'kind': 'portfolio', 'id': 9999}).status_code == 404)
+with app.app_context():
+    check('the portfolio cash was NOT overwritten by the bank balance',
+          float(A.PortfolioAccount.query.get(50).cash_balance) == 9.65)
+    check('and the holding is untouched',
+          A.Portfolio.query.filter_by(account_id=50).count() == 1)
+r = c.get('/api/plaid/accounts').get_json()
+inv_row = [a for a in r['accounts'] if a['id'] == inv_id][0]
+check('the two are compared instead', inv_row['portfolio_value'] == 20009.65, inv_row)
+check('and the gap is reported',
+      inv_row['portfolio_variance'] == round(31546.27 - 20009.65, 2), inv_row)
+
+print('\n--- backfill replays history the cursor has already passed ---')
+# The situation this exists for: deposits that arrived while the app was discarding them are
+# behind the cursor, and an ordinary sync will never offer them again.
+with app.app_context():
+    A.PlaidDeposit.query.delete()
+    # A category the user fixed by hand. A replay must not undo that.
+    t = A.SpendTransaction.query.filter_by(external_id='plaid:t1').first()
+    t.category = 'entertainment'
+    t.notes = 'recategorised by hand'
+    db.session.commit()
+    before_txns = A.SpendTransaction.query.count()
+
+FAKE.pages = [{
+    'added': [
+        txn('t1', 'acc-prime', 51.20, 'STARBUCKS'),          # already have it
+        txn('t8', 'acc-chk', 42.00, 'OLD PURCHASE', day_offset=200),   # missed before
+        txn('t5', 'acc-chk', -2400.00, 'ACME PAYROLL', pfc='INCOME'),  # the lost deposit
+    ],
+    'modified': [], 'removed': [], 'next_cursor': 'cur-backfill', 'has_more': False,
+}]
+r = c.post('/api/plaid/items/1/backfill')
+res = r.get_json()
+check('backfill runs', r.status_code == 200, res)
+check('it reports itself as one', res.get('backfill') is True, res)
+check('the lost deposit is recovered', res['skipped_income'] == 1, res)
+check('a genuinely missing transaction is added', res['added'] == 1, res)
+check('one already held is left alone, not rewritten', res['unchanged'] == 1, res)
+check('and it did not run out of pages', res.get('truncated') is False, res)
+with app.app_context():
+    check('the hand-set category survived the replay',
+          A.SpendTransaction.query.filter_by(external_id='plaid:t1').first().category
+          == 'entertainment')
+    check('as did the note',
+          A.SpendTransaction.query.filter_by(external_id='plaid:t1').first().notes
+          == 'recategorised by hand')
+    check('the deposit is back', A.PlaidDeposit.query.count() == 1)
+    check('and nothing was duplicated',
+          A.SpendTransaction.query.count() == before_txns + 1,
+          (before_txns, A.SpendTransaction.query.count()))
+
+print('\n--- and running it twice finds nothing new ---')
+FAKE.pages = [{
+    'added': [txn('t1', 'acc-prime', 51.20, 'STARBUCKS'),
+              txn('t8', 'acc-chk', 42.00, 'OLD PURCHASE', day_offset=200),
+              txn('t5', 'acc-chk', -2400.00, 'ACME PAYROLL', pfc='INCOME')],
+    'modified': [], 'removed': [], 'next_cursor': 'cur-backfill', 'has_more': False,
+}]
+res2 = c.post('/api/plaid/items/1/backfill').get_json()
+check('a second run adds nothing', res2['added'] == 0, res2)
+check('it just recognises what it already has', res2['unchanged'] == 2, res2)
+with app.app_context():
+    check('deposits are not duplicated either', A.PlaidDeposit.query.count() == 1)
+
 print('\n--- the overview picks it up ---')
 obs = {o['key']: o for o in c.get('/api/finance/overview').get_json()['observations']}
 check('an income variance this large is raised', 'income_variance' in obs, list(obs))
