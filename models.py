@@ -1203,20 +1203,28 @@ class PayrollDeferralMixin(object):
     def section125_annual(self):
         """Deductions that escape FICA as well as income tax.
 
-        Line items entered per check are annualised by pay frequency; the scalar columns
-        remain for anything entered before line items existed, and for TaxProfile, which
-        only ever had one catch-all and no health/HSA columns of its own — hence the
-        getattrs, which keep this mixin usable from both.
+        Line items WIN when there are any. The scalar columns were only ever a fallback for
+        a record filled in before line items existed, and summing the two double-counts
+        whatever was migrated — a leftover $30 catch-all silently inflated Section 125 by
+        exactly that much on top of the itemised HSA it had been replaced by.
+
+        Judged per treatment rather than wholesale, so itemising only the pre-tax half does
+        not quietly discard a post-tax scalar that has not been itemised yet.
+
+        The getattrs keep this mixin usable from TaxProfile too, which only ever had one
+        catch-all and no health/HSA columns of its own.
         """
-        return round(self._lines_annual('section125')
-                     + float(getattr(self, 'pretax_health_annual', 0) or 0)
+        if any(r['treatment'] == 'section125' for r in self.deduction_lines()):
+            return self._lines_annual('section125')
+        return round(float(getattr(self, 'pretax_health_annual', 0) or 0)
                      + float(getattr(self, 'pretax_hsa_annual', 0) or 0)
                      + float(self.pretax_other_annual or 0), 2)
 
     def posttax_annual(self):
-        """Deductions that reduce take-home and nothing else."""
-        return round(self._lines_annual('posttax')
-                     + float(getattr(self, 'posttax_deductions_annual', 0) or 0), 2)
+        """Deductions that reduce take-home and nothing else. Line items win, as above."""
+        if any(r['treatment'] == 'posttax' for r in self.deduction_lines()):
+            return self._lines_annual('posttax')
+        return round(float(getattr(self, 'posttax_deductions_annual', 0) or 0), 2)
 
     def has_payroll_detail(self):
         """Whether anything payroll-specific has actually been entered here.

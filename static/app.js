@@ -110,8 +110,8 @@ function initializeWatchlist() {
         renderWatchlist();
     });
 
-    // Auto-refresh on the user's selected (tier-gated) interval
-    loadWatchlistInterval();
+    // Auto-refresh every 60 seconds
+    setInterval(refreshWatchlist, 60000);
 }
 
 async function renderWatchlist() {
@@ -140,13 +140,8 @@ async function renderWatchlist() {
         </div>
     `;
     
-    // Only show the loading state on the FIRST render. On periodic refreshes, keep
-    // the current list visible until the new content is ready — otherwise the
-    // watchlist flashes "Loading..." and disappears on every update.
-    if (!container.querySelector('#watchlistSelector')) {
-        container.innerHTML = '<div class="loading-small">Loading...</div>';
-    }
-
+    container.innerHTML = '<div class="loading-small">Loading...</div>';
+    
     let symbols = [];
     let prices = {};
     let recommendations = {};
@@ -155,23 +150,12 @@ async function renderWatchlist() {
         // Fetch portfolio holdings
         const holdings = await watchlistManager.fetchPortfolioHoldings();
         symbols = holdings.map(h => h.symbol);
-
-        // Seed price/change straight from the holdings (already fetched + reliable),
-        // so rows show real data even if the live /api/compare call is slow or empty.
-        holdings.forEach(h => {
-            prices[h.symbol] = { current_price: h.current_price, return_pct: h.gain_loss_pct };
-        });
-
-        // Fetch prices for portfolio symbols (best-effort overlay of fresh daily data)
+        
+        // Fetch prices for portfolio symbols
         if (symbols.length > 0) {
-            try {
-                const fresh = await watchlistManager.fetchPrices(symbols);
-                Object.keys(fresh || {}).forEach(sym => {
-                    if (fresh[sym] && fresh[sym].current_price != null) prices[sym] = fresh[sym];
-                });
-            } catch (e) { console.warn('Portfolio price refresh failed:', e); }
-            console.log('Portfolio prices:', prices);
-
+            prices = await watchlistManager.fetchPrices(symbols);
+            console.log('Portfolio prices fetched:', prices);
+            
             // Fetch recommendations for each holding (Phase 4 feature)
             for (const holding of holdings) {
                 try {
@@ -300,34 +284,6 @@ window.deleteCurrentWatchlist = deleteCurrentWatchlist;
 
 async function refreshWatchlist() {
     await renderWatchlist();
-}
-
-// ---- Watchlist auto-refresh scheduling (user-selectable, tier-gated) ----
-let _watchlistTimer = null;
-let _watchlistIntervalSec = 60;
-
-function scheduleWatchlistRefresh() {
-    if (_watchlistTimer) { clearInterval(_watchlistTimer); _watchlistTimer = null; }
-    const on = localStorage.getItem('autoRefreshWatchlist') !== 'false';
-    if (on && _watchlistIntervalSec > 0) {
-        _watchlistTimer = setInterval(refreshWatchlist, _watchlistIntervalSec * 1000);
-    }
-}
-
-async function loadWatchlistInterval() {
-    try {
-        const r = await fetch('/api/monitoring/watchlist-interval', {
-            headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
-        });
-        if (r.ok) {
-            const d = await r.json();
-            _watchlistIntervalSec = d.interval || 60;
-            localStorage.setItem('watchlistRefreshInterval', _watchlistIntervalSec);
-        }
-    } catch (e) {
-        _watchlistIntervalSec = parseInt(localStorage.getItem('watchlistRefreshInterval') || '60', 10);
-    }
-    scheduleWatchlistRefresh();
 }
 
 function removeFromWatchlist(symbol) {
@@ -538,17 +494,9 @@ async function renderAlertsList() {
 
 async function deleteAlert(alertId) {
     try {
-        const res = await fetch(`/api/alerts/${alertId}`, { method: 'DELETE' });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            console.error('Delete alert failed:', res.status, err);
-            alert(err.error || `Failed to delete alert (HTTP ${res.status})`);
-            return;
-        }
+        await fetch(`/api/alerts/${alertId}`, { method: 'DELETE' });
     } catch (e) {
         console.error('Error deleting alert:', e);
-        alert('Failed to delete alert');
-        return;
     }
     renderAlertsList();
     fetchSidebarAlerts();
@@ -1058,17 +1006,9 @@ function showSettingsMenu() {
                     <input type="checkbox" id="settingAutoRefresh" ${prefs.autoRefreshWatchlist ? 'checked' : ''} style="margin-right:12px;width:18px;height:18px;cursor:pointer;">
                     <div>
                         <div style="font-weight:600;">Auto-refresh Watchlist</div>
-                        <div style="font-size:0.85em;opacity:0.65;">Keep watchlist prices updating automatically</div>
+                        <div style="font-size:0.85em;opacity:0.65;">Update watchlist prices every 60 seconds</div>
                     </div>
                 </label>
-
-                <div style="padding:14px;background:${rowBg};border-radius:8px;margin-bottom:10px;border:1px solid ${border};">
-                    <div style="font-weight:600;margin-bottom:4px;">Watchlist Refresh Interval</div>
-                    <div style="font-size:0.85em;opacity:0.65;margin-bottom:8px;">How often prices update (faster tiers unlock shorter intervals)</div>
-                    <select id="settingWatchlistInterval" style="width:100%;padding:6px;border-radius:6px;border:1px solid ${border};background:${bg};color:${fg};">
-                        <option>Loading…</option>
-                    </select>
-                </div>
 
                 <label style="display:flex;align-items:center;padding:14px;background:${rowBg};border-radius:8px;cursor:pointer;margin-bottom:10px;border:1px solid ${border};">
                     <input type="checkbox" id="settingNotifications" ${prefs.notificationsEnabled ? 'checked' : ''} style="margin-right:12px;width:18px;height:18px;cursor:pointer;">
@@ -1122,21 +1062,6 @@ function showSettingsMenu() {
         if (p.defaultPeriod) document.getElementById('settingDefaultPeriod').value = p.defaultPeriod;
         if (p.defaultChartType) document.getElementById('settingDefaultChartType').value = p.defaultChartType;
     }).catch(() => {});
-
-    // Populate the tier-gated watchlist refresh interval dropdown
-    fetch('/api/monitoring/watchlist-interval', {
-        headers: { 'X-API-Key': localStorage.getItem('apiKey') || '' }
-    }).then(r => r.ok ? r.json() : null).then(data => {
-        if (!data) return;
-        const sel = document.getElementById('settingWatchlistInterval');
-        if (!sel) return;
-        sel.innerHTML = (data.options || []).map(o => {
-            const lock = o.locked ? ' 🔒' : '';
-            const isSel = o.seconds === data.interval ? ' selected' : '';
-            const dis = o.locked ? ' disabled' : '';
-            return `<option value="${o.seconds}"${isSel}${dis}>${o.label}${lock}</option>`;
-        }).join('');
-    }).catch(() => {});
 }
 
 async function saveSettings() {
@@ -1145,9 +1070,6 @@ async function saveSettings() {
     const notificationsEnabled = document.getElementById('settingNotifications').checked;
     const defaultPeriod = document.getElementById('settingDefaultPeriod').value;
     const defaultChartType = document.getElementById('settingDefaultChartType').value;
-    const wlIntervalEl = document.getElementById('settingWatchlistInterval');
-    const watchlistInterval = wlIntervalEl && wlIntervalEl.value && !isNaN(parseInt(wlIntervalEl.value, 10))
-        ? parseInt(wlIntervalEl.value, 10) : null;
 
     const prefs = { darkMode, autoRefreshWatchlist, notificationsEnabled, defaultPeriod, defaultChartType };
 
@@ -1173,22 +1095,6 @@ async function saveSettings() {
     if (chartEl) chartEl.value = defaultChartType;
 
     document.getElementById('settingsModal').remove();
-
-    // Save the tier-gated watchlist interval, then reschedule auto-refresh
-    if (watchlistInterval) {
-        try {
-            const wr = await fetch('/api/monitoring/watchlist-interval', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json', 'X-API-Key': localStorage.getItem('apiKey') || '' },
-                body: JSON.stringify({ interval: watchlistInterval })
-            });
-            if (wr.ok) {
-                _watchlistIntervalSec = watchlistInterval;
-                localStorage.setItem('watchlistRefreshInterval', watchlistInterval);
-            }
-        } catch (e) {}
-    }
-    scheduleWatchlistRefresh();  // honors the (possibly toggled) autoRefresh setting
 
     // Save to server (best-effort — not logged in is fine)
     let savedToServer = false;

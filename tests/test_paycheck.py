@@ -268,3 +268,27 @@ kept = r.get_json()['payroll_deductions']
 check('zero and non-numeric rows are dropped', len(kept) == 2, kept)
 check('an unknown treatment falls back to post-tax, the safe side',
       [k for k in kept if k['label'] == 'Bad treatment'][0]['treatment'] == 'posttax', kept)
+
+print('\n--- line items replace the scalar buckets, never add to them ---')
+# A real record carried a leftover pretax_other_annual of $30 from before line items
+# existed. Summing the two inflated Section 125 by exactly that much, on top of the
+# itemised HSA that had replaced it.
+with app.app_context():
+    src = A.IncomeSource.query.get(20)
+    src.pretax_other_annual = 30.0
+    db.session.commit()
+    src = A.IncomeSource.query.get(20)
+    check('the stale scalar does not add to the itemised total',
+          src.section125_annual() == round((30.00 + 19.71 + 3.57) * 26, 2),
+          src.section125_annual())
+
+    # But a scalar for a treatment that has NOT been itemised is still honoured.
+    src.payroll_deductions = [{'label': 'Medical', 'per_check': 19.71,
+                               'treatment': 'section125'}]
+    src.posttax_deductions_annual = 600.0
+    db.session.commit()
+    src = A.IncomeSource.query.get(20)
+    check('an un-itemised post-tax scalar survives', src.posttax_annual() == 600.0,
+          src.posttax_annual())
+    check('while the itemised pre-tax half uses its lines',
+          src.section125_annual() == round(19.71 * 26, 2), src.section125_annual())
