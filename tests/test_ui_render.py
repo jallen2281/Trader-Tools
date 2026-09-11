@@ -108,6 +108,8 @@ check('removing a limit says what will actually happen', 'only the limit goes' i
 check('credit card present', 'creditBody' in b)
 check('the score modal is wired', 'openScore()' in b and 'saveScore(' in b)
 check('a credit limit can be entered on a debt', "id=\"dLimit\"" in b)
+check('a debt can carry itemised fees', 'id="dFeeLines"' in b and 'collectFeeLines(' in b)
+check('and they are turned into an effective rate', 'effective rate' in b)
 check('recurring-charges card present', 'recurringBody' in b)
 check('its actions are wired', 'recAdopt(' in b and 'recDecide(' in b)
 check('it is fetched alongside the rest of the budgeting load',

@@ -698,6 +698,27 @@ def finance_modify_account(aid):
     return jsonify(a.to_dict())
 
 
+def _clean_fee_lines(raw):
+    """Normalise and bound a debt's fee rows, or None if nothing usable remains.
+
+    Bounded here rather than trusted, same as the match bands and payroll deductions: these
+    feed an effective-APR figure that gets compared against real loan rates, and a nonsense
+    row would quietly distort the comparison.
+    """
+    out = []
+    for row in (raw or [])[:20]:
+        try:
+            amt = round(float(row.get('amount') or 0), 2)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not (0 < amt <= 1000000):
+            continue
+        f = (row.get('frequency') or 'one_time').lower()
+        out.append({'label': str(row.get('label') or 'Fee')[:60], 'amount': amt,
+                    'frequency': f if f in Debt.FEE_PER_YEAR else 'one_time'})
+    return out or None
+
+
 def _opt_float(v):
     """A number, or None for anything blank. Distinguishing "not recorded" from zero is
     what lets a missing credit limit be reported instead of silently flattering a ratio."""
@@ -734,7 +755,8 @@ def finance_create_debt():
              lender=(d.get('lender') or None), balance=float(d.get('balance') or 0),
              apr=float(d.get('apr') or 0), min_payment=float(d.get('min_payment') or 0),
              secured=bool(d.get('secured')), notes=(d.get('notes') or None),
-             credit_limit=_opt_float(d.get('credit_limit')))
+             credit_limit=_opt_float(d.get('credit_limit')),
+             fee_lines=_clean_fee_lines(d.get('fee_lines')))
     db.session.add(x)
     db.session.commit()
     return jsonify(x.to_dict()), 201
@@ -770,6 +792,8 @@ def finance_modify_debt(did):
     if 'credit_limit' in d:
         # Blank clears it back to unknown, which is a different state from a zero limit.
         x.credit_limit = _opt_float(d.get('credit_limit'))
+    if 'fee_lines' in d:
+        x.fee_lines = _clean_fee_lines(d.get('fee_lines'))
     db.session.commit()
     return jsonify(x.to_dict())
 
@@ -3628,8 +3652,17 @@ def _debt_plan(user_id, extra_monthly=None, start=None):
     `extra_monthly` defaults to whatever the user last chose, so the overview and the AI
     briefing describe the plan they are actually on rather than a hypothetical one.
     """
-    debts = [d.to_dict() for d in Debt.query.filter(_visible(Debt, user_id)).all()
-             if float(d.balance or 0) > 0]
+    debts = []
+    for d in Debt.query.filter(_visible(Debt, user_id)).all():
+        if float(d.balance or 0) <= 0:
+            continue
+        row = d.to_dict()
+        # Rank and cost by the EFFECTIVE rate, so a 0% tuition plan carrying $100/yr of
+        # fees is not treated as free and left until last. Folding the fee into the rate
+        # makes it compound, which it does not — the overstatement is pennies on a fee this
+        # size, and it errs toward clearing fee-bearing debt sooner, which is the right bias.
+        row['apr'] = row.get('effective_apr', row.get('apr'))
+        debts.append(row)
     if extra_monthly is None:
         prof = TaxProfile.query.filter_by(user_id=user_id).first()
         extra_monthly = float(getattr(prof, 'debt_extra_monthly', 0) or 0) if prof else 0.0

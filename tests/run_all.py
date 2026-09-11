@@ -54,6 +54,7 @@ SUITES = [
     ('recurring_api', 'recurring charges: decisions, adoption, sharing'),
     ('debtplan', 'payoff simulation: avalanche vs snowball'),
     ('debt_api', 'bill-to-debt link, dedupe, and the payoff endpoints'),
+    ('debt_fees', 'itemised debt fees and the effective rate they imply'),
     ('credit', 'credit utilization and score trends'),
     ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),

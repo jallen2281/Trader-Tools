@@ -990,12 +990,67 @@ class Debt(db.Model):
     # from a balance alone. NULL means "not recorded" and is treated as unknown rather than
     # as zero — see credit.utilization, where the difference is the whole point.
     credit_limit = db.Column(db.Numeric(15, 2, asdecimal=False))
+    # Charges that are not interest. A tuition payment plan is the case that forced this:
+    # 0% APR, but an enrolment fee each semester and a service charge on every instalment.
+    # With only an APR field such a debt looks free, when it can easily cost more than a
+    # low-rate loan of the same size.
+    #   [{"label": "Payment plan fee", "amount": 35, "frequency": "semester"}, ...]
+    # frequency: one_time | monthly | quarterly | semester | annual
+    fee_lines = db.Column(JSON)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Times a year each fee cadence is charged. A semester fee is billed twice for a
+    # standard two-semester year; a summer term is entered as its own line.
+    FEE_PER_YEAR = {'monthly': 12, 'quarterly': 4, 'semester': 2, 'annual': 1, 'one_time': 0}
+
+    def fee_lines_list(self):
+        """The fee rows, normalised. Bad entries are dropped rather than trusted."""
+        out = []
+        for row in (self.fee_lines or []):
+            try:
+                amt = float(row.get('amount') or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if amt <= 0:
+                continue
+            f = (row.get('frequency') or 'one_time').lower()
+            out.append({'label': str(row.get('label') or 'Fee')[:60],
+                        'amount': round(amt, 2),
+                        'frequency': f if f in self.FEE_PER_YEAR else 'one_time'})
+        return out
+
+    def annual_fees(self):
+        """Fees charged every year. One-off charges are deliberately excluded — they are a
+        cost of taking the debt on, not of carrying it, and annualising them would overstate
+        what it costs to keep."""
+        return round(sum(r['amount'] * self.FEE_PER_YEAR[r['frequency']]
+                         for r in self.fee_lines_list()), 2)
+
+    def one_time_fees(self):
+        return round(sum(r['amount'] for r in self.fee_lines_list()
+                         if r['frequency'] == 'one_time'), 2)
+
+    def effective_apr(self):
+        """What the debt actually costs a year, as a rate, fees included.
+
+        This is the number that makes a 0% plan comparable to a real loan: $150 of annual
+        fees on a $2,000 balance is 7.5%, whatever the APR field says. Expressed against the
+        CURRENT balance, so it rises as the balance falls — which is true, and is exactly why
+        a small fee-bearing balance is worth clearing early.
+        """
+        bal = float(self.balance or 0)
+        if bal <= 0:
+            return float(self.apr or 0)
+        return round(float(self.apr or 0) + self.annual_fees() / bal * 100.0, 2)
+
     def monthly_interest(self):
         return round(float(self.balance or 0) * float(self.apr or 0) / 100.0 / 12.0, 2)
+
+    def monthly_cost(self):
+        """Interest plus the fees, which is what actually leaves each month."""
+        return round(self.monthly_interest() + self.annual_fees() / 12.0, 2)
 
     def utilization_pct(self):
         """Percent of this line in use, or None when there is no line to measure against.
@@ -1014,7 +1069,13 @@ class Debt(db.Model):
             'min_payment': float(self.min_payment or 0), 'secured': bool(self.secured),
             'credit_limit': float(self.credit_limit) if self.credit_limit is not None else None,
             'utilization_pct': self.utilization_pct(),
-            'monthly_interest': self.monthly_interest(), 'notes': self.notes,
+            'monthly_interest': self.monthly_interest(),
+            'fee_lines': self.fee_lines_list(),
+            'annual_fees': self.annual_fees(),
+            'one_time_fees': self.one_time_fees(),
+            'effective_apr': self.effective_apr(),
+            'monthly_cost': self.monthly_cost(),
+            'notes': self.notes,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 

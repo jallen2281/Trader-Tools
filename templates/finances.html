@@ -642,10 +642,73 @@
             <div style="flex:1;"><label class="fld">APR %</label><input id="dApr" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.apr||0}"></div>
             <div style="flex:1;"><label class="fld">Min pmt/mo $</label><input id="dPmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.min_payment||0}"></div></div>
             <div id="dLimitBox"><label class="fld">Credit limit $ <span class="muted">(cards only &mdash; drives utilization, about a third of a credit score)</span></label><input id="dLimit" type="number" step="100" class="fin-in" style="width:100%;" value="${e.credit_limit==null?'':e.credit_limit}" placeholder="leave blank if not known"></div>
+            <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
+                <strong style="font-size:0.88em;">Fees &mdash; charges that are not interest</strong>
+                <button type="button" class="btn2" onclick="addFeeLine()">+ Add fee</button>
+              </div>
+              <div class="muted" style="font-size:0.76em;margin:4px 0 8px;line-height:1.5;">
+                A tuition plan at 0% still costs money: an enrolment fee each semester, a processing charge on every instalment. Add one row per charge &mdash; with only an APR field a debt like that looks free when it can cost more than a low-rate loan of the same size.
+              </div>
+              <div id="dFeeLines"></div>
+              <div class="muted" id="dFeeSummary" style="font-size:0.8em;margin-top:4px;"></div>
+            </div>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveDebt(${d?d.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="dMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
         toggleDebtFields();
+        renderFeeLines((d && d.fee_lines) || []);
     }
+    /* One row per charge, same shape as the payroll deductions: a debt can carry several
+       unrelated fees and a single "fees" box cannot hold them with their names intact. */
+    const FEE_FREQS = [['one_time','one-time'], ['monthly','each payment / monthly'],
+                       ['quarterly','quarterly'], ['semester','per semester'],
+                       ['annual','yearly']];
+    const FEE_PER_YEAR = {one_time:0, monthly:12, quarterly:4, semester:2, annual:1};
+    function renderFeeLines(rows) {
+        const box = document.getElementById('dFeeLines');
+        if (!box) return;
+        box.innerHTML = (rows || []).map((r, i) => `
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:5px;">
+              <input class="fin-in fee-label" style="flex:2;" value="${esc(r.label||'')}" placeholder="Payment plan fee">
+              <select class="fin-in fee-freq" style="flex:1.2;" onchange="feeSummary()">
+                ${FEE_FREQS.map(([v,l])=>`<option value="${v}" ${r.frequency===v?'selected':''}>${l}</option>`).join('')}
+              </select>
+              <input class="fin-in fee-amt" type="number" step="0.01" min="0" style="width:92px;" value="${r.amount}" oninput="feeSummary()">
+              <button type="button" class="link-btn danger" onclick="removeFeeLine(${i})">&#10005;</button>
+            </div>`).join('') ||
+            '<div class="muted" style="font-size:0.78em;">No fees recorded.</div>';
+        feeSummary();
+    }
+    function collectFeeLines() {
+        const L=[...document.querySelectorAll('.fee-label')],
+              F=[...document.querySelectorAll('.fee-freq')],
+              A=[...document.querySelectorAll('.fee-amt')];
+        const out=[];
+        for (let i=0;i<L.length;i++) {
+            const amt=parseFloat(A[i].value);
+            if (amt>0) out.push({label:L[i].value.trim()||'Fee', amount:amt, frequency:F[i].value});
+        }
+        return out;
+    }
+    function addFeeLine() { renderFeeLines(collectFeeLines().concat([{label:'',amount:0,frequency:'semester'}])); }
+    function removeFeeLine(i) { const f=collectFeeLines(); f.splice(i,1); renderFeeLines(f); }
+    /* The point of the summary: turn the fees into a rate, so a 0% plan can be compared
+       against a real loan instead of looking free. */
+    function feeSummary() {
+        const el = document.getElementById('dFeeSummary');
+        if (!el) return;
+        const f = collectFeeLines();
+        if (!f.length) { el.textContent=''; return; }
+        const yearly = f.reduce((a,x)=>a + x.amount*FEE_PER_YEAR[x.frequency], 0);
+        const once = f.filter(x=>x.frequency==='one_time').reduce((a,x)=>a+x.amount,0);
+        const bal = parseFloat((document.getElementById('dBal')||{}).value) || 0;
+        const apr = parseFloat((document.getElementById('dApr')||{}).value) || 0;
+        const eff = bal > 0 ? apr + yearly/bal*100 : apr;
+        el.innerHTML = `${fmt2(yearly)}/yr in recurring fees` +
+            (once ? ` plus ${fmt2(once)} one-off` : '') +
+            (bal > 0 ? ` &middot; effective rate <b>${eff.toFixed(2)}%</b> on ${fmt(bal)}${apr===0?' (stated 0%)':''}` : '');
+    }
+
     /* A credit limit only means something on a revolving line. Showing the field on a
        mortgage invites someone to type the original loan amount into it, which would then
        be read as available credit. */
@@ -656,7 +719,8 @@
     async function saveDebt(id) {
         const body = {name:document.getElementById('dName').value.trim(),lender:document.getElementById('dLender').value.trim(),type:document.getElementById('dType').value,
             balance:parseFloat(document.getElementById('dBal').value)||0,apr:parseFloat(document.getElementById('dApr').value)||0,min_payment:parseFloat(document.getElementById('dPmt').value)||0,secured:document.getElementById('dSecured').checked,
-            credit_limit:(document.getElementById('dType').value!=='credit_card'||document.getElementById('dLimit').value===''?null:parseFloat(document.getElementById('dLimit').value))};
+            credit_limit:(document.getElementById('dType').value!=='credit_card'||document.getElementById('dLimit').value===''?null:parseFloat(document.getElementById('dLimit').value)),
+            fee_lines:collectFeeLines()};
         if(!body.name){ document.getElementById('dMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/debts/${id}`:'/api/finance/debts',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail');
