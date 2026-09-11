@@ -207,6 +207,24 @@ r = c.delete('/api/finance/transactions/%d' % tid)
 check('DELETE -> 200', r.status_code == 200)
 check('DELETE of missing id -> 404', c.delete('/api/finance/transactions/999999').status_code == 404)
 
+print('\n--- an unknown frequency is refused, never coerced ---')
+# Coercing to monthly silently changes what the number MEANS. A semiannual property-tax
+# bill became a 6x overstatement that way, and the only symptom was a line claiming
+# $32,938 a year of tax on a $569k house — which then drove the whole cash-flow read.
+r = c.post('/api/finance/bills', json={'name': 'Odd', 'amount': 100,
+                                       'frequency': 'fortnightly'})
+check('a frequency the app cannot price is a 400', r.status_code == 400, r.get_json())
+check('and the message says what is allowed',
+      'semiannual' in (r.get_json().get('error') or ''), r.get_json())
+r = c.post('/api/finance/bills', json={'name': 'Good bill', 'amount': 100,
+                                       'frequency': 'monthly'})
+_bid = r.get_json()['id']
+r = c.put('/api/finance/bills/%d' % _bid, json={'frequency': 'every other tuesday'})
+check('an edit cannot corrupt it either', r.status_code == 400, r.get_json())
+_kept = [b for b in c.get('/api/finance/bills').get_json()['bills'] if b['id'] == _bid][0]
+check('and the stored frequency survives the rejected edit',
+      _kept['frequency'] == 'monthly', _kept['frequency'])
+
 print('\n--- bills can be semiannual, for property tax and auto insurance ---')
 r = c.post('/api/finance/bills', json={'name': 'Property tax', 'category': 'taxes',
                                        'amount': 2400, 'frequency': 'semiannual',

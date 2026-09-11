@@ -1210,7 +1210,13 @@ def _apply_bill_fields(x, d):
         x.category = c if c in BUDGET_CATEGORIES else 'other'
     if 'frequency' in d:
         f = (d.get('frequency') or 'monthly').lower()
-        x.frequency = f if f in BILL_FREQUENCIES else 'monthly'
+        # Refused rather than coerced. Falling back to 'monthly' silently changes what the
+        # number MEANS -- a semiannual bill quietly became a 6x overstatement, and the only
+        # symptom was a property-tax line claiming $32,938 a year. A category that does not
+        # match can safely become 'other'; a frequency cannot.
+        if f not in BILL_FREQUENCIES:
+            raise ValueError('frequency must be one of: %s' % ', '.join(sorted(BILL_FREQUENCIES)))
+        x.frequency = f
     if 'amount' in d:
         try:
             x.amount = float(d.get('amount') or 0)
@@ -1257,7 +1263,10 @@ def finance_bills():
     if not (d.get('name') or '').strip():
         return jsonify({'error': 'name is required'}), 400
     b = RecurringBill(user_id=uid, name='')
-    _apply_bill_fields(b, d)
+    try:
+        _apply_bill_fields(b, d)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     db.session.add(b)
     db.session.commit()
     return jsonify(b.to_dict()), 201
@@ -1276,7 +1285,11 @@ def finance_modify_bill(bid):
         db.session.delete(b)
         db.session.commit()
         return jsonify({'success': True})
-    _apply_bill_fields(b, request.get_json() or {})
+    try:
+        _apply_bill_fields(b, request.get_json() or {})
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
     db.session.commit()
     return jsonify(b.to_dict())
 
