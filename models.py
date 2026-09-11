@@ -1531,6 +1531,11 @@ class RecurringBill(db.Model):
                 d = date(d.year, d.month, 15) if d.day < 15 else _add_one_month(date(d.year, d.month, 1))
             elif freq == 'quarterly':
                 d = _add_one_month(_add_one_month(_add_one_month(d)))
+            elif freq == 'semiannual':
+                # Twice a year: property tax, auto insurance, water rates. Stepped by
+                # months rather than 182 days so a July bill stays in July.
+                for _i in range(6):
+                    d = _add_one_month(d)
             elif freq == 'annual':
                 try:
                     d = date(d.year + 1, d.month, d.day)

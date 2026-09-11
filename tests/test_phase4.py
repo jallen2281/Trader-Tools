@@ -207,6 +207,22 @@ r = c.delete('/api/finance/transactions/%d' % tid)
 check('DELETE -> 200', r.status_code == 200)
 check('DELETE of missing id -> 404', c.delete('/api/finance/transactions/999999').status_code == 404)
 
+print('\n--- bills can be semiannual, for property tax and auto insurance ---')
+r = c.post('/api/finance/bills', json={'name': 'Property tax', 'category': 'taxes',
+                                       'amount': 2400, 'frequency': 'semiannual',
+                                       'next_due_date': '2026-07-15'})
+check('semiannual is accepted',
+      r.status_code == 201 and r.get_json()['frequency'] == 'semiannual', r.get_json())
+check('$2,400 twice a year is $400/mo in the budget floor',
+      r.get_json()['monthly_amount'] == 400.0, r.get_json()['monthly_amount'])
+due = r.get_json()['upcoming_due_dates']
+check('due dates step six months, keeping the calendar month',
+      due[0] == '2026-07-15' and due[1] == '2027-01-15' and due[2] == '2027-07-15', due)
+# The two lists drifting apart is how a frequency gets accepted and then priced as monthly.
+check('every frequency the model can price is also accepted by the API',
+      set(A.BILL_FREQUENCIES) == set(A.RecurringBill.FREQ_PER_YEAR),
+      (sorted(A.BILL_FREQUENCIES), sorted(A.RecurringBill.FREQ_PER_YEAR)))
+
 print('\n' + ('=' * 60))
 if fails:
     print('FAILED (%d):' % len(fails))

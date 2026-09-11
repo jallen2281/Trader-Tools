@@ -214,7 +214,9 @@
     const PAY_FREQS = ['weekly','biweekly','semimonthly','monthly'];
     const INCOME_OWNERS = ['me','spouse','joint','other'];
     const INCOME_TAX_FORMS = ['W2','1099','none'];
-    const BILL_FREQS = ['weekly','biweekly','semimonthly','monthly','quarterly','annual'];
+    /* "semiannual" rather than "bi-annual", which people read as both twice a year and
+       every two years. Property tax and auto insurance are the usual cases. */
+    const BILL_FREQS = ['weekly','biweekly','semimonthly','monthly','quarterly','semiannual','annual'];
     const BUDGET_CATS = ['housing','utilities','transportation','insurance','food','debt','subscriptions','healthcare','childcare','savings','entertainment','personal','taxes','other'];
     const BUDGET_KINDS = ['expense','savings','income'];
     let OUTLOOK = null, BILLS = null;

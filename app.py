@@ -994,7 +994,10 @@ def finance_delete_income_event(iid, eid):
     return jsonify({'success': True})
 
 
-BILL_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly', 'annual'}
+# Must stay in step with RecurringBill.FREQ_PER_YEAR, which is what turns any of these
+# into a monthly figure for the budget floor.
+BILL_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly',
+                    'semiannual', 'annual'}
 BUDGET_KINDS = {'expense', 'savings', 'income'}
 BUDGET_CATEGORIES = {'housing', 'utilities', 'transportation', 'insurance', 'food',
                      'debt', 'subscriptions', 'healthcare', 'childcare', 'savings',
