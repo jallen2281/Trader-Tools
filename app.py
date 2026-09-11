@@ -698,6 +698,35 @@ def finance_modify_account(aid):
     return jsonify(a.to_dict())
 
 
+def _apply_bill_paid_from(x, raw):
+    """Set where a bill is paid from: a bank account or a credit card.
+
+    Bills used to reach only FinanceAccount, so a charge that lands on a card -- a tax
+    payment, a tuition instalment, an annual premium put on a rewards card -- had nowhere
+    truthful to point and got recorded as coming out of checking on the due date. That is
+    the wrong date as well as the wrong source: the cash actually leaves when the card is
+    paid, which can be the better part of two months later.
+
+    Refuses to charge a bill to the very card it pays off. That combination is not a typo
+    worth guessing at -- it is a loop, and silently dropping half of it would leave the
+    record looking deliberate.
+    """
+    kind, _, rid = (raw or '').partition(':')
+    try:
+        rid = int(rid)
+    except (TypeError, ValueError):
+        rid = None
+    if kind == 'debt' and rid and Debt.query.filter_by(id=rid, user_id=x.user_id).first():
+        if x.linked_debt_id and x.linked_debt_id == rid:
+            raise ValueError('a bill cannot be charged to the same card it pays off')
+        x.paid_by_debt_id, x.from_account_id = rid, None
+    elif kind == 'account' and rid and FinanceAccount.query.filter_by(
+            id=rid, user_id=x.user_id).first():
+        x.from_account_id, x.paid_by_debt_id = rid, None
+    else:
+        x.from_account_id = x.paid_by_debt_id = None
+
+
 def _clean_fee_lines(raw):
     """Normalise and bound a debt's fee rows, or None if nothing usable remains.
 
@@ -1259,12 +1288,16 @@ def _apply_bill_fields(x, d):
             x.next_due_date = None
     if 'autopay' in d:
         x.autopay = bool(d.get('autopay'))
-    for f in ('linked_debt_id', 'from_account_id'):
+    for f in ('linked_debt_id', 'from_account_id', 'paid_by_debt_id'):
         if f in d:
             try:
                 setattr(x, f, int(d[f]) if d.get(f) not in (None, '') else None)
             except (TypeError, ValueError):
                 setattr(x, f, None)
+    # After linked_debt_id, so the pays-off-itself check sees the value being saved now
+    # rather than whatever was on the row before.
+    if 'paid_from' in d:
+        _apply_bill_paid_from(x, d.get('paid_from'))
     if 'notes' in d:
         x.notes = (d.get('notes') or None)
     if 'active' in d:

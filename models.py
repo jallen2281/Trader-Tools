@@ -1557,6 +1557,15 @@ class RecurringBill(db.Model):
     autopay = db.Column(db.Boolean, default=False)
     linked_debt_id = db.Column(db.Integer, db.ForeignKey('debts.id'))
     from_account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
+    # The CARD this bill is charged to, when it is not paid from a bank account.
+    #
+    # Deliberately distinct from linked_debt_id, which they are easy to confuse:
+    #   linked_debt_id  -- this bill IS the payment on that debt (the Amex bill -> Amex)
+    #   paid_by_debt_id -- this bill is CHARGED TO that card (property tax -> Discover)
+    # Opposite directions. Charging a bill to a card raises that card's balance; it is not
+    # a payment against it. Conflating the two would book a new charge as debt service and
+    # quietly shrink the balance it actually grew.
+    paid_by_debt_id = db.Column(db.Integer, db.ForeignKey('debts.id'))
     active = db.Column(db.Boolean, default=True)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1565,6 +1574,15 @@ class RecurringBill(db.Model):
     def monthly_amount(self):
         per_year = self.FREQ_PER_YEAR.get(self.frequency, 12)
         return round(float(self.amount or 0) * per_year / 12.0, 2)
+
+    def paid_from(self):
+        """'debt:<id>' | 'account:<id>' | None -- same shape SpendTransaction uses, because
+        a FinanceAccount and a Debt can share an id and a bare number cannot say which."""
+        if self.paid_by_debt_id:
+            return 'debt:%d' % self.paid_by_debt_id
+        if self.from_account_id:
+            return 'account:%d' % self.from_account_id
+        return None
 
     def _anchor(self):
         """Next due date to project from: explicit next_due_date, else this/next month's due_day."""
@@ -1616,6 +1634,7 @@ class RecurringBill(db.Model):
             'next_due_date': self.next_due_date.isoformat() if self.next_due_date else None,
             'due_day': self.due_day, 'autopay': bool(self.autopay),
             'linked_debt_id': self.linked_debt_id, 'from_account_id': self.from_account_id,
+            'paid_by_debt_id': self.paid_by_debt_id, 'paid_from': self.paid_from(),
             'active': bool(self.active), 'notes': self.notes,
             'upcoming_due_dates': [d.isoformat() for d in self.upcoming_due_dates(3)],
         }

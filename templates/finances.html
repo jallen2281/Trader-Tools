@@ -783,7 +783,7 @@
         el.innerHTML='<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Bill</th><th>Category</th><th>Next due</th><th style="text-align:right;">Amount</th><th style="text-align:right;">/mo</th><th></th></tr></thead><tbody>'+
             bills.map(b=>`<tr>
                 <td><strong>${esc(b.name)}</strong>${b.payee?`<div class="muted" style="font-size:0.8em;">${esc(b.payee)}</div>`:''}${b.autopay?' <span class="badge b-inv">auto</span>':''}${b.linked_debt_id?` <span class="badge b-inv" title="counted once: this payment is not added to debt service again">&#8618; debt</span>`:''}</td>
-                <td>${esc(b.category)}</td>
+                <td>${esc(b.category)}<div class="muted" style="font-size:0.76em;">${billSourceLabel(b)}</div></td>
                 <td>${b.upcoming_due_dates&&b.upcoming_due_dates[0]?b.upcoming_due_dates[0]:'<span class="muted">—</span>'}<div class="muted" style="font-size:0.78em;">${esc(b.frequency)}</div></td>
                 <td style="text-align:right;">${fmt2(b.amount)}</td>
                 <td style="text-align:right;">${fmt(b.monthly_amount)}</td>
@@ -1132,22 +1132,41 @@
               </div>
               <div style="flex:1;">
                 <label class="fld">Paid from</label>
-                <select id="bAcct" class="fin-in" style="width:100%;">
+                <select id="bPaidFrom" class="fin-in" style="width:100%;" onchange="billPaidFromHint()">
                   <option value="">unspecified</option>
-                  ${accts.map(a=>`<option value="${a.id}" ${String(e.from_account_id)===String(a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}
+                  <optgroup label="Cash accounts">${accts.filter(a=>['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}" ${e.paid_from===('account:'+a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>
+                  <optgroup label="Credit cards">${debts.filter(d=>d.type==='credit_card').map(d=>`<option value="debt:${d.id}" ${e.paid_from===('debt:'+d.id)?'selected':''}>${esc(d.name)}</option>`).join('')}</optgroup>
+                  <optgroup label="Other accounts">${accts.filter(a=>!['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}" ${e.paid_from===('account:'+a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>
                 </select>
+                <div class="muted" id="bPaidFromHint" style="font-size:0.76em;margin-top:3px;line-height:1.45;"></div>
               </div>
             </div>
             <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:0.88em;"><input type="checkbox" id="bAuto" ${e.autopay?'checked':''}> Autopay</label>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:6px;"><button class="btn2 primary" onclick="saveBill(${b?b.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="bMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+        billPaidFromHint();
+    }
+    /* Charging a bill to a card moves WHEN the cash leaves, not just where from -- it goes
+       out when the card is paid, which is why a tax bill on a card can buy weeks of float.
+       Say so, because the due date on the row no longer means the money is gone. */
+    function billPaidFromHint() {
+        const el = document.getElementById('bPaidFromHint');
+        const v = (document.getElementById('bPaidFrom')||{}).value || '';
+        if (!el) return;
+        if (v.startsWith('debt:')) {
+            const d = ((OUTLOOK&&OUTLOOK.debts)||[]).find(x=>String(x.id)===v.slice(5));
+            el.innerHTML = 'Charged to this card, so it raises the card balance on the due date &mdash; ' +
+                'the cash leaves when the card is paid' + (d&&d.apr ? `, and carries ${d.apr}% after the grace period` : '') + '.';
+        } else {
+            el.textContent = '';
+        }
     }
     async function saveBill(id) {
         const g=i=>document.getElementById(i);
         const body={name:g('bName').value.trim(),payee:g('bPayee').value.trim(),category:g('bCat').value,
             amount:parseFloat(g('bAmt').value)||0,frequency:g('bFreq').value,next_due_date:g('bNext').value,
             due_day:g('bDay').value,autopay:g('bAuto').checked,
-            linked_debt_id:g('bDebt').value||null, from_account_id:g('bAcct').value||null};
+            linked_debt_id:g('bDebt').value||null, paid_from:g('bPaidFrom').value||''};
         if(!body.name){ g('bMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/bills/${id}`:'/api/finance/bills',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail');
@@ -1206,6 +1225,19 @@
             return a ? esc(a.name) : 'account';
         }
         return '<span class="neg">no account</span>';
+    }
+    /* Same job as paidFromLabel, for bills. Kept separate because a bill that is charged to
+       a card is worth calling out -- the due date stops meaning "the cash is gone". */
+    function billSourceLabel(b) {
+        if (b.paid_by_debt_id) {
+            const d = ((OUTLOOK&&OUTLOOK.debts)||[]).find(x=>x.id===b.paid_by_debt_id);
+            return 'on ' + (d ? esc(d.name) : 'card');
+        }
+        if (b.from_account_id) {
+            const a = ((OUTLOOK&&OUTLOOK.accounts)||[]).find(x=>x.id===b.from_account_id);
+            return a ? esc(a.name) : '';
+        }
+        return '';
     }
     function renderSpending(d) {
         const el=document.getElementById('spendBody'), rows=(d&&d.transactions)||[];
