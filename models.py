@@ -1621,6 +1621,11 @@ class SpendTransaction(db.Model):
     category = db.Column(db.String(50), default='other', index=True)
     amount = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)  # + = out, - = refund
     account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
+    # A purchase on a credit card draws from the CARD, not from a bank account, and a card
+    # is a Debt rather than a FinanceAccount. With only account_id to point at, every card
+    # transaction had a blank "from" — two thirds of an imported ledger. Exactly one of the
+    # two is set.
+    debt_id = db.Column(db.Integer, db.ForeignKey('debts.id'), index=True)
     source = db.Column(db.String(10), default='manual')     # manual|csv|receipt|plaid
     external_id = db.Column(db.String(120), index=True)     # dedupe key; NULL for manual rows
     # Plaid's own account id. Kept as the raw string rather than a foreign key so a
@@ -1647,7 +1652,10 @@ class SpendTransaction(db.Model):
             'posted_at': self.posted_at.isoformat() if self.posted_at else None,
             'description': self.description, 'merchant': self.merchant,
             'category': self.category, 'amount': float(self.amount or 0),
-            'account_id': self.account_id, 'source': self.source,
+            'account_id': self.account_id, 'debt_id': self.debt_id,
+            'paid_from': ('debt:%d' % self.debt_id) if self.debt_id
+                         else (('account:%d' % self.account_id) if self.account_id else ''),
+            'source': self.source,
             'external_id': self.external_id, 'plaid_account_id': self.plaid_account_id,
             'tax_document_id': self.tax_document_id,
             'pending': bool(self.pending), 'notes': self.notes,

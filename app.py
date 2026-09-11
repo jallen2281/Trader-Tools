@@ -1115,6 +1115,22 @@ def _apply_spend_fields(x, d):
             x.amount = round(float(d.get('amount') or 0), 2)
         except (TypeError, ValueError):
             pass
+    if 'paid_from' in d:
+        # "kind:id", because a FinanceAccount and a Debt can share an id and a bare number
+        # cannot say which was meant.
+        raw = (d.get('paid_from') or '')
+        kind, _, rid = raw.partition(':')
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            rid = None
+        if kind == 'debt' and rid and Debt.query.filter_by(id=rid, user_id=x.user_id).first():
+            x.debt_id, x.account_id = rid, None
+        elif kind == 'account' and rid and FinanceAccount.query.filter_by(
+                id=rid, user_id=x.user_id).first():
+            x.account_id, x.debt_id = rid, None
+        else:
+            x.account_id = x.debt_id = None
     if 'account_id' in d:
         try:
             x.account_id = int(d['account_id']) if d.get('account_id') not in (None, '') else None
@@ -2109,8 +2125,10 @@ def plaid_link_account(aid):
 
     if kind in ('', 'none') or rid in (None, ''):
         pa.linked_debt_id = pa.linked_account_id = pa.linked_portfolio_id = None
+        moved = _attribute_linked_transactions(uid, only_account=pa.id)
         db.session.commit()
-        return jsonify({'success': True, 'account': pa.to_dict()})
+        return jsonify({'success': True, 'account': pa.to_dict(),
+                        'transactions_attributed': moved})
     try:
         rid = int(rid)
     except (TypeError, ValueError):
@@ -2136,8 +2154,32 @@ def plaid_link_account(aid):
                                  "to unlink"}), 400
 
     _apply_plaid_balance(pa)
+    # The transactions from this account follow the link, including when it is cleared.
+    moved = _attribute_linked_transactions(uid, only_account=pa.id)
     db.session.commit()
-    return jsonify({'success': True, 'account': pa.to_dict()})
+    return jsonify({'success': True, 'account': pa.to_dict(),
+                    'transactions_attributed': moved})
+
+
+@app.route('/api/plaid/accounts/attribute', methods=['POST'])
+@require_api_auth
+@require_perm('plaid_link')
+def plaid_attribute_transactions():
+    """Point every imported transaction at the account or card it came from.
+
+    Needed as a one-off because the links were made before anything resolved them onto the
+    transactions; after this it happens on every sync and whenever a link changes.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    moved = _attribute_linked_transactions(uid)
+    db.session.commit()
+    unattributed = SpendTransaction.query.filter(
+        SpendTransaction.user_id == uid,
+        SpendTransaction.account_id.is_(None),
+        SpendTransaction.debt_id.is_(None)).count()
+    return jsonify({'attributed': moved, 'still_unattributed': unattributed})
 
 
 @app.route('/api/plaid/accounts/refresh', methods=['POST'])
@@ -2204,6 +2246,35 @@ def _record_deposit(item, txn, acct_types):
     row.pfc_primary = (pfc.get('primary') or None)
     row.pfc_detailed = (pfc.get('detailed') or None)
     row.kind = _classify_deposit(txn, acct_types.get(aid))
+
+
+def _attribute_linked_transactions(user_id, only_account=None):
+    """Point imported transactions at the record their bank account is linked to.
+
+    Every Plaid transaction already carries the account it came from, and every PlaidAccount
+    already knows what the user linked it to. Nothing joined the two, so the ledger showed a
+    blank "from" on 243 of 244 rows — and for the 165 on credit cards there was no field
+    that could have held the answer, since account_id points at bank accounts and a card is
+    a Debt.
+
+    Idempotent, and safe to run after any link change: unlinking clears the attribution
+    rather than leaving rows pointing at a record that no longer claims them.
+    """
+    q = PlaidAccount.query.filter_by(user_id=user_id)
+    if only_account is not None:
+        q = q.filter(PlaidAccount.id == only_account)
+    touched = 0
+    for pa in q.all():
+        rows = SpendTransaction.query.filter_by(user_id=user_id,
+                                                plaid_account_id=pa.account_id)
+        acct = pa.linked_account_id
+        debt = pa.linked_debt_id
+        for row in rows:
+            if row.account_id != acct or row.debt_id != debt:
+                row.account_id = acct
+                row.debt_id = debt
+                touched += 1
+    return touched
 
 
 def _sync_plaid_accounts(item, client=None, token=None):
@@ -2491,6 +2562,10 @@ def _plaid_sync_item(item, client=None, backfill=False):
         cursor = out.get('next_cursor') or cursor
         if not out.get('has_more'):
             break
+    try:
+        _attribute_linked_transactions(item.user_id)
+    except Exception as e:
+        logger.warning('plaid: attributing transactions failed for item %s: %s', item.id, e)
     item.cursor = cursor
     item.last_synced_at = datetime.utcnow()
     item.status = 'active'

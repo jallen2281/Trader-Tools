@@ -1118,6 +1118,20 @@
        merchant names (MCDONALD'S) become entities so they can't close the attribute. */
     const attrJson = (o) => esc(JSON.stringify(o)).replace(/'/g,'&#39;');
 
+    /* Which account or card a transaction drew from. Imported rows carry the Plaid account
+       they came from and follow whatever that account is linked to, so this is populated
+       without anyone typing it. */
+    function paidFromLabel(t) {
+        if (t.debt_id) {
+            const d = ((OUTLOOK&&OUTLOOK.debts)||[]).find(x=>x.id===t.debt_id);
+            return d ? esc(d.name) : 'card';
+        }
+        if (t.account_id) {
+            const a = ((OUTLOOK&&OUTLOOK.accounts)||[]).find(x=>x.id===t.account_id);
+            return a ? esc(a.name) : 'account';
+        }
+        return '<span class="neg">no account</span>';
+    }
     function renderSpending(d) {
         const el=document.getElementById('spendBody'), rows=(d&&d.transactions)||[];
         document.getElementById('spendTotal').textContent =
@@ -1129,7 +1143,7 @@
             rows.map(t=>`<tr>
                 <td style="white-space:nowrap;">${t.posted_at||''}</td>
                 <td><strong>${esc(t.description)}</strong>${t.source!=='manual'?` <span class="badge b-inv" style="font-size:0.72em;">${esc(t.source)}</span>`:''}${t.merchant&&t.merchant!==t.description?`<div class="muted" style="font-size:0.8em;">${esc(t.merchant)}</div>`:''}</td>
-                <td>${esc(t.category)}</td>
+                <td>${esc(t.category)}<div class="muted" style="font-size:0.78em;">${paidFromLabel(t)}</div></td>
                 <td style="text-align:right;" class="${t.amount<0?'pos':''}">${t.amount<0?'+'+fmt2(Math.abs(t.amount)):fmt2(t.amount)}</td>
                 <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openTxn(${attrJson(t)})'>edit</button> <button class="link-btn danger" onclick="delTxn(${t.id})">&#10005;</button></td>
             </tr>`).join('')+'</tbody></table></div>';
@@ -1138,6 +1152,10 @@
     function openTxn(t) {
         const e=t||{posted_at:new Date().toISOString().slice(0,10),category:'',amount:0};
         const accts=(OUTLOOK&&OUTLOOK.accounts)||[];
+        /* A purchase on a card draws from the CARD, not from a bank account, so debts have
+           to be selectable here too. The value carries the kind because a FinanceAccount and
+           a Debt can share an id. */
+        const cards=((OUTLOOK&&OUTLOOK.debts)||[]).filter(d=>d.type==='credit_card');
         showModal(`<h2 style="margin:0 0 8px;">${t?'Edit':'Add'} Transaction</h2>
             <div style="display:flex;gap:10px;">
               <div style="flex:1;"><label class="fld">Date</label><input id="tDate" type="date" class="fin-in" style="width:100%;" value="${e.posted_at||''}"></div>
@@ -1148,7 +1166,12 @@
               <div style="flex:1;"><label class="fld">Merchant (optional)</label><input id="tMerch" class="fin-in" style="width:100%;" value="${esc(e.merchant||'')}"></div>
               <div style="flex:1;"><label class="fld">Category</label><select id="tCat" class="fin-in" style="width:100%;"><option value="">auto-detect</option>${BUDGET_CATS.map(c=>`<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
             </div>
-            <label class="fld">Paid from (optional)</label><select id="tAcct" class="fin-in" style="width:100%;"><option value="">&mdash;</option>${accts.map(a=>`<option value="${a.id}" ${e.account_id===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
+            <label class="fld">Paid from</label><select id="tAcct" class="fin-in" style="width:100%;">
+              <option value="">&mdash;</option>
+              <optgroup label="Cash accounts">${accts.filter(a=>['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}" ${e.paid_from===('account:'+a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>
+              <optgroup label="Credit cards">${cards.map(d=>`<option value="debt:${d.id}" ${e.paid_from===('debt:'+d.id)?'selected':''}>${esc(d.name)}</option>`).join('')}</optgroup>
+              <optgroup label="Other accounts">${accts.filter(a=>!['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}" ${e.paid_from===('account:'+a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>
+            </select>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveTxn(${t?t.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="tMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
     }
@@ -1156,7 +1179,7 @@
         const g=i=>document.getElementById(i);
         const body={posted_at:g('tDate').value,amount:parseFloat(g('tAmt').value)||0,
             description:g('tDesc').value.trim(),merchant:g('tMerch').value.trim(),
-            category:g('tCat').value,account_id:g('tAcct').value};
+            category:g('tCat').value,paid_from:g('tAcct').value};
         if(!body.description){ g('tMsg').textContent='Description required'; return; }
         try{ const r=await fetch(id?`/api/finance/transactions/${id}`:'/api/finance/transactions',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail');

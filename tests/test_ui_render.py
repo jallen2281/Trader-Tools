@@ -82,6 +82,10 @@ check('deductions are line items entered per check', 'id="iDeductions"' in b
 check('with the pre-tax vs post-tax difference spelled out',
       'escapes income tax' in b and 'reduces take-home only' in b)
 check('cash-flow says it is net pay', 'net pay in vs bills out' in b)
+check('a transaction can be paid from a credit card', 'Credit cards' in b
+      and "paid_from:g('tAcct')" in b)
+check('and the spending list shows where each came from', 'paidFromLabel(' in b)
+check('bills offer a semiannual frequency', "'semiannual'" in b)
 check('payoff plan card present', 'debtPlanBody' in b)
 check('its strategy toggle and extra-payment input are wired',
       'planStrategy' in b and 'saveExtra(' in b)

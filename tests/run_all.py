@@ -42,6 +42,7 @@ SUITES = [
     ('docencrypt', 'document encryption at rest'),
     ('retention', 'retention, purge cascade and Plaid revocation'),
     ('phase4', 'spending ledger, CSV and receipt import, budgets'),
+    ('txn_account', 'transactions know which account or card they drew from'),
     ('receipt_match', 'receipts reconciled against the bank feed by card digits'),
     ('taxprofile', 'household tax profile and withholding'),
     ('retirement', 'Roth/traditional split and employer match'),
