@@ -1176,6 +1176,48 @@ class PayrollDeferralMixin(object):
         total = float(self.pretax_retirement_annual or 0) + float(self.roth_retirement_annual or 0)
         return round(total / float(gross) * 100.0, 2)
 
+    def deduction_lines(self):
+        """The stub's line items, normalised. Bad rows are dropped rather than trusted."""
+        out = []
+        for row in (getattr(self, 'payroll_deductions', None) or []):
+            try:
+                amt = float(row.get('per_check') or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if amt <= 0:
+                continue
+            t = (row.get('treatment') or 'posttax').lower()
+            out.append({'label': str(row.get('label') or 'Deduction')[:60],
+                        'per_check': round(amt, 2),
+                        'treatment': t if t in ('section125', 'posttax') else 'posttax'})
+        return out
+
+    def _periods_per_year(self):
+        return self.PAY_PERIODS.get(self.pay_frequency, 26) if hasattr(self, 'PAY_PERIODS') else 26
+
+    def _lines_annual(self, treatment):
+        n = self._periods_per_year()
+        return round(sum(r['per_check'] for r in self.deduction_lines()
+                         if r['treatment'] == treatment) * n, 2)
+
+    def section125_annual(self):
+        """Deductions that escape FICA as well as income tax.
+
+        Line items entered per check are annualised by pay frequency; the scalar columns
+        remain for anything entered before line items existed, and for TaxProfile, which
+        only ever had one catch-all and no health/HSA columns of its own — hence the
+        getattrs, which keep this mixin usable from both.
+        """
+        return round(self._lines_annual('section125')
+                     + float(getattr(self, 'pretax_health_annual', 0) or 0)
+                     + float(getattr(self, 'pretax_hsa_annual', 0) or 0)
+                     + float(self.pretax_other_annual or 0), 2)
+
+    def posttax_annual(self):
+        """Deductions that reduce take-home and nothing else."""
+        return round(self._lines_annual('posttax')
+                     + float(getattr(self, 'posttax_deductions_annual', 0) or 0), 2)
+
     def has_payroll_detail(self):
         """Whether anything payroll-specific has actually been entered here.
 
@@ -1187,7 +1229,7 @@ class PayrollDeferralMixin(object):
             float(self.roth_retirement_pct or 0), float(self.roth_retirement_annual or 0),
             float(self.employer_match_rate_pct or 0), bool(self.employer_match_tiers),
             float(self.ytd_federal_withheld or 0), float(self.ytd_state_withheld or 0),
-            float(self.pretax_other_annual or 0),
+            self.section125_annual(), self.posttax_annual(),
         ])
 
 
@@ -1243,9 +1285,27 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
     employer_match_tiers = db.Column(JSON)     # [{"employee_pct": 3, "match_pct": 100}, ...]
     employer_match_rate_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
     employer_match_limit_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
-    # Health insurance, HSA, and anything else deducted before tax. Also what the income
-    # reconciliation needs to stop attributing a normal payslip gap to a missing deposit.
+    # ---- the rest of the paycheck.
+    #
+    # The pre-tax/post-tax split is not cosmetic. Section 125 deductions — medical, dental,
+    # vision, HSA/FSA — come out before BOTH income tax and FICA. A traditional 401(k)
+    # deferral comes out before income tax but is STILL fully subject to FICA, which is the
+    # single most commonly missed thing about a payslip. Post-tax items (group life over
+    # $50k, disability premiums paid post-tax so the benefit is not taxed, union dues)
+    # reduce take-home and nothing else.
+    pretax_health_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    pretax_hsa_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
     pretax_other_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    posttax_deductions_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    # The line items as they appear on the stub, entered PER CHECK because that is how a
+    # payslip states them and converting in your head is how transcription errors happen.
+    # A real stub has nine or ten of these — medical, dental, vision, HSA, voluntary life,
+    # short- and long-term disability, accident — and four fixed buckets cannot hold them
+    # with their names intact. The buckets above remain as the totals, and as what a
+    # profile entered before this keeps using.
+    #   [{"label": "Medical", "per_check": 19.71, "treatment": "section125"}, ...]
+    # treatment: section125 (escapes income tax AND FICA) | posttax (escapes neither)
+    payroll_deductions = db.Column(JSON)
     # Withheld so far this year, from a recent paystub. Per job, because each employer
     # withholds against its own wages on its own W-4.
     ytd_federal_withheld = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
@@ -1352,7 +1412,13 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
                                      for w, m in self.match_tiers()],
             'full_match_pct': self.full_match_pct(),
             'deferral_for_full_match': self.deferral_for_full_match(),
+            'pretax_health_annual': float(self.pretax_health_annual or 0),
+            'pretax_hsa_annual': float(self.pretax_hsa_annual or 0),
             'pretax_other_annual': float(self.pretax_other_annual or 0),
+            'posttax_deductions_annual': float(self.posttax_deductions_annual or 0),
+            'payroll_deductions': self.deduction_lines(),
+            'section125_annual': self.section125_annual(),
+            'posttax_annual': self.posttax_annual(),
             'ytd_federal_withheld': float(self.ytd_federal_withheld or 0),
             'ytd_state_withheld': float(self.ytd_state_withheld or 0),
             'ytd_as_of': self.ytd_as_of.isoformat() if self.ytd_as_of else None,

@@ -308,8 +308,9 @@ check('an expectation exists to compare against', rec['has_estimate'] is True)
 check('the expectation is take-home, NOT the gross salary -- IncomeSource.net_monthly()',
       0 < rec['expected_monthly_net'] < rec['gross_monthly'],
       (rec['expected_monthly_net'], rec['gross_monthly'], rec['expected_basis']))
-check('and it says what basis it used',
-      rec['expected_basis'] == 'after estimated tax and retirement', rec['expected_basis'])
+check('and it says what basis it used, now that FICA and benefits are modelled',
+      rec['expected_basis'] == 'take-home after tax, FICA, benefits and retirement',
+      rec['expected_basis'])
 check('gross is reported alongside so the deduction is visible',
       rec['gross_monthly'] == round(104000 / 12.0, 2), rec['gross_monthly'])
 check('a variance is reported', rec['variance'] is not None, rec)

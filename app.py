@@ -861,6 +861,7 @@ def _apply_income_fields(x, d):
             except (TypeError, ValueError):
                 pass
     for f in ('pretax_retirement_annual', 'roth_retirement_annual', 'pretax_other_annual',
+              'pretax_health_annual', 'pretax_hsa_annual', 'posttax_deductions_annual',
               'ytd_federal_withheld', 'ytd_state_withheld'):
         if f in d:
             try:
@@ -869,6 +870,22 @@ def _apply_income_fields(x, d):
                 pass
     if 'employer_match_tiers' in d:
         x.employer_match_tiers = _clean_match_tiers(d.get('employer_match_tiers'))
+    if 'payroll_deductions' in d:
+        # Entered per check, straight off the stub. Bounded and normalised here rather than
+        # trusted, the same as the match bands.
+        lines = []
+        for row in (d.get('payroll_deductions') or [])[:30]:
+            try:
+                amt = round(float(row.get('per_check') or 0), 2)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if not (0 < amt <= 100000):
+                continue
+            t = (row.get('treatment') or 'posttax').lower()
+            lines.append({'label': str(row.get('label') or 'Deduction')[:60],
+                          'per_check': amt,
+                          'treatment': t if t in ('section125', 'posttax') else 'posttax'})
+        x.payroll_deductions = lines or None
     if 'ytd_as_of' in d:
         raw = (d.get('ytd_as_of') or '').strip()
         try:
@@ -1858,11 +1875,13 @@ def _income_reconciliation(user_id, months=INCOME_RECON_MONTHS, today=None):
     basis = 'gross'
     try:
         est = _income_tax_estimate(user_id) or {}
-        annual_tax = ((est.get('total_federal_tax') or 0) + (est.get('state_tax') or 0))
-        deferrals = ((est.get('pretax_retirement') or 0) + (est.get('roth_retirement') or 0))
-        if gross_monthly > 0 and annual_tax >= 0:
-            expected_monthly = round(gross_monthly - (annual_tax + deferrals) / 12.0, 2)
-            basis = 'after estimated tax and retirement'
+        # take_home already nets off income tax, state tax, FICA, Section 125 deductions,
+        # retirement and post-tax items. This used to approximate it as gross less tax and
+        # deferrals, which ignored FICA entirely — several thousand a year — and had to
+        # apologise in the observation text for not knowing about health insurance.
+        if est.get('take_home_monthly'):
+            expected_monthly = est['take_home_monthly']
+            basis = 'take-home after tax, FICA, benefits and retirement'
     except Exception as e:
         logger.warning('income reconciliation: tax estimate unavailable: %s', e)
 
@@ -3826,7 +3845,7 @@ def _finance_observations(p):
                      ir['months'], _money(ir['observed_monthly_net']),
                      _money(ir['expected_monthly_net']), ir.get('expected_basis', 'estimate'),
                      _money(ir.get('gross_monthly')),
-                     'Payroll deductions this app cannot see — health insurance, HSA — '
+                     'Anything not recorded against the job -- a deduction left blank -- '
                      'explain some of a shortfall, but a gap this size is worth checking '
                      'against a payslip.' if short else
                      'Taking home more than gross less tax is not possible, so the recorded '
@@ -5464,6 +5483,13 @@ _FED_BRACKETS = {
 }
 _STD_DEDUCTION = {'mfj': 30000, 'qss': 30000, 'single': 15000, 'mfs': 15000, 'hoh': 22500}
 _SS_WAGE_BASE = 176100
+# Employee half of FICA. The employer pays the same again, which is not the employee's
+# money and is deliberately not shown.
+_SS_RATE = 0.062
+_MEDICARE_RATE = 0.0145
+# Additional Medicare, employee only, no employer match and no wage cap.
+_ADDL_MEDICARE_RATE = 0.009
+_ADDL_MEDICARE_THRESHOLD = {'mfj': 250000, 'qss': 250000, 'mfs': 125000}
 _401K_ELECTIVE_LIMIT = 23500   # employee elective deferral cap, traditional + Roth COMBINED
 _CTC_PER_CHILD = 2200        # child tax credit, dependents under 17
 _ODC_PER_DEPENDENT = 500     # other-dependent credit
@@ -5537,6 +5563,33 @@ def _bracket_tax(taxable, brackets):
     return round(tax, 2)
 
 
+def _employee_fica(fica_wages, filing):
+    """Social Security and Medicare withheld from a W2 paycheck.
+
+    Not part of the income-tax return, and therefore not part of the balance due — but it
+    is money gone from the paycheck, and for most wage earners it is larger than their
+    federal income tax. Leaving it out made take-home look thousands of dollars better than
+    it is.
+
+    `fica_wages` is gross less Section 125 deductions ONLY. A traditional 401(k) deferral
+    does not reduce it: that deferral escapes income tax and is still fully subject to FICA,
+    which is the detail most paycheck estimates get wrong.
+    """
+    w = max(0.0, float(fica_wages or 0))
+    ss = min(w, _SS_WAGE_BASE) * _SS_RATE
+    med = w * _MEDICARE_RATE
+    threshold = _ADDL_MEDICARE_THRESHOLD.get((filing or 'single').lower(), 200000)
+    addl = max(0.0, w - threshold) * _ADDL_MEDICARE_RATE
+    return {
+        'social_security': round(ss, 2),
+        'medicare': round(med, 2),
+        'additional_medicare': round(addl, 2),
+        'total': round(ss + med + addl, 2),
+        'wages': round(w, 2),
+        'ss_capped': w > _SS_WAGE_BASE,
+    }
+
+
 def _payroll_rollup(srcs, prof):
     """Retirement, employer match and withholding, added up job by job.
 
@@ -5568,7 +5621,8 @@ def _payroll_rollup(srcs, prof):
             'roth': roth,
             'pretax_retirement': trad,
             'capped': prof.retirement_annual(w2_gross) > trad + 0.005,
-            'pretax_other': round(float(prof.pretax_other_annual or 0), 2),
+            'section125': round(float(prof.pretax_other_annual or 0), 2),
+            'posttax': 0.0,
             'employer_match': prof.employer_match_annual(w2_gross),
             'unclaimed_match': prof.unclaimed_match_annual(w2_gross),
             'ytd_federal': round(float(prof.ytd_federal_withheld or 0), 2),
@@ -5598,7 +5652,8 @@ def _payroll_rollup(srcs, prof):
                 'gross': round(g, 2),
                 'pretax_retirement': trad,
                 'roth_retirement': roth,
-                'pretax_other': round(float(x.pretax_other_annual or 0), 2),
+                'section125': x.section125_annual(),
+                'posttax': x.posttax_annual(),
                 'employer_match': x.employer_match_annual(g),
                 'unclaimed_match': x.unclaimed_match_annual(g),
                 'full_match_pct': x.full_match_pct(),
@@ -5618,7 +5673,8 @@ def _payroll_rollup(srcs, prof):
         'roth': round(sum(r['roth_retirement'] for r in rows), 2),
         'pretax_retirement': round(sum(r['pretax_retirement'] for r in rows), 2),
         'capped': capped,
-        'pretax_other': round(sum(r['pretax_other'] for r in rows), 2),
+        'section125': round(sum(r['section125'] for r in rows), 2),
+        'posttax': round(sum(r['posttax'] for r in rows), 2),
         'employer_match': round(sum(r['employer_match'] for r in rows), 2),
         'unclaimed_match': round(sum(r['unclaimed_match'] for r in rows), 2),
         'ytd_federal': round(sum(r['ytd_federal_withheld'] for r in rows), 2),
@@ -5656,8 +5712,11 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     roth_retirement = payroll['roth']
     retirement = payroll['pretax_retirement']
     retirement_capped = payroll['capped']
-    pretax = round(retirement + payroll['pretax_other'], 2)
+    section125 = payroll['section125']
+    # Income tax sees both; FICA sees only the Section 125 part.
+    pretax = round(retirement + section125, 2)
     w2_taxable = max(0.0, w2_gross - pretax)
+    fica = _employee_fica(max(0.0, w2_gross - section125), filing)
 
     employer_match = payroll['employer_match']
     unclaimed_match = payroll['unclaimed_match']
@@ -5703,6 +5762,16 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     state_tax = round(state_taxable * rate / 100.0, 2) if rate else 0.0
 
     gross = w2_gross + se_income
+    # What is actually left of a W2 paycheck. This is the figure to hold a bank deposit
+    # against; the tax "balance due" answers a different question entirely and is no use
+    # for checking a payslip. Every term comes out of gross exactly once:
+    #   Section 125  — escapes income tax AND FICA
+    #   401(k) traditional — escapes income tax, NOT FICA; Roth escapes neither
+    #   federal income tax, state tax, FICA
+    #   post-tax     — group life over $50k, post-tax disability, union dues
+    take_home = round(max(0.0, w2_gross - section125 - retirement - roth_retirement
+                          - fed_income_tax - state_tax - fica['total']
+                          - payroll['posttax']), 2)
     return {
         'year': yr, 'filing_status': filing,
         'constants_vintage': TAX_CONSTANTS_VINTAGE,
@@ -5730,6 +5799,12 @@ def _income_tax_estimate(user_id, year=None, filing=None):
         'taxable_income': round(taxable, 2),
         'federal_income_tax_before_credits': fed_before_credits,
         'credits': credits, 'child_tax_credit': ctc, 'other_dependent_credit': odc,
+        'fica': fica,
+        'fica_total': fica['total'],
+        'take_home': take_home,
+        'take_home_monthly': round(take_home / 12.0, 2),
+        'section125_deductions': section125,
+        'posttax_deductions': payroll['posttax'],
         'federal_income_tax': fed_income_tax, 'self_employment_tax': se_tax,
         'total_federal_tax': total_fed,
         'withheld': withheld,

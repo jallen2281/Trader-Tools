@@ -47,6 +47,7 @@ SUITES = [
     ('retirement', 'Roth/traditional split and employer match'),
     ('matchtiers', 'tiered employer match schedules'),
     ('payroll_per_source', 'withholding and retirement per income, not per household'),
+    ('paycheck', 'FICA, Section 125 vs post-tax, take-home; pinned to a real stub'),
     ('recurring', 'recurring-charge detection arithmetic'),
     ('recurring_api', 'recurring charges: decisions, adoption, sharing'),
     ('debtplan', 'payoff simulation: avalanche vs snowball'),
