@@ -59,11 +59,20 @@ b = r.get_data(as_text=True)
 check('books card present', 'entBody' in b)
 check('add-books handler wired', 'openEntity(null)' in b)
 check('per-year report selector present', 'entYear' in b)
-check('share/books fields injected into modals', b.count('shareEntityFields(e)') == 4,
+# Every record the backend can tag to a book must have the selector, or the capability
+# exists in the API and is unreachable -- income was taggable for weeks with no way to do it.
+_TAGGABLE_MODALS = ('openIncome', 'openDebt', 'openAccount', 'openBill', 'openBudget',
+                    'openTxn')
+for _m in _TAGGABLE_MODALS:
+    _body = b.split('function %s' % _m, 1)[-1].split(chr(10) + '    }', 1)[0]
+    check('%s offers the books selector' % _m, 'shareEntityFields' in _body)
+check('share/books fields injected into every taggable modal',
+      b.count('shareEntityFields(e)') == len(_TAGGABLE_MODALS),
       b.count('shareEntityFields(e)'))
 check('share select rendered by the helper', "id=\"xShare\"" in b)
 check('books select rendered by the helper', "id=\"xEntity\"" in b)
-check('modals apply them after saving', b.count('applyShareEntity(') >= 5,
+check('modals apply them after saving',
+      b.count('applyShareEntity(') >= len(_TAGGABLE_MODALS),
       b.count('applyShareEntity('))
 check('entity + household state load on boot',
       'loadHouseholdState().then(loadEntities)' in b)

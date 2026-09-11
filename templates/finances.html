@@ -404,6 +404,7 @@
                 <div style="flex:1;"><label class="fld">As of <span class="muted">(paystub date)</span></label><input id="iYtdAsOf" type="date" class="fin-in" style="width:100%;" value="${e.ytd_as_of||''}"></div>
               </div>
             </div>
+            ${shareEntityFields(e)}
             <datalist id="dedListsection125">${DEDUCTION_SUGGESTIONS.section125.map(x=>`<option value="${x}">`).join('')}</datalist>
             <datalist id="dedListposttax">${DEDUCTION_SUGGESTIONS.posttax.map(x=>`<option value="${x}">`).join('')}</datalist>
             <div id="iPreview" class="muted" style="margin-top:10px;font-size:0.85em;"></div>
@@ -521,7 +522,11 @@
             ytd_as_of:g('iYtdAsOf').value};
         if(!body.name){ g('iMsg').textContent='Name required'; return; }
         try{ const r=await fetch(id?`/api/finance/incomes/${id}`:'/api/finance/incomes',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
-            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadOutlook();
+            if(!r.ok) throw new Error((await r.json()).error||'fail');
+            // body is still unread on the success path, so this is the only read
+            const saved = await r.json().catch(() => ({}));
+            await applyShareEntity('income', id || saved.id);
+            closeModal(); loadOutlook();
         }catch(e){ g('iMsg').textContent=e.message; }
     }
     async function delIncome(id){ if(!confirm('Delete this income source?'))return; await fetch(`/api/finance/incomes/${id}`,{method:'DELETE',credentials:'same-origin'}); loadOutlook(); }
@@ -1098,13 +1103,18 @@
               <div style="flex:1;"><label class="fld">Monthly limit $</label><input id="buLimit" type="number" step="10" class="fin-in" style="width:100%;" value="${e.monthly_limit||0}"></div>
               <div style="flex:1;"><label class="fld">Kind</label><select id="buKind" class="fin-in" style="width:100%;">${BUDGET_KINDS.map(k=>`<option ${e.kind===k?'selected':''}>${k}</option>`).join('')}</select></div>
             </div>
+            ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveBudget()">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="buMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
     }
     async function saveBudget() {
         const g=i=>document.getElementById(i);
         const body={category:g('buCat').value,monthly_limit:parseFloat(g('buLimit').value)||0,kind:g('buKind').value};
         try{ const r=await fetch('/api/finance/budgets',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
-            if(!r.ok) throw new Error((await r.json()).error||'fail'); closeModal(); loadBudgeting();
+            if(!r.ok) throw new Error((await r.json()).error||'fail');
+            // body is still unread on the success path, so this is the only read
+            const saved = await r.json().catch(() => ({}));
+            await applyShareEntity('budget', saved.id);
+            closeModal(); loadBudgeting();
         }catch(e){ g('buMsg').textContent=e.message; }
     }
     async function delBudget(id, category){
