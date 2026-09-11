@@ -192,7 +192,7 @@
     <!-- Cash-flow -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
-            <h2 style="margin:0;">Cash-flow <span class="muted" style="font-size:0.65em;font-weight:400;">next 60 days · pay-ins vs bills</span></h2>
+            <h2 style="margin:0;">Cash-flow <span class="muted" style="font-size:0.65em;font-weight:400;">next 60 days · net pay in vs bills out</span></h2>
             <span id="cashflowSummary" class="muted" style="font-size:0.82em;"></span>
         </div>
         <div id="cashflowBody"><p class="muted">Loading…</p></div>
@@ -375,10 +375,25 @@
                 Withholding and a 401(k) deferral come off <em>this</em> paycheck, so they live here rather than once per household &mdash; a second job has its own percentages, its own match schedule and its own W-4.
               </div>
               <div style="display:flex;gap:10px;">
-                <div style="flex:1;"><label class="fld">Traditional %</label><input id="iPreTaxPct" type="number" step="0.5" min="0" max="100" class="fin-in" style="width:100%;" value="${e.pretax_retirement_pct||0}"></div>
-                <div style="flex:1;"><label class="fld">Roth %</label><input id="iRothPct" type="number" step="0.5" min="0" max="100" class="fin-in" style="width:100%;" value="${e.roth_retirement_pct||0}"></div>
-                <div style="flex:1;"><label class="fld">Other pre-tax $/yr <span class="muted">(insurance, HSA)</span></label><input id="iPreTaxOther" type="number" step="100" min="0" class="fin-in" style="width:100%;" value="${e.pretax_other_annual||0}"></div>
+                <div style="flex:1;"><label class="fld">Traditional 401k %</label><input id="iPreTaxPct" type="number" step="0.5" min="0" max="100" class="fin-in" style="width:100%;" value="${e.pretax_retirement_pct||0}"></div>
+                <div style="flex:1;"><label class="fld">Roth 401k %</label><input id="iRothPct" type="number" step="0.5" min="0" max="100" class="fin-in" style="width:100%;" value="${e.roth_retirement_pct||0}"></div>
               </div>
+
+              <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-top:12px;">
+                <strong style="font-size:0.86em;">Other deductions &mdash; per paycheck</strong>
+                <span style="white-space:nowrap;">
+                  <button type="button" class="link-btn" onclick="addDeduction('section125')">+ pre-tax</button>
+                  &middot; <button type="button" class="link-btn" onclick="addDeduction('posttax')">+ post-tax</button>
+                </span>
+              </div>
+              <div class="muted" style="font-size:0.76em;margin:2px 0 8px;line-height:1.5;">
+                Copy them straight off the stub, per check &mdash; converting to a yearly figure in your head is where mistakes come from.
+                <strong>Pre-tax</strong> (medical, dental, vision, HSA) escapes income tax <em>and</em> FICA.
+                <strong>Post-tax</strong> (voluntary life, disability, accident) reduces take-home only.
+                A 401k deferral is neither: it escapes income tax but still pays FICA, which is why it is entered above.
+              </div>
+              <div id="iDeductions"></div>
+              <div class="muted" id="iDeductionSummary" style="font-size:0.78em;margin-top:4px;"></div>
               <div id="iTiers" style="margin-top:8px;"></div>
               <div class="muted" id="iMatchSummary" style="font-size:0.78em;margin-top:4px;"></div>
               <div style="display:flex;gap:10px;margin-top:8px;">
@@ -387,10 +402,13 @@
                 <div style="flex:1;"><label class="fld">As of <span class="muted">(paystub date)</span></label><input id="iYtdAsOf" type="date" class="fin-in" style="width:100%;" value="${e.ytd_as_of||''}"></div>
               </div>
             </div>
+            <datalist id="dedListsection125">${DEDUCTION_SUGGESTIONS.section125.map(x=>`<option value="${x}">`).join('')}</datalist>
+            <datalist id="dedListposttax">${DEDUCTION_SUGGESTIONS.posttax.map(x=>`<option value="${x}">`).join('')}</datalist>
             <div id="iPreview" class="muted" style="margin-top:10px;font-size:0.85em;"></div>
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveIncome(${x?x.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="iMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
         toggleIncFields();
         renderIncTiers((x && x.employer_match_tiers) || []);
+        renderDeductions((x && x.payroll_deductions) || []);
     }
     /* The match schedule is entered as data, copied off a plan document. Nothing about any
        particular plan is assumed, because the next job's is different. */
@@ -408,6 +426,55 @@
             '<div class="muted" style="font-size:0.78em;">No employer match recorded for this job.</div>';
         incMatchSummary();
     }
+    /* Entered per check with a name, because a real stub has nine or ten of these and four
+       fixed buckets could not hold them with their labels intact. */
+    const DEDUCTION_SUGGESTIONS = {
+        section125: ['Medical', 'Dental', 'Vision', 'HSA', 'FSA'],
+        posttax: ['Voluntary Life', 'Short Term Disability', 'Long Term Disability',
+                  'Accident Insurance', 'Union Dues'],
+    };
+    function renderDeductions(lines) {
+        const box = document.getElementById('iDeductions');
+        if (!box) return;
+        box.innerHTML = (lines || []).map((l, i) => `
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:5px;">
+              <input class="fin-in ded-label" style="flex:2;" list="dedList${l.treatment}" value="${esc(l.label||'')}" placeholder="Medical">
+              <span class="ded-treat" data-t="${l.treatment}" style="font-size:0.74em;padding:3px 7px;border-radius:10px;white-space:nowrap;background:var(--bg-tertiary,#eee);">${l.treatment==='section125'?'pre-tax':'post-tax'}</span>
+              <input class="fin-in ded-amt" type="number" step="0.01" min="0" style="width:96px;" value="${l.per_check}" oninput="deductionSummary()">
+              <button type="button" class="link-btn danger" onclick="removeDeduction(${i})">&#10005;</button>
+            </div>`).join('') ||
+            '<div class="muted" style="font-size:0.78em;">Nothing recorded &mdash; take-home will be overstated by whatever comes off the stub.</div>';
+        deductionSummary();
+    }
+    function collectDeductions() {
+        const labels = [...document.querySelectorAll('.ded-label')];
+        const treats = [...document.querySelectorAll('.ded-treat')];
+        const amts = [...document.querySelectorAll('.ded-amt')];
+        const out = [];
+        for (let i = 0; i < labels.length; i++) {
+            const amt = parseFloat(amts[i].value);
+            if (amt > 0) out.push({label: labels[i].value.trim() || 'Deduction',
+                                   per_check: amt,
+                                   treatment: treats[i].dataset.t});
+        }
+        return out;
+    }
+    function addDeduction(treatment) {
+        renderDeductions(collectDeductions().concat([{label:'', per_check:0, treatment}]));
+    }
+    function removeDeduction(i) { const d = collectDeductions(); d.splice(i,1); renderDeductions(d); }
+    function deductionSummary() {
+        const el = document.getElementById('iDeductionSummary');
+        if (!el) return;
+        const d = collectDeductions();
+        if (!d.length) { el.textContent = ''; return; }
+        const pre = d.filter(x=>x.treatment==='section125').reduce((a,x)=>a+x.per_check,0);
+        const post = d.filter(x=>x.treatment==='posttax').reduce((a,x)=>a+x.per_check,0);
+        const per = {weekly:52, biweekly:26, semimonthly:24, monthly:12}[
+            (document.getElementById('iFreq')||{}).value] || 26;
+        el.innerHTML = `${fmt2(pre)} pre-tax + ${fmt2(post)} post-tax each check &middot; <b>${fmt((pre+post)*per)}</b> a year`;
+    }
+
     function collectIncTiers() {
         const w = [...document.querySelectorAll('.inc-tier-w')];
         const m = [...document.querySelectorAll('.inc-tier-m')];
@@ -444,8 +511,9 @@
             pretax_retirement_mode:'percent',
             pretax_retirement_pct:parseFloat(g('iPreTaxPct').value)||0,
             roth_retirement_pct:parseFloat(g('iRothPct').value)||0,
-            pretax_other_annual:parseFloat(g('iPreTaxOther').value)||0,
+
             employer_match_tiers:collectIncTiers(),
+            payroll_deductions:collectDeductions(),
             ytd_federal_withheld:parseFloat(g('iYtdFed').value)||0,
             ytd_state_withheld:parseFloat(g('iYtdState').value)||0,
             ytd_as_of:g('iYtdAsOf').value};
@@ -959,7 +1027,7 @@
         el.innerHTML += '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Date</th><th>Item</th><th style="text-align:right;">Amount</th><th style="text-align:right;">Balance</th></tr></thead><tbody>'+
             c.events.map(e=>`<tr>
                 <td>${e.date}</td>
-                <td>${e.type==='income'?'💵 ':'📄 '}${esc(e.label)}</td>
+                <td>${e.type==='income'?'💵 ':'📄 '}${esc(e.label)}${e.gross&&e.gross>e.amount?`<div class="muted" style="font-size:0.76em;">net &middot; ${fmt2(e.gross)} gross${e.basis?` (${esc(e.basis)})`:''}</div>`:''}</td>
                 <td style="text-align:right;" class="${e.amount<0?'neg':'pos'}">${e.amount<0?'-':'+'}${fmt2(Math.abs(e.amount))}</td>
                 <td style="text-align:right;" class="${e.running_balance<0?'neg':''}">${fmt(e.running_balance)}</td>
             </tr>`).join('')+'</tbody></table></div>';

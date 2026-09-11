@@ -77,6 +77,11 @@ check('receipts can be reconciled against the bank feed', 'reconcileReceipts(' i
 check('each income carries its own payroll detail', 'iPayrollBox' in b)
 check('with its own match schedule', 'collectIncTiers(' in b and 'id="iTiers"' in b)
 check('and its own withholding', 'id="iYtdFed"' in b and 'id="iYtdAsOf"' in b)
+check('deductions are line items entered per check', 'id="iDeductions"' in b
+      and 'collectDeductions(' in b)
+check('with the pre-tax vs post-tax difference spelled out',
+      'escapes income tax' in b and 'reduces take-home only' in b)
+check('cash-flow says it is net pay', 'net pay in vs bills out' in b)
 check('payoff plan card present', 'debtPlanBody' in b)
 check('its strategy toggle and extra-payment input are wired',
       'planStrategy' in b and 'saveExtra(' in b)

@@ -2975,20 +2975,106 @@ def finance_import_receipts():
                     'receipts_without_amount': no_amount, 'receipts_seen': len(docs)})
 
 
+def _net_paycheck_estimates(user_id, srcs=None):
+    """What each scheduled paycheck is actually worth after everything comes out of it.
+
+    The cash-flow ledger projected GROSS pay landing in the account while bills left it at
+    their real amounts, so the running balance was overstated by the entire tax and
+    deduction wedge — about a quarter of pay. That is the dangerous direction for this
+    particular number: the "balance goes negative" warning is the one thing the projection
+    exists to produce, and an optimistic balance simply fails to raise it.
+
+    Returns {source_id: {...}} with gross and net per check.
+    """
+    srcs = srcs if srcs is not None else IncomeSource.query.filter(
+        _visible(IncomeSource, user_id), IncomeSource.active.is_(True)).all()
+    try:
+        est = _income_tax_estimate(user_id) or {}
+    except Exception as e:
+        logger.warning('cashflow: tax estimate unavailable, using gross: %s', e)
+        est = {}
+    filing = est.get('filing_status') or 'single'
+
+    # Household income tax is computed on combined income, so a single job's share of it is
+    # apportioned by its share of taxable wages. Crude, but far closer than ignoring it, and
+    # a job that records its own withholding does not use this path at all.
+    fed_state = float(est.get('federal_income_tax') or 0) + float(est.get('state_tax') or 0)
+    w2_taxable_total = sum(max(0.0, x.gross_annual() - x.section125_annual()
+                               - x.retirement_annual(x.gross_annual()))
+                           for x in srcs if x.tax_form == 'W2')
+
+    out = {}
+    for x in srcs:
+        periods = x.PAY_PERIODS.get(x.pay_frequency, 26)
+        gross_annual = x.gross_annual()
+        if x.irregular or gross_annual <= 0 or periods <= 0:
+            continue
+        gross_check = round(gross_annual / periods, 2)
+
+        if x.tax_form != 'W2':
+            # 1099: nothing is withheld, so the honest net is gross less the reserve the
+            # income module already models for it.
+            setaside = gross_annual * float(x.est_tax_rate or 0) / 100.0
+            net = max(0.0, gross_annual - setaside) / periods
+            out[x.id] = {'gross': gross_check, 'net': round(net, 2),
+                         'basis': 'less %s%% tax set-aside' % (x.est_tax_rate or 0)}
+            continue
+
+        s125 = x.section125_annual()
+        retire = x.retirement_annual(gross_annual) + x.roth_annual(gross_annual)
+        posttax = x.posttax_annual()
+        fica = _employee_fica(max(0.0, gross_annual - s125), filing)['total']
+
+        # Prefer what is actually being withheld, when a paystub figure was entered: it is a
+        # measurement rather than a model, and it already reflects this employer's W-4.
+        basis = 'estimated'
+        if x.ytd_federal_withheld and x.ytd_as_of:
+            elapsed = (x.ytd_as_of - date(x.ytd_as_of.year, 1, 1)).days + 1
+            if elapsed > 0:
+                income_tax = ((float(x.ytd_federal_withheld or 0)
+                               + float(x.ytd_state_withheld or 0)) * 365.0 / elapsed)
+                basis = 'from your paystub'
+            else:
+                income_tax = 0.0
+        elif w2_taxable_total > 0:
+            share = max(0.0, gross_annual - s125 - x.retirement_annual(gross_annual))
+            income_tax = fed_state * (share / w2_taxable_total)
+        else:
+            income_tax = 0.0
+
+        net_annual = max(0.0, gross_annual - s125 - retire - posttax - fica - income_tax)
+        out[x.id] = {
+            'gross': gross_check,
+            'net': round(net_annual / periods, 2),
+            'basis': basis,
+            'fica': round(fica / periods, 2),
+            'income_tax': round(income_tax / periods, 2),
+            'deductions': round((s125 + posttax + retire) / periods, 2),
+        }
+    return out
+
+
 def _finance_cashflow(user_id, days=60, starting_balance=None):
     """Project inflows (scheduled paychecks) and outflows (recurring bills) over the next
     `days`, with a running balance. Irregular income is excluded (no schedule to project)."""
     today = date.today()
     horizon = today + timedelta(days=days)
     events = []
-    for src in IncomeSource.query.filter(_visible(IncomeSource, user_id),
-                                         IncomeSource.active.is_(True)).all():
-        amt = src.paycheck_estimate()
+    srcs = IncomeSource.query.filter(_visible(IncomeSource, user_id),
+                                     IncomeSource.active.is_(True)).all()
+    nets = _net_paycheck_estimates(user_id, srcs)
+    for src in srcs:
+        est = nets.get(src.id)
+        # NET, not gross. What lands in the account is what the ledger has to project, or
+        # the running balance is overstated by the whole tax and deduction wedge.
+        amt = est['net'] if est else 0.0
         if src.irregular or amt <= 0:
             continue
         for pd in src.upcoming_paydates(12):
             if today <= pd <= horizon:
-                events.append({'date': pd.isoformat(), 'label': src.name, 'amount': round(amt, 2), 'type': 'income'})
+                events.append({'date': pd.isoformat(), 'label': src.name,
+                               'amount': round(amt, 2), 'type': 'income',
+                               'gross': est['gross'], 'basis': est.get('basis')})
     for b in RecurringBill.query.filter(_visible(RecurringBill, user_id),
                                         RecurringBill.active.is_(True)).all():
         for dd in b.upcoming_due_dates(12):
@@ -3399,9 +3485,21 @@ def _finance_outlook(user_id):
     income_rows = IncomeSource.query.filter(_visible(IncomeSource, user_id),
                                             IncomeSource.active.is_(True)).all()
     paydates = []
+    # `amount` is NET, because this list is read as "money arriving on these dates" and gross
+    # is not what arrives. Gross is carried alongside rather than dropped — it is the figure
+    # on the offer letter, and losing it would make the two impossible to reconcile.
+    try:
+        _nets = _net_paycheck_estimates(user_id, income_rows)
+    except Exception as e:
+        logger.warning('outlook: net paycheck estimate failed: %s', e)
+        _nets = {}
     for r in income_rows:
+        n = _nets.get(r.id) or {}
         for d in r.upcoming_paydates(4):
-            paydates.append({'date': d.isoformat(), 'source': r.name, 'amount': r.paycheck_estimate()})
+            paydates.append({'date': d.isoformat(), 'source': r.name,
+                             'amount': n.get('net', r.paycheck_estimate()),
+                             'gross': n.get('gross', r.paycheck_estimate()),
+                             'basis': n.get('basis')})
     paydates.sort(key=lambda p: p['date'])
 
     # Un-withheld (1099) income needs a tax reserve — a big commission check isn't all spendable.
