@@ -59,6 +59,7 @@ SUITES = [
     ('overview', 'whole-picture overview and observations'),
     ('household', 'household sharing boundaries'),
     ('entities', 'separate books per entity'),
+    ('farm_categories', 'Schedule F lines on a farm set of books'),
     ('plaid', 'Plaid client, sync and token handling'),
     ('plaid_accounts', 'accounts inside a connection, deposits, income reconciliation'),
     ('batchfetch', 'batched market data fetching'),

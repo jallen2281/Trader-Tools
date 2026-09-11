@@ -1098,13 +1098,14 @@
     function openBudget(b) {
         const e=b||{category:'housing',monthly_limit:0,kind:'expense'};
         showModal(`<h2 style="margin:0 0 8px;">${b&&b.id?'Edit':'Set'} Budget</h2>
-            <label class="fld">Category</label><select id="buCat" class="fin-in" style="width:100%;" ${b&&b.id?'disabled':''}>${BUDGET_CATS.map(c=>`<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select>
+            <label class="fld">Category</label><select id="buCat" class="fin-in" style="width:100%;" ${b&&b.id?'disabled':''}></select>
             <div style="display:flex;gap:10px;">
               <div style="flex:1;"><label class="fld">Monthly limit $</label><input id="buLimit" type="number" step="10" class="fin-in" style="width:100%;" value="${e.monthly_limit||0}"></div>
               <div style="flex:1;"><label class="fld">Kind</label><select id="buKind" class="fin-in" style="width:100%;">${BUDGET_KINDS.map(k=>`<option ${e.kind===k?'selected':''}>${k}</option>`).join('')}</select></div>
             </div>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveBudget()">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="buMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+        wireCategoryToBooks('buCat');
     }
     async function saveBudget() {
         const g=i=>document.getElementById(i);
@@ -1174,7 +1175,7 @@
             <label class="fld">Description</label><input id="tDesc" class="fin-in" style="width:100%;" value="${esc(e.description||'')}" placeholder="e.g. Wegmans, Shell, Amazon">
             <div style="display:flex;gap:10px;">
               <div style="flex:1;"><label class="fld">Merchant (optional)</label><input id="tMerch" class="fin-in" style="width:100%;" value="${esc(e.merchant||'')}"></div>
-              <div style="flex:1;"><label class="fld">Category</label><select id="tCat" class="fin-in" style="width:100%;"><option value="">auto-detect</option>${BUDGET_CATS.map(c=>`<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+              <div style="flex:1;"><label class="fld">Category</label><select id="tCat" class="fin-in" style="width:100%;"></select></div>
             </div>
             <label class="fld">Paid from</label><select id="tAcct" class="fin-in" style="width:100%;">
               <option value="">&mdash;</option>
@@ -1184,6 +1185,7 @@
             </select>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveTxn(${t?t.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="tMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+        wireCategoryToBooks('tCat', 'auto-detect');
     }
     async function saveTxn(id) {
         const g=i=>document.getElementById(i);
@@ -1514,6 +1516,11 @@
             ENTITIES = list.entities || [];
             renderEntities(rep);
         } catch(e) { box.innerHTML = '<p class="muted" style="padding:12px;">Could not load books.</p>'; }
+        try {
+            const d = await fetch('/api/finance/entities',{credentials:'same-origin'}).then(r=>r.json());
+            CATEGORY_SETS = d.category_sets || {};
+            if (d.household_categories && d.household_categories.length) HOUSEHOLD_CATS = d.household_categories;
+        } catch (e) { /* the household set is already the default */ }
     }
     function renderEntities(rep) {
         const box = document.getElementById('entBody');
@@ -1605,6 +1612,47 @@
                 </select></div>`;
         }
         return html ? `<div style="display:flex;gap:10px;">${html}</div>` : '';
+    }
+
+    /* A farm's costs do not map onto a household's. Schedule F wants seed, feed, custom
+       hire and veterinary as their own lines, and filing them under "groceries" loses the
+       return. So the category list follows the books the record is tagged to — household
+       categories stay available everywhere, because a farm still buys insurance. */
+    let CATEGORY_SETS = {}, HOUSEHOLD_CATS = BUDGET_CATS;
+    function entityKindOf(entityId) {
+        const e = ENTITIES.find(x => String(x.id) === String(entityId));
+        return e ? e.kind : '';
+    }
+    function categoryOptionsFor(entityId, selected, blankLabel) {
+        const extra = CATEGORY_SETS[entityKindOf(entityId)] || [];
+        const household = HOUSEHOLD_CATS.map(c => ({value: c, label: c}));
+        const group = (label, items) => items.length
+            ? `<optgroup label="${label}">${items.map(o =>
+                `<option value="${o.value}" ${selected===o.value?'selected':''}>${esc(o.label)}</option>`
+              ).join('')}</optgroup>` : '';
+        // The farm lines lead when a farm is selected: they are the ones being looked for.
+        const blank = blankLabel ? `<option value="" ${selected?'':'selected'}>${blankLabel}</option>` : '';
+        return blank + (extra.length
+            ? group('Schedule F', extra) + group('Household', household)
+            : group('Household', household));
+    }
+    /* Re-rendered when the books change, keeping the current pick if it is still valid —
+       switching to the farm should not silently reset a category that is fine either way. */
+    function refreshCategoryOptions(selectId) {
+        const sel = document.getElementById(selectId);
+        const ent = document.getElementById('xEntity');
+        if (!sel) return;
+        const current = sel.value;
+        sel.innerHTML = categoryOptionsFor(ent ? ent.value : '', current,
+                                           sel.dataset.blank || '');
+        if (sel.value !== current) sel.value = current;   // no match: left as it was
+    }
+    function wireCategoryToBooks(selectId, blankLabel) {
+        const _s = document.getElementById(selectId);
+        if (_s && blankLabel) _s.dataset.blank = blankLabel;
+        const ent = document.getElementById('xEntity');
+        if (ent) ent.addEventListener('change', () => refreshCategoryOptions(selectId));
+        refreshCategoryOptions(selectId);
     }
     /* Called after the record itself saves. Only fires the calls that actually changed. */
     async function applyShareEntity(kind, id) {

@@ -999,9 +999,67 @@ def finance_delete_income_event(iid, eid):
 BILL_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly',
                     'semiannual', 'annual'}
 BUDGET_KINDS = {'expense', 'savings', 'income'}
-BUDGET_CATEGORIES = {'housing', 'utilities', 'transportation', 'insurance', 'food',
-                     'debt', 'subscriptions', 'healthcare', 'childcare', 'savings',
-                     'entertainment', 'personal', 'taxes', 'other'}
+# Schedule F, Part II. A farm's costs do not map onto a household's: "groceries" and
+# "subscriptions" say nothing about seed, feed or custom hire, and at tax time the return
+# wants these lines specifically. Slugs carry the farm_ prefix so they cannot collide with
+# a household category of the same name — insurance, utilities, taxes and repairs all exist
+# in both worlds and mean different things.
+FARM_CATEGORIES = {
+    'farm_car_truck': 'Car and truck',
+    'farm_chemicals': 'Chemicals',
+    'farm_conservation': 'Conservation expenses',
+    'farm_custom_hire': 'Custom hire (machine work)',
+    'farm_depreciation': 'Depreciation',
+    'farm_employee_benefits': 'Employee benefit programs',
+    'farm_feed': 'Feed',
+    'farm_fertilizer': 'Fertilizer and lime',
+    'farm_freight': 'Freight and trucking',
+    'farm_fuel': 'Gasoline, fuel and oil',
+    'farm_insurance': 'Insurance (other than health)',
+    'farm_interest': 'Interest',
+    'farm_labor': 'Labor hired',
+    'farm_pension': 'Pension and profit-sharing',
+    'farm_rent_lease': 'Rent or lease',
+    'farm_repairs': 'Repairs and maintenance',
+    'farm_seeds': 'Seeds and plants',
+    'farm_storage': 'Storage and warehousing',
+    'farm_supplies': 'Supplies',
+    'farm_taxes': 'Taxes',
+    'farm_utilities': 'Utilities',
+    'farm_vet': 'Veterinary, breeding and medicine',
+    'farm_other': 'Other farm expenses',
+}
+
+# Which extra categories each kind of books offers on top of the household set. Only farm
+# is filled in; Schedule C and E have their own line items and can be added the same way
+# without touching anything that reads this.
+ENTITY_CATEGORY_SETS = {'farm': FARM_CATEGORIES}
+
+
+def categories_for_entity(kind):
+    """Category slugs valid for a set of books of this kind, household ones included.
+
+    Household categories stay available everywhere on purpose: a farm still buys insurance
+    through the same account, and forcing a choice between the two vocabularies would make
+    some spending unrecordable.
+    """
+    return set(HOUSEHOLD_CATEGORIES) | set(ENTITY_CATEGORY_SETS.get(kind or '', {}))
+
+
+def category_label(slug):
+    """Human name for a slug. Farm lines read as their Schedule F wording."""
+    return FARM_CATEGORIES.get(slug, (slug or '').replace('_', ' '))
+
+
+HOUSEHOLD_CATEGORIES = {'housing', 'utilities', 'transportation', 'insurance', 'food',
+                        'debt', 'subscriptions', 'healthcare', 'childcare', 'savings',
+                        'entertainment', 'personal', 'taxes', 'other'}
+
+# Everything accepted anywhere. Validation uses this so a farm category is never rejected
+# just because the record has not been tagged to the farm yet — the tag and the category
+# are set in the same form, and the order the fields happen to be applied in should not
+# decide whether the save works.
+BUDGET_CATEGORIES = set(HOUSEHOLD_CATEGORIES) | set(FARM_CATEGORIES)
 
 
 # Merchant/description keyword -> budget category, first match wins. Deliberately dumb and
@@ -1577,9 +1635,18 @@ def finance_entities():
         return jsonify({'error': 'Authentication required'}), 401
     if request.method == 'GET':
         rows = _visible_entities(uid).order_by(Entity.name).all()
-        return jsonify({'entities': [e.to_dict() for e in rows],
-                        'kinds': list(ENTITY_KINDS),
-                        'taggable': sorted(ENTITY_TAGGABLE)})
+        return jsonify({
+            'entities': [e.to_dict() for e in rows],
+            'kinds': list(ENTITY_KINDS),
+            'taggable': sorted(ENTITY_TAGGABLE),
+            # What each kind of books may categorise spending as, so the form can offer the
+            # right vocabulary instead of asking a farm to file seed under "groceries".
+            'household_categories': sorted(HOUSEHOLD_CATEGORIES),
+            'category_sets': {k: [{'value': slug, 'label': label}
+                                  for slug, label in sorted(cats.items(),
+                                                            key=lambda kv: kv[1])]
+                              for k, cats in ENTITY_CATEGORY_SETS.items()},
+        })
     d = request.get_json() or {}
     name = (d.get('name') or '').strip()
     if not name:
@@ -1702,8 +1769,10 @@ def _entity_report(user_id, entity_id, year=None):
         'deductible_receipts': deductible,
         'receipts_on_file': len(docs),
         'transactions': len(txns),
-        'by_category': sorted(({'category': c, 'amount': a} for c, a in by_cat.items()),
-                              key=lambda r: -r['amount']),
+        # Labelled as well as slugged, so a farm's lines read as their Schedule F wording
+        # rather than as "farm_custom_hire" on a report meant for an accountant.
+        'by_category': sorted(({'category': c, 'label': category_label(c), 'amount': a}
+                               for c, a in by_cat.items()), key=lambda r: -r['amount']),
         'assets': round(sum(float(a.balance or 0) for a in accounts), 2),
         'debts': round(sum(float(x.balance or 0) for x in debts), 2),
         'tax_form': (ent.tax_form if ent else None) or (
