@@ -188,13 +188,6 @@ check('a negative premium is floored at zero',
 r = c.put('/api/finance/incomes/10', json={'posttax_deductions_annual': 'lots'})
 check('a non-numeric deduction is ignored rather than crashing', r.status_code == 200)
 
-print('\n' + ('=' * 60))
-if fails:
-    print('FAILED (%d):' % len(fails))
-    for f in fails:
-        print('  - ' + f)
-    sys.exit(1)
-print('ALL PAYCHECK CHECKS PASSED')
 
 print('\n--- validated against a real payslip ---')
 # Liquid Web, one biweekly check. Every figure below is off the stub, and the point of
@@ -275,6 +268,9 @@ print('\n--- line items replace the scalar buckets, never add to them ---')
 # itemised HSA that had replaced it.
 with app.app_context():
     src = A.IncomeSource.query.get(20)
+    # Re-establish the stub's lines: an earlier block in this file overwrote them with
+    # validation fixtures, and depending on that would make this assert the wrong total.
+    src.payroll_deductions = LINES
     src.pretax_other_annual = 30.0
     db.session.commit()
     src = A.IncomeSource.query.get(20)
@@ -292,3 +288,11 @@ with app.app_context():
           src.posttax_annual())
     check('while the itemised pre-tax half uses its lines',
           src.section125_annual() == round(19.71 * 26, 2), src.section125_annual())
+
+print('\n' + ('=' * 60))
+if fails:
+    print('FAILED (%d):' % len(fails))
+    for f in fails:
+        print('  - ' + f)
+    sys.exit(1)
+print('ALL PAYCHECK CHECKS PASSED')

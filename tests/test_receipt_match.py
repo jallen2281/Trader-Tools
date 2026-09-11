@@ -170,6 +170,79 @@ with app.app_context():
 check('unmatched receipts are reported with a reason',
       all('result' in d for d in r2['details']), r2['details'][:2])
 
+
+print('\n--- a receipt matches a MANUAL row on the same card, not only an imported one ---')
+# A manual transaction has no plaid_account_id at all, so matching on that alone could
+# never see it -- and it is exactly the row a receipt is most likely to be duplicating.
+with app.app_context():
+    A.PlaidAccount.query.filter_by(account_id='acc-amex').first().linked_debt_id = 40
+    db.session.add(A.Debt(id=40, user_id=1, name='Amex', type='credit_card', balance=500))
+    db.session.add(A.SpendTransaction(
+        user_id=1, external_id=None, source='manual', debt_id=40, amount=64.10,
+        description='Hand typed', merchant='Hand typed', category='other',
+        posted_at=TODAY - timedelta(days=1)))
+    db.session.add(receipt(20, 64.10, 'Hardware', last4='2001', days_ago=1))
+    db.session.commit()
+    m, why = A._match_receipt_to_bank(A.TaxDocument.query.get(20), 1)
+check('the manual row on that card is found', m is not None and m.source == 'manual',
+      (m and m.source, why))
+
+print('\n--- hand-entered and imported copies of one purchase are found ---')
+with app.app_context():
+    db.session.add(A.SpendTransaction(
+        user_id=1, external_id='plaid:dup', source='plaid', plaid_account_id='acc-amex',
+        debt_id=40, amount=64.10, description='HARDWARE STORE', category='other',
+        posted_at=TODAY - timedelta(days=2)))
+    db.session.commit()
+    pairs = A._duplicate_spend_rows(1)
+check('the pair is spotted', len(pairs) == 1, [(p[0].description, p[1].description) for p in pairs])
+check('the manual one is named first', pairs[0][0].source == 'manual', pairs[0][0].source)
+
+print('\n--- but only on the SAME card ---')
+with app.app_context():
+    db.session.add(A.Debt(id=41, user_id=1, name='Other card', type='credit_card', balance=0))
+    db.session.add(A.SpendTransaction(
+        user_id=1, external_id='plaid:other', source='plaid', plaid_account_id='acc-visa',
+        debt_id=41, amount=64.10, description='SAME AMOUNT ELSEWHERE', category='other',
+        posted_at=TODAY - timedelta(days=1)))
+    db.session.commit()
+    pairs = A._duplicate_spend_rows(1)
+check('an identical amount on a different card is not a duplicate',
+      len(pairs) == 1, [(p[0].description, p[1].description) for p in pairs])
+with app.app_context():
+    orphan = A.SpendTransaction(user_id=1, source='manual', amount=64.10,
+                                description='No account', category='other',
+                                posted_at=TODAY)
+    db.session.add(orphan)
+    db.session.commit()
+    check('and a manual row with no account is not guessed at',
+          len(A._duplicate_spend_rows(1)) == 1)
+    db.session.delete(orphan)
+    db.session.commit()
+
+print('\n--- merging keeps the bank row and moves what only the manual one had ---')
+r = c.get('/api/finance/transactions/duplicates').get_json()
+check('the endpoint lists it', r['count'] == 1, r)
+with app.app_context():
+    m = A.SpendTransaction.query.filter_by(description='Hand typed').first()
+    m.notes = 'paid for the gate latch'
+    m.category = 'personal'
+    db.session.commit()
+    before = A.SpendTransaction.query.count()
+r = c.post('/api/finance/transactions/duplicates/merge').get_json()
+check('one pair merged', r['merged'] == 1, r)
+with app.app_context():
+    check('the hand-typed copy is gone',
+          A.SpendTransaction.query.filter_by(description='Hand typed').first() is None)
+    kept = A.SpendTransaction.query.filter_by(external_id='plaid:dup').first()
+    check('the bank row survives', kept is not None)
+    check('the note came across', kept.notes == 'paid for the gate latch', kept.notes)
+    check('and the category the user had corrected', kept.category == 'personal', kept.category)
+    check('the ledger shrank by exactly one',
+          A.SpendTransaction.query.count() == before - 1)
+r = c.post('/api/finance/transactions/duplicates/merge').get_json()
+check('running it again finds nothing', r['merged'] == 0, r)
+
 print('\n' + ('=' * 60))
 if fails:
     print('FAILED (%d):' % len(fails))

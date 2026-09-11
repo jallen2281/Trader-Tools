@@ -3003,20 +3003,32 @@ def _match_receipt_to_bank(doc, uid, window_days=RECEIPT_MATCH_DAYS):
 
     q = SpendTransaction.query.filter(
         SpendTransaction.user_id == uid,
-        SpendTransaction.source == 'plaid',
+        # Anything but a row this importer created from a receipt, which would just be the
+        # document matching its own copy. A hand-entered transaction is a legitimate target:
+        # the receipt documents it, and attaching is better than adding a third row.
+        SpendTransaction.source != 'receipt',
         SpendTransaction.amount == amt,
         SpendTransaction.posted_at >= when - timedelta(days=window_days),
         SpendTransaction.posted_at <= when + timedelta(days=window_days))
 
     if doc.card_last4:
-        masks = {a.account_id: a.mask for a in
-                 PlaidAccount.query.filter_by(user_id=uid).all() if a.mask}
-        ids = [aid for aid, m in masks.items() if m == doc.card_last4]
-        if not ids:
+        cards = [a for a in PlaidAccount.query.filter_by(user_id=uid).all()
+                 if a.mask == doc.card_last4]
+        if not cards:
             # The card on the receipt is not one of the connected accounts, so the bank feed
             # cannot contain this purchase. That is a definite answer, not a failure.
             return None, 'card ...%s is not a connected account' % doc.card_last4
-        q = q.filter(SpendTransaction.plaid_account_id.in_(ids))
+        # Match on the RECORD the card is linked to as well as on the Plaid id. A manual
+        # transaction entered against that card has no plaid_account_id at all, and it is
+        # exactly the row a receipt is most likely to be duplicating.
+        clauses = [SpendTransaction.plaid_account_id.in_([a.account_id for a in cards])]
+        debts = [a.linked_debt_id for a in cards if a.linked_debt_id]
+        accts = [a.linked_account_id for a in cards if a.linked_account_id]
+        if debts:
+            clauses.append(SpendTransaction.debt_id.in_(debts))
+        if accts:
+            clauses.append(SpendTransaction.account_id.in_(accts))
+        q = q.filter(db.or_(*clauses))
 
     rows = q.all()
     if not rows:
@@ -3027,6 +3039,88 @@ def _match_receipt_to_bank(doc, uid, window_days=RECEIPT_MATCH_DAYS):
         if abs((rows[0].posted_at - when).days) == abs((rows[1].posted_at - when).days):
             return None, '%d bank transactions match equally well' % len(rows)
     return rows[0], 'matched'
+
+
+def _duplicate_spend_rows(uid, window_days=RECEIPT_MATCH_DAYS):
+    """Pairs where the same purchase was entered by hand AND imported from the bank.
+
+    Typing a purchase in and then having Plaid import it counts the money twice. The pair
+    is only called a duplicate when it is on the SAME account or card: two $40 fuel stops on
+    different cards within a few days is a normal week, not a mistake, and the account is
+    what tells them apart. That attribution only became available once transactions started
+    carrying the record they drew from.
+
+    Returns [(manual_row, bank_row)] and never deletes anything itself — a wrong merge is
+    unrecoverable, so the caller confirms.
+    """
+    manual = SpendTransaction.query.filter(
+        SpendTransaction.user_id == uid,
+        SpendTransaction.source != 'plaid',
+        SpendTransaction.amount > 0).all()
+    pairs = []
+    for m in manual:
+        if m.account_id is None and m.debt_id is None:
+            continue          # nothing to match it against without knowing the account
+        q = SpendTransaction.query.filter(
+            SpendTransaction.user_id == uid,
+            SpendTransaction.source == 'plaid',
+            SpendTransaction.amount == m.amount,
+            SpendTransaction.posted_at >= m.posted_at - timedelta(days=window_days),
+            SpendTransaction.posted_at <= m.posted_at + timedelta(days=window_days))
+        q = q.filter(SpendTransaction.debt_id == m.debt_id) if m.debt_id \
+            else q.filter(SpendTransaction.account_id == m.account_id)
+        hits = q.all()
+        if len(hits) == 1:
+            pairs.append((m, hits[0]))
+    return pairs
+
+
+@app.route('/api/finance/transactions/duplicates', methods=['GET'])
+@require_api_auth
+def finance_spend_duplicates():
+    """Hand-entered transactions the bank feed has since imported as well."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    out = []
+    for m, b in _duplicate_spend_rows(uid):
+        out.append({'manual': m.to_dict(), 'bank': b.to_dict(),
+                    'days_apart': abs((b.posted_at - m.posted_at).days)})
+    return jsonify({'duplicates': out, 'count': len(out)})
+
+
+@app.route('/api/finance/transactions/duplicates/merge', methods=['POST'])
+@require_api_auth
+def finance_merge_duplicates():
+    """Drop the hand-entered copy, keeping the bank's and anything attached to it.
+
+    The bank row is the one kept because it is the settled record: it carries the real
+    posting date, the merchant as the card issuer saw it, and the account. Anything the
+    manual row was carrying that the bank row is not — a receipt, a note, a category the
+    user corrected — moves across first rather than being lost with it.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    only = (request.get_json(silent=True) or {}).get('manual_ids')
+    merged = []
+    for m, b in _duplicate_spend_rows(uid):
+        if only and m.id not in only:
+            continue
+        if m.tax_document_id and not b.tax_document_id:
+            b.tax_document_id = m.tax_document_id
+        if m.notes and not b.notes:
+            b.notes = m.notes
+        if m.entity_id and not b.entity_id:
+            b.entity_id = m.entity_id
+        # A hand-set category is a judgement the import did not make; keep it.
+        if m.category and m.category != 'other' and b.category in (None, 'other'):
+            b.category = m.category
+        merged.append({'removed': m.id, 'kept': b.id, 'amount': float(m.amount or 0),
+                       'description': m.description})
+        db.session.delete(m)
+    db.session.commit()
+    return jsonify({'merged': len(merged), 'details': merged})
 
 
 @app.route('/api/finance/receipts/reconcile', methods=['POST'])

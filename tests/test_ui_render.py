@@ -97,6 +97,7 @@ check('and the spending list shows where each came from', 'paidFromLabel(' in b)
 check('bills offer a semiannual frequency', "'semiannual'" in b)
 check('categories follow the books a record is tagged to',
       'wireCategoryToBooks(' in b and 'Schedule F' in b)
+
 check('payoff plan card present', 'debtPlanBody' in b)
 check('its strategy toggle and extra-payment input are wired',
       'planStrategy' in b and 'saveExtra(' in b)
