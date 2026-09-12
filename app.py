@@ -698,6 +698,37 @@ def finance_modify_account(aid):
     return jsonify(a.to_dict())
 
 
+def _apply_transfer_to(x, raw):
+    """Set where a transfer landed, and mark the row a transfer because it now is one.
+
+    A destination is what distinguishes moving money from spending it, so setting one
+    implies the category rather than asking the user to set both and stay consistent. The
+    category is what the totals actually filter on, and letting the two disagree would put a
+    transfer back into the spend figures with a destination attached -- the exact bug this
+    field exists to fix.
+
+    Refuses a transfer into the account it came from: that is a no-op, not a record.
+    """
+    kind, _, rid = (raw or '').partition(':')
+    try:
+        rid = int(rid)
+    except (TypeError, ValueError):
+        rid = None
+    if kind == 'debt' and rid and Debt.query.filter_by(id=rid, user_id=x.user_id).first():
+        if x.debt_id and x.debt_id == rid:
+            raise ValueError('a transfer cannot land in the account it came from')
+        x.to_debt_id, x.to_account_id = rid, None
+    elif kind == 'account' and rid and FinanceAccount.query.filter_by(
+            id=rid, user_id=x.user_id).first():
+        if x.account_id and x.account_id == rid:
+            raise ValueError('a transfer cannot land in the account it came from')
+        x.to_account_id, x.to_debt_id = rid, None
+    else:
+        x.to_account_id = x.to_debt_id = None
+    if x.to_account_id or x.to_debt_id:
+        x.category = 'transfer'
+
+
 def _apply_bill_paid_from(x, raw):
     """Set where a bill is paid from: a bank account or a credit card.
 
@@ -1106,7 +1137,14 @@ def category_label(slug):
 
 HOUSEHOLD_CATEGORIES = {'housing', 'utilities', 'transportation', 'insurance', 'food',
                         'debt', 'subscriptions', 'healthcare', 'childcare', 'savings',
-                        'entertainment', 'personal', 'taxes', 'other'}
+                        'entertainment', 'personal', 'taxes', 'transfer', 'other'}
+
+# Categories that move money rather than spend it. Excluded from every spend total: a
+# transfer between your own accounts, and a credit-card payment, are the same dollars in a
+# new place. Counting them as spending double-counts -- the purchase was already recorded
+# when the card was used -- and it is what made one month read as $75,706 of outgoings
+# against $13,000 of income.
+NON_SPEND_CATEGORIES = {'transfer'}
 
 # Everything accepted anywhere. Validation uses this so a farm category is never rejected
 # just because the record has not been tagged to the farm yet — the tag and the category
@@ -1119,6 +1157,13 @@ BUDGET_CATEGORIES = set(HOUSEHOLD_CATEGORIES) | set(FARM_CATEGORIES)
 # deterministic: auto-categorizing a 400-row import must not cost an AI call (see the Phase 0
 # cost controls), and a wrong guess is one dropdown away from fixed.
 SPEND_CATEGORY_RULES = [
+    # Money moving, not money spent -- see NON_SPEND_CATEGORIES. Deliberately ahead of the
+    # card rules: 'AMEX EPAYMENT' is a payment TOWARD a card, and the purchases it settles
+    # were already recorded when the card was used. Counting it again as 'debt' is the
+    # double-count that made a month of transfers read as $75,706 of spending.
+    ('transfer', ('transfer', 'to checking', 'to savings', 'from checking', 'from savings',
+                  'epayment', 'card online', 'online payment', 'payment thank you',
+                  'autopay', 'bank transfer', 'internal transfer', 'ach withdrawal')),
     ('housing', ('rent', 'mortgage', 'hoa ', 'property mgmt', 'landlord')),
     ('utilities', ('electric', 'energy', 'water dept', 'sewer', 'utility', 'comcast', 'xfinity',
                    'verizon', 'at&t', 'spectrum', 't-mobile', 'internet')),
@@ -1204,6 +1249,8 @@ def _spend_actuals(user_id, start, end):
     out = {}
     for t in rows:
         c = t.category or 'other'
+        if c in NON_SPEND_CATEGORIES:
+            continue
         out[c] = round(out.get(c, 0) + float(t.amount or 0), 2)
     return out
 
@@ -1247,6 +1294,8 @@ def _apply_spend_fields(x, d):
             x.account_id = int(d['account_id']) if d.get('account_id') not in (None, '') else None
         except (TypeError, ValueError):
             x.account_id = None
+    if 'transfer_to' in d:
+        _apply_transfer_to(x, d.get('transfer_to'))
     if 'pending' in d:
         x.pending = bool(d.get('pending'))
     if 'notes' in d:
@@ -2870,11 +2919,20 @@ def finance_transactions():
         by_cat = {}
         for t in rows:
             c = t.category or 'other'
+            if c in NON_SPEND_CATEGORIES:
+                continue
             by_cat[c] = round(by_cat.get(c, 0) + float(t.amount or 0), 2)
+        # Transfers are still LISTED -- they are real movements and hiding them would make
+        # a statement impossible to reconcile -- but they are totalled separately, because
+        # adding them to spending is what the category exists to prevent.
+        spend_rows = [t for t in rows if (t.category or 'other') not in NON_SPEND_CATEGORIES]
+        moved = [t for t in rows if (t.category or 'other') in NON_SPEND_CATEGORIES]
         return jsonify({
             'month': start.strftime('%Y-%m'),
             'transactions': [t.to_dict() for t in rows],
-            'total': round(sum(float(t.amount or 0) for t in rows), 2),
+            'total': round(sum(float(t.amount or 0) for t in spend_rows), 2),
+            'transfer_total': round(sum(float(t.amount or 0) for t in moved), 2),
+            'transfer_count': len(moved),
             'count': len(rows),
             'by_category': sorted([{'category': c, 'amount': a} for c, a in by_cat.items()],
                                   key=lambda r: -r['amount']),
@@ -2883,7 +2941,10 @@ def finance_transactions():
     if not (d.get('description') or '').strip():
         return jsonify({'error': 'description is required'}), 400
     t = SpendTransaction(user_id=uid, description='', posted_at=date.today(), source='manual')
-    _apply_spend_fields(t, d)
+    try:
+        _apply_spend_fields(t, d)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     if not (d.get('category') or '').strip():
         t.category = _guess_spend_category('{} {}'.format(d.get('merchant') or '',
                                                           d.get('description') or ''))
@@ -2905,7 +2966,11 @@ def finance_modify_transaction(tid):
         db.session.delete(t)
         db.session.commit()
         return jsonify({'success': True})
-    _apply_spend_fields(t, request.get_json() or {})
+    try:
+        _apply_spend_fields(t, request.get_json() or {})
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
     db.session.commit()
     return jsonify(t.to_dict())
 

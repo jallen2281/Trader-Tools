@@ -56,6 +56,7 @@ SUITES = [
     ('debt_api', 'bill-to-debt link, dedupe, and the payoff endpoints'),
     ('debt_fees', 'itemised debt fees and the effective rate they imply'),
     ('bill_paid_by_card', 'a bill charged to a credit card rather than a bank account'),
+    ('transfers', 'money moved between accounts, kept out of spending totals'),
     ('credit', 'credit utilization and score trends'),
     ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),

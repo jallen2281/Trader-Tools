@@ -111,6 +111,8 @@ check('the score modal is wired', 'openScore()' in b and 'saveScore(' in b)
 check('a credit limit can be entered on a debt', "id=\"dLimit\"" in b)
 check('a debt can carry itemised fees', 'id="dFeeLines"' in b and 'collectFeeLines(' in b)
 check('a bill can be paid by card', 'id="bPaidFrom"' in b and 'Credit cards' in b)
+check('a transfer can name the account it landed in',
+      'id="tToAcct"' in b and 'toggleTransferTo(' in b)
 check('and the list says which card', 'billSourceLabel(' in b)
 check('and they are turned into an effective rate', 'effective rate' in b)
 check('recurring-charges card present', 'recurringBody' in b)

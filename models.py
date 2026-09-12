@@ -1713,6 +1713,16 @@ class SpendTransaction(db.Model):
     # the same reasoning as external_id. NULL for anything not from Plaid.
     plaid_account_id = db.Column(db.String(80), index=True)
     tax_document_id = db.Column(db.Integer, db.ForeignKey('tax_documents.id'))
+    # Where a TRANSFER landed. account_id/debt_id say where the money left; these say where
+    # it arrived, and only a row in the 'transfer' category sets them.
+    #
+    # Without a destination a transfer is indistinguishable from a purchase, and the totals
+    # showed it: moving savings to checking and then paying a card read as tens of thousands
+    # of spending in a month, because the same dollars were counted on the way out of every
+    # account they passed through. A transfer is not spending -- it is the same money in a
+    # different place -- so these rows are excluded from category totals entirely.
+    to_account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
+    to_debt_id = db.Column(db.Integer, db.ForeignKey('debts.id'))
     pending = db.Column(db.Boolean, default=False)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1723,6 +1733,15 @@ class SpendTransaction(db.Model):
         db.UniqueConstraint('user_id', 'external_id', name='uq_spend_user_external'),
         db.Index('ix_spend_user_posted', 'user_id', 'posted_at'),
     )
+
+    def transfer_to(self):
+        """'debt:<id>' | 'account:<id>' | None -- the destination, in the same shape
+        paid_from uses for the source."""
+        if self.to_debt_id:
+            return 'debt:%d' % self.to_debt_id
+        if self.to_account_id:
+            return 'account:%d' % self.to_account_id
+        return None
 
     def to_dict(self):
         return {
@@ -1740,6 +1759,8 @@ class SpendTransaction(db.Model):
             'tax_document_id': self.tax_document_id,
             'pending': bool(self.pending), 'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'to_account_id': self.to_account_id, 'to_debt_id': self.to_debt_id,
+            'transfer_to': self.transfer_to(),
         }
 
 

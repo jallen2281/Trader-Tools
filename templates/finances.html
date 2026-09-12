@@ -1279,15 +1279,37 @@
               <optgroup label="Credit cards">${cards.map(d=>`<option value="debt:${d.id}" ${e.paid_from===('debt:'+d.id)?'selected':''}>${esc(d.name)}</option>`).join('')}</optgroup>
               <optgroup label="Other accounts">${accts.filter(a=>!['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}" ${e.paid_from===('account:'+a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>
             </select>
+            <div id="tToBox" style="display:none;">
+              <label class="fld">Into <span class="muted">(where the money landed)</span></label>
+              <select id="tToAcct" class="fin-in" style="width:100%;">
+                <option value="">&mdash;</option>
+                <optgroup label="Cash accounts">${accts.filter(a=>['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}" ${e.transfer_to===('account:'+a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>
+                <optgroup label="Credit cards">${cards.map(d=>`<option value="debt:${d.id}" ${e.transfer_to===('debt:'+d.id)?'selected':''}>${esc(d.name)}</option>`).join('')}</optgroup>
+                <optgroup label="Other accounts">${accts.filter(a=>!['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}" ${e.transfer_to===('account:'+a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>
+              </select>
+              <div class="muted" style="font-size:0.76em;margin-top:3px;line-height:1.45;">A transfer is the same money in a different place, so it is left out of spending totals &mdash; paying a card included, since the purchases were already counted when the card was used.</div>
+            </div>
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveTxn(${t?t.id:'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="tMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
         wireCategoryToBooks('tCat', 'auto-detect');
+        // after wireCategoryToBooks, which is what fills tCat and sets its value
+        document.getElementById('tCat').addEventListener('change', toggleTransferTo);
+        toggleTransferTo();
+    }
+    /* The destination only means anything on a transfer, and showing it everywhere invites
+       people to fill it in on a purchase -- which would silently take that purchase out of
+       the spending totals. */
+    function toggleTransferTo() {
+        const box = document.getElementById('tToBox');
+        const cat = (document.getElementById('tCat')||{}).value || '';
+        if (box) box.style.display = (cat === 'transfer') ? '' : 'none';
     }
     async function saveTxn(id) {
         const g=i=>document.getElementById(i);
         const body={posted_at:g('tDate').value,amount:parseFloat(g('tAmt').value)||0,
             description:g('tDesc').value.trim(),merchant:g('tMerch').value.trim(),
-            category:g('tCat').value,paid_from:g('tAcct').value};
+            category:g('tCat').value,paid_from:g('tAcct').value,
+            transfer_to:(g('tCat').value==='transfer'?g('tToAcct').value:'')};
         if(!body.description){ g('tMsg').textContent='Description required'; return; }
         try{ const r=await fetch(id?`/api/finance/transactions/${id}`:'/api/finance/transactions',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail');
