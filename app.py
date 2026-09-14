@@ -3066,7 +3066,24 @@ def finance_import_transactions_csv():
         account_id = int(mapping['account_id']) if mapping.get('account_id') not in (None, '') else None
     except (TypeError, ValueError):
         account_id = None
+    # A card export is the common case for CSV -- it is what you fall back to when an issuer
+    # cannot be linked at all -- so the rows have to be able to land on a Debt, not just a
+    # bank account. Without this every imported card row shows "no account" and reconciles
+    # against nothing.
+    debt_id = None
+    kind, _, rid = (mapping.get('paid_from') or '').partition(':')
+    try:
+        rid = int(rid)
+    except (TypeError, ValueError):
+        rid = None
+    if kind == 'debt' and rid and Debt.query.filter_by(id=rid, user_id=uid).first():
+        debt_id, account_id = rid, None
+    elif kind == 'account' and rid and FinanceAccount.query.filter_by(id=rid, user_id=uid).first():
+        account_id, debt_id = rid, None
     skip_income = bool(mapping.get('skip_income', True))
+    # Kept in the OLD shape when it is an account, so re-importing an export that was loaded
+    # before this field existed still dedupes instead of doubling up.
+    src_key = ('debt:%d' % debt_id) if debt_id else (str(account_id) if account_id else '')
 
     existing = {e for (e,) in db.session.query(SpendTransaction.external_id)
                 .filter(SpendTransaction.user_id == uid,
@@ -3088,7 +3105,7 @@ def finance_import_transactions_csv():
             continue
         amt = round(amt, 2)
         key = 'csv:' + hashlib.sha1('{}|{}|{}|{}'.format(
-            posted.isoformat(), desc.lower(), amt, account_id or '').encode('utf-8')).hexdigest()[:24]
+            posted.isoformat(), desc.lower(), amt, src_key).encode('utf-8')).hexdigest()[:24]
         if key in existing or key in seen:
             dupes += 1
             continue
@@ -3099,7 +3116,8 @@ def finance_import_transactions_csv():
             cat = _guess_spend_category('{} {}'.format(merchant or '', desc))
         db.session.add(SpendTransaction(
             user_id=uid, posted_at=posted, description=desc[:200], merchant=merchant or None,
-            category=cat, amount=amt, account_id=account_id, source='csv', external_id=key))
+            category=cat, amount=amt, account_id=account_id, debt_id=debt_id,
+            source='csv', external_id=key))
         imported += 1
     db.session.commit()
     return jsonify({'imported': imported, 'duplicates_skipped': dupes,

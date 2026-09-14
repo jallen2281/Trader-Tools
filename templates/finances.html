@@ -1352,6 +1352,14 @@
               <option value="debit_negative" ${d.guessed_sign==='debit_negative'?'selected':''}>As a negative amount</option>
               <option value="debit_positive" ${d.guessed_sign==='debit_positive'?'selected':''}>As a positive amount</option>
             </select>
+            <label class="fld">These rows came from</label>
+            <select id="mPaidFrom" class="fin-in" style="width:100%;">
+              <option value="">&mdash; not specified</option>
+              <optgroup label="Cash accounts">${((OUTLOOK&&OUTLOOK.accounts)||[]).filter(a=>['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}">${esc(a.name)}</option>`).join('')}</optgroup>
+              <optgroup label="Credit cards">${((OUTLOOK&&OUTLOOK.debts)||[]).filter(x=>x.type==='credit_card').map(x=>`<option value="debt:${x.id}">${esc(x.name)}</option>`).join('')}</optgroup>
+              <optgroup label="Other accounts">${((OUTLOOK&&OUTLOOK.accounts)||[]).filter(a=>!['checking','savings','cash'].includes(a.type)).map(a=>`<option value="account:${a.id}">${esc(a.name)}</option>`).join('')}</optgroup>
+            </select>
+            <div class="muted" style="font-size:0.76em;margin:3px 0 8px;line-height:1.45;">Set it and every row is attributed to that account or card &mdash; otherwise they import with a blank source and reconcile against nothing.</div>
             <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:0.88em;"><input type="checkbox" id="mSkipInc" checked> Skip deposits (income is tracked in Income &amp; Pay)</label>
             <details style="margin-bottom:8px;"><summary class="muted" style="font-size:0.85em;cursor:pointer;">Sample rows</summary><div style="overflow-x:auto;font-size:0.75em;margin-top:6px;"><table class="fin-table"><thead><tr>${H.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${(d.sample||[]).map(r=>`<tr>${H.map(h=>`<td>${esc(r[h])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details>
             <div style="display:flex;gap:10px;margin-top:6px;"><button class="btn2 primary" onclick="csvImport()">Import</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="csvMsg2" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
@@ -1359,7 +1367,8 @@
     async function csvImport() {
         const g=i=>document.getElementById(i), msg=g('csvMsg2');
         const mapping={date:g('mDate').value,description:g('mDesc').value,amount:g('mAmt').value,
-            category:g('mCat').value,sign:g('mSign').value,skip_income:g('mSkipInc').checked};
+            category:g('mCat').value,sign:g('mSign').value,skip_income:g('mSkipInc').checked,
+            paid_from:g('mPaidFrom').value};
         if(!mapping.date||!mapping.description||!mapping.amount){ msg.textContent='Date, description and amount are required'; return; }
         if(!CSV_FILE){ msg.textContent='File lost — start over'; return; }
         msg.textContent='Importing…';
