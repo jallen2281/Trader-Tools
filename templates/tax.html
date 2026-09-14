@@ -612,6 +612,14 @@
                 ['Gross Income', fmt(d.w2_wages + d.se_income), '', `W2 ${fmt(d.w2_wages)} · 1099 ${fmt(d.se_income)}`],
                 ['Federal Income Tax', fmt(d.federal_income_tax), '', `taxable ${fmt(d.taxable_income)}`],
                 ['Self-Employment Tax', fmt(d.self_employment_tax), d.self_employment_tax>0?'gain-neg':'', 'on 1099 income'],
+                // Realized trades, as the change they make to the bill -- so the tiles still add
+                // up to the total without the wage-only income-tax tile changing meaning.
+                ...(d.capital_gains ? [['Capital Gains / Losses', fmt(d.capital_gains_tax_effect),
+                    d.capital_gains_tax_effect < 0 ? 'gain-pos' : (d.capital_gains_tax_effect > 0 ? 'gain-neg' : ''),
+                    d.capital_gains.loss_deducted
+                        ? `net ${fmt(d.capital_gains.net)} · ${fmt(d.capital_gains.loss_deducted)} deducted` +
+                          (d.capital_gains.loss_carryforward ? ` · ${fmt(d.capital_gains.loss_carryforward)} carries forward` : '')
+                        : `ST ${fmt(d.capital_gains.short_term)} · LT ${fmt(d.capital_gains.long_term)}`]] : []),
                 ['Total Federal Tax', fmt(d.total_federal_tax), '', `~${d.effective_rate}% effective`],
                 [dueLbl, known ? fmt(dueVal) : 'unknown',
                  !known ? '' : (d.balance_due>0?'gain-neg':'gain-pos'),

@@ -4287,9 +4287,9 @@ def _finance_observations(p):
                 _obs(out, 'warning', 'tax_due',
                      'Estimated tax owed at filing',
                      'Roughly %s owed beyond the %s withheld (%s). Over $1,000 is where '
-                     'underpayment penalties start.' % (
+                     'underpayment penalties start.%s' % (
                          _money(due), _money(tax.get('withheld')),
-                         tax.get('withholding_source')), due)
+                         tax.get('withholding_source'), _capital_clause(tax)), due)
     if tax and (tax.get('unclaimed_match') or 0) > 0:
         _obs(out, 'warning', 'unclaimed_match',
              'Leaving employer 401(k) match on the table',
@@ -4681,6 +4681,16 @@ def _overview_facts(p, obs):
                      _money(tax.get('federal_income_tax')),
                      _money(tax.get('self_employment_tax')),
                      _money(tax.get('total_federal_tax'))))
+        cg = tax.get('capital_gains')
+        if cg:
+            L.append("Realized capital gains this year: short-term %s, long-term %s, net %s. "
+                     "%s Tax effect %s, already in the total above." % (
+                         _money(cg['short_term']), _money(cg['long_term']), _money(cg['net']),
+                         ('%s deducted against income (limit %s); %s carries forward.' % (
+                             _money(cg['loss_deducted']), _money(cg['loss_limit']),
+                             _money(cg['loss_carryforward'])))
+                         if cg.get('loss_deducted') else 'Taxed as a gain.',
+                         _money(tax.get('capital_gains_tax_effect'))))
         if tax.get('withholding_known'):
             bd = tax.get('balance_due') or 0
             L.append("Withheld %s (%s). %s %s." % (
@@ -6186,6 +6196,95 @@ def _payroll_rollup(srcs, prof):
     }
 
 
+# Top of the 0% and 15% long-term capital gains bands, as taxable income. Same vintage as
+# the ordinary brackets above so the two never disagree about which year they describe.
+_LTCG_BREAKPOINTS = {'mfj': (96700, 600050), 'qss': (96700, 600050),
+                     'single': (48350, 533400), 'hoh': (64750, 566700),
+                     'mfs': (48350, 300000)}
+
+
+def _capital_gain_treatment(short_term, long_term, filing):
+    """Net a year's realized gains the way Schedule D does.
+
+    Short- and long-term results net against each other first. A net LOSS comes off ordinary
+    income only up to $3,000 ($1,500 married filing separately) and the rest carries forward
+    -- it is not lost, but it does not help this year either. A net GAIN keeps whatever
+    character survives the netting: short-term is taxed as ordinary income, long-term at the
+    preferential rates.
+
+    Pure so the netting rules can be tested without a ledger.
+    """
+    st, lt = round(float(short_term or 0), 2), round(float(long_term or 0), 2)
+    net = round(st + lt, 2)
+    cap = 1500.0 if filing == 'mfs' else 3000.0
+    if net <= 0:
+        deducted = round(min(-net, cap), 2)
+        return {'net': net, 'agi_adjustment': -deducted, 'ordinary': 0.0, 'preferential': 0.0,
+                'loss_deducted': deducted, 'loss_carryforward': round(-net - deducted, 2),
+                'loss_limit': cap}
+    if st >= 0 and lt >= 0:
+        ordinary, pref = st, lt
+    elif lt < 0:
+        ordinary, pref = net, 0.0          # a long-term loss eats into short-term gain
+    else:
+        ordinary, pref = 0.0, net          # a short-term loss eats into long-term gain
+    return {'net': net, 'agi_adjustment': net, 'ordinary': ordinary, 'preferential': pref,
+            'loss_deducted': 0.0, 'loss_carryforward': 0.0, 'loss_limit': cap}
+
+
+def _preferential_tax(ordinary_taxable, pref, filing):
+    """Tax on long-term gain, which stacks ON TOP of ordinary taxable income -- so the same
+    gain can be free for one household and taxed at 15% for another."""
+    zero_top, fifteen_top = _LTCG_BREAKPOINTS.get(filing, _LTCG_BREAKPOINTS['single'])
+    lo, hi = float(ordinary_taxable), float(ordinary_taxable) + float(pref)
+    in_fifteen = max(0.0, min(hi, fifteen_top) - max(lo, zero_top))
+    in_twenty = max(0.0, hi - max(lo, fifteen_top))
+    return round(in_fifteen * 0.15 + in_twenty * 0.20, 2)
+
+
+def _realized_capital(user_id, yr, filing):
+    """This year's realized gains from the trade ledger, netted for the return.
+
+    The estimate used to see wages and nothing else, so a year with thousands in realized
+    losses still projected a balance due as though none had been taken. The lot matching
+    already existed for the Tax Center; this is the same engine, pointed at the estimate.
+    Returns None rather than raising -- a ledger problem must not take the whole tax card
+    down with it.
+    """
+    try:
+        r = tax_analyzer.realized_gains(user_id, year=yr)
+    except Exception as e:
+        logger.warning('tax estimate: realized gains unavailable: %s', e)
+        return None
+    summ = r.get('summary') or {}
+    if not summ.get('disposal_count'):
+        return None
+    st = summ['short_term']['gain']
+    lt = summ['long_term']['gain']
+    out = _capital_gain_treatment(st, lt, filing)
+    out.update({'short_term': st, 'long_term': lt,
+                'disposal_count': summ.get('disposal_count', 0),
+                'estimated_count': summ.get('estimated_count', 0),
+                'excluded_accounts': r.get('excluded_accounts') or []})
+    return out
+
+
+def _capital_clause(tax):
+    """One sentence on what this year's sales did to the bill, or '' if there were none."""
+    cg = (tax or {}).get('capital_gains')
+    if not cg:
+        return ''
+    if cg.get('loss_deducted'):
+        return (' Already counts %s of realized capital losses against income (net %s this '
+                'year%s).' % (_money(cg['loss_deducted']), _money(cg['net']),
+                              ('; %s carries forward to next year' % _money(cg['loss_carryforward']))
+                              if cg.get('loss_carryforward') else ''))
+    if (cg.get('net') or 0) > 0:
+        return (' Includes about %s of tax on %s of realized capital gains.' % (
+            _money(tax.get('capital_gains_tax_effect')), _money(cg['net'])))
+    return ''
+
+
 def _income_tax_estimate(user_id, year=None, filing=None):
     """Approximate federal (and flat-rate state) tax from tracked income and the household
     profile. Still an estimate — no itemization beyond a supplied total, no phase-outs, no
@@ -6252,7 +6351,25 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     # portion of the CTC can exceed liability in reality, which this does not model.
     fed_income_tax = round(max(0.0, fed_before_credits - credits), 2)
 
-    total_fed = round(fed_income_tax + se_tax, 2)
+    # Realized capital gains and losses. Computed as a DIFFERENCE against the wage-only tax
+    # rather than folded into federal_income_tax, because that figure also drives take-home
+    # and the cash-flow ledger -- and a stock sale does not change what lands in a paycheck.
+    # What it changes is what is owed at filing, so it goes into the total and the balance.
+    capital = _realized_capital(user_id, yr, filing)
+    if capital and capital['agi_adjustment']:
+        taxable_all = max(0.0, w2_taxable + se_net - half_se + capital['agi_adjustment'] - deduction)
+        pref_in = min(capital['preferential'], taxable_all)
+        ordinary_taxable = taxable_all - pref_in
+        fed_all_before = round(_bracket_tax(ordinary_taxable, _FED_BRACKETS[filing])
+                               + _preferential_tax(ordinary_taxable, pref_in, filing), 2)
+        fed_income_tax_all = round(max(0.0, fed_all_before - credits), 2)
+    else:
+        taxable_all, fed_income_tax_all = taxable, fed_income_tax
+    capital_tax_effect = round(fed_income_tax_all - fed_income_tax, 2)
+    if capital:
+        capital['tax_effect'] = capital_tax_effect
+
+    total_fed = round(fed_income_tax_all + se_tax, 2)
     withheld, withholding_known, withholding_source = _project_withholding(
         prof, user_id, yr, payroll)
     balance_due = round(total_fed - withheld, 2)
@@ -6261,6 +6378,10 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     exempt = float(prof.state_exemption_per_person or 0) * prof.household_size()
     state_taxable = max(0.0, w2_gross + se_income - pretax - exempt)
     state_tax = round(state_taxable * rate / 100.0, 2) if rate else 0.0
+    # Kept apart from state_tax for the same reason as the federal figure: state_tax feeds
+    # take-home. A flat-rate state taxes the same capped gain or loss that reaches AGI.
+    state_capital_effect = round((capital['agi_adjustment'] if capital else 0) * rate / 100.0, 2) \
+        if rate else 0.0
 
     gross = w2_gross + se_income
     # What is actually left of a W2 paycheck. This is the figure to hold a bank deposit
@@ -6307,6 +6428,12 @@ def _income_tax_estimate(user_id, year=None, filing=None):
         'section125_deductions': section125,
         'posttax_deductions': payroll['posttax'],
         'federal_income_tax': fed_income_tax, 'self_employment_tax': se_tax,
+        # Realized trades. federal_income_tax above is wages only; this is the change the
+        # year's sales make on top, already included in total_federal_tax and balance_due.
+        'capital_gains': capital,
+        'capital_gains_tax_effect': capital_tax_effect,
+        'taxable_income_with_capital': round(taxable_all, 2),
+        'state_capital_effect': state_capital_effect,
         'total_federal_tax': total_fed,
         'withheld': withheld,
         'withholding_known': withholding_known,

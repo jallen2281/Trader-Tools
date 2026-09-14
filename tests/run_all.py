@@ -58,6 +58,7 @@ SUITES = [
     ('bill_paid_by_card', 'a bill charged to a credit card rather than a bank account'),
     ('transfers', 'money moved between accounts, kept out of spending totals'),
     ('csv_card_import', 'a CSV export attributed to the card it came from'),
+    ('tax_capital', 'realized capital gains and losses in the tax estimate'),
     ('credit', 'credit utilization and score trends'),
     ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),
