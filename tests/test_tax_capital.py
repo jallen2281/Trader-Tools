@@ -65,13 +65,13 @@ check('exactly break-even changes nothing',
 
 P = A._preferential_tax
 print('\n--- long-term gains stack on top of ordinary income ---')
-check('straddling the 0% band: 6,700 free, 3,300 at 15%',
-      P(90000, 10000, 'mfj') == 495.0, P(90000, 10000, 'mfj'))
+check('straddling the 0% band: 8,900 free, 1,100 at 15%',
+      P(90000, 10000, 'mfj') == 165.0, P(90000, 10000, 'mfj'))
 check('already past the 0% band: all at 15%', P(150000, 10000, 'mfj') == 1500.0,
       P(150000, 10000, 'mfj'))
 check('a low-income single filer pays nothing', P(20000, 5000, 'single') == 0.0,
       P(20000, 5000, 'single'))
-check('the top band is 20%', P(600050, 10000, 'mfj') == 2000.0, P(600050, 10000, 'mfj'))
+check('the top band is 20%', P(613700, 10000, 'mfj') == 2000.0, P(613700, 10000, 'mfj'))
 
 # ---------------------------------------------------------------- against a real ledger
 with app.app_context():

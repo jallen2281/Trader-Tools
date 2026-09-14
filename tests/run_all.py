@@ -59,6 +59,7 @@ SUITES = [
     ('transfers', 'money moved between accounts, kept out of spending totals'),
     ('csv_card_import', 'a CSV export attributed to the card it came from'),
     ('tax_capital', 'realized capital gains and losses in the tax estimate'),
+    ('tax_deductions', 'Schedule A, Schedule 1-A and the farm books in the return'),
     ('credit', 'credit utilization and score trends'),
     ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),

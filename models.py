@@ -2092,8 +2092,34 @@ class TaxProfile(PayrollDeferralMixin, db.Model):
     employer_match_limit_pct = db.Column(db.Numeric(5, 2, asdecimal=False), default=0)
     pretax_other_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
 
+    # A full itemized TOTAL, when someone would rather type the Schedule A bottom line. Zero
+    # means "compute it" from the pieces below, which is the normal case now.
     itemized_deductions = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
     other_credits_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+
+    # The pieces of a return the ledger cannot see. Each maps to one line people can copy
+    # off last year's forms, which is how they will actually be filled in.
+    #   mortgage_interest_annual   -- Form 1098 box 1. Zero = estimate from the mortgage.
+    #   other_taxes_annual         -- vehicle registration and other state/local taxes;
+    #                                 property tax comes from the tax bills.
+    #   charitable_annual          -- cash gifts.
+    #   qualified_overtime_annual  -- the premium half of overtime (Schedule 1-A).
+    #   car_loan_interest_annual   -- new, US-assembled vehicle financed after 2024 only.
+    mortgage_interest_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    other_taxes_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    charitable_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    qualified_overtime_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    car_loan_interest_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    # Farm / business (Schedule F and C). business_net_annual is NULL until someone sets it,
+    # and NULL means "use the books" -- a stated loss of zero is a real figure and must not
+    # be mistaken for "not entered".
+    #
+    # business_mortgage_interest_annual is the share of home mortgage interest claimed on a
+    # farm or business schedule. It exists because a 2025 return deducted the same $11,890
+    # on BOTH Schedule A and Schedule F: the carve-out is subtracted from the personal
+    # mortgage interest so the one payment can only ever be deducted once.
+    business_net_annual = db.Column(db.Numeric(12, 2, asdecimal=False))
+    business_mortgage_interest_annual = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
 
     state = db.Column(db.String(2), default='MI')
     state_tax_rate = db.Column(db.Numeric(5, 3, asdecimal=False), default=4.25)
@@ -2135,6 +2161,14 @@ class TaxProfile(PayrollDeferralMixin, db.Model):
             'pretax_other_annual': float(self.pretax_other_annual or 0),
             'itemized_deductions': float(self.itemized_deductions or 0),
             'other_credits_annual': float(self.other_credits_annual or 0),
+            'mortgage_interest_annual': float(self.mortgage_interest_annual or 0),
+            'other_taxes_annual': float(self.other_taxes_annual or 0),
+            'charitable_annual': float(self.charitable_annual or 0),
+            'qualified_overtime_annual': float(self.qualified_overtime_annual or 0),
+            'car_loan_interest_annual': float(self.car_loan_interest_annual or 0),
+            'business_net_annual': (None if self.business_net_annual is None
+                                    else float(self.business_net_annual)),
+            'business_mortgage_interest_annual': float(self.business_mortgage_interest_annual or 0),
             'state': self.state or 'MI',
             'state_tax_rate': float(self.state_tax_rate or 0),
             'state_exemption_per_person': float(self.state_exemption_per_person or 0),

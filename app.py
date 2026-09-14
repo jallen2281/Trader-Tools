@@ -4670,16 +4670,26 @@ def _overview_facts(p, obs):
                      "rather than treating them as settled.")
         L.append("\n== TAX ESTIMATE (%s, %s; %s brackets) ==" % (
             tax.get('year'), tax.get('filing_status'), tax.get('constants_vintage')))
-        L.append("W2 wages %s, 1099 income %s. Taxable income %s after a %s deduction. "
-                 "Federal tax %s before credits, less %s of credits (child %s + other %s) = "
+        biz = tax.get('business')
+        item = tax.get('itemized') or {}
+        L.append("W2 wages %s, 1099 income %s%s. AGI %s. %s deduction %s%s. Schedule 1-A %s. "
+                 "Taxable income %s. Federal tax %s before credits, less %s of credits = "
                  "%s income tax, plus %s self-employment tax = %s total." % (
                      _money(tax.get('w2_wages')), _money(tax.get('se_income')),
-                     _money(tax.get('taxable_income')), _money(tax.get('deduction_used')),
-                     _money(tax.get('federal_income_tax_before_credits')),
-                     _money(tax.get('credits')), _money(tax.get('child_tax_credit')),
-                     _money(tax.get('other_dependent_credit')),
-                     _money(tax.get('federal_income_tax')),
-                     _money(tax.get('self_employment_tax')),
+                     (', farm/business net %s (%s)' % (_money(biz['net']), biz['source'])) if biz else '',
+                     _money(tax.get('agi')),
+                     (tax.get('deduction_basis_return') or 'standard').capitalize(),
+                     _money(tax.get('deduction_used_return')),
+                     (' (mortgage interest %s, state and local taxes %s, charity %s)' % (
+                         _money(item.get('mortgage_interest_personal')), _money(item.get('salt')),
+                         _money(item.get('charitable_allowed'))))
+                     if tax.get('deduction_basis_return') == 'itemized' else '',
+                     _money((tax.get('schedule_1a') or {}).get('total')),
+                     _money(tax.get('taxable_income_return')),
+                     _money(tax.get('federal_income_tax_before_credits_return')),
+                     _money(tax.get('credits')),
+                     _money(tax.get('federal_income_tax_return')),
+                     _money(tax.get('self_employment_tax_return')),
                      _money(tax.get('total_federal_tax'))))
         cg = tax.get('capital_gains')
         if cg:
@@ -5978,22 +5988,26 @@ def tax_document_extract(did):
 # each year. TAX_CONSTANTS_VINTAGE is returned by the estimate endpoint so the UI can
 # say out loud which year's numbers produced a figure — a tax estimate that silently
 # uses stale brackets is worse than one that admits its vintage.
-TAX_CONSTANTS_VINTAGE = 2025
+TAX_CONSTANTS_VINTAGE = 2026
 
-_FED_BRACKETS_MFJ = [(0, 0.10), (23850, 0.12), (96950, 0.22), (206700, 0.24),
-                     (394600, 0.32), (501050, 0.35), (751600, 0.37)]
-_FED_BRACKETS_SINGLE = [(0, 0.10), (11925, 0.12), (48475, 0.22), (103350, 0.24),
-                        (197300, 0.32), (250525, 0.35), (626350, 0.37)]
-_FED_BRACKETS_HOH = [(0, 0.10), (17000, 0.12), (64850, 0.22), (103350, 0.24),
-                     (197300, 0.32), (250500, 0.35), (626350, 0.37)]
-# Married filing separately tracks single closely at the rates most people hit.
+# Rev. Proc. 2025-32, as amended by the One Big Beautiful Bill Act.
+_FED_BRACKETS_MFJ = [(0, 0.10), (24800, 0.12), (100800, 0.22), (211400, 0.24),
+                     (403550, 0.32), (512450, 0.35), (768700, 0.37)]
+_FED_BRACKETS_SINGLE = [(0, 0.10), (12400, 0.12), (50400, 0.22), (105700, 0.24),
+                        (201775, 0.32), (256225, 0.35), (640600, 0.37)]
+_FED_BRACKETS_HOH = [(0, 0.10), (17700, 0.12), (67450, 0.22), (105700, 0.24),
+                     (201750, 0.32), (256200, 0.35), (640600, 0.37)]
+# Married filing separately matches single until the top band, which starts at half the
+# joint threshold rather than at the single one.
+_FED_BRACKETS_MFS = [(0, 0.10), (12400, 0.12), (50400, 0.22), (105700, 0.24),
+                     (201775, 0.32), (256225, 0.35), (384350, 0.37)]
 _FED_BRACKETS = {
     'mfj': _FED_BRACKETS_MFJ, 'qss': _FED_BRACKETS_MFJ,
-    'single': _FED_BRACKETS_SINGLE, 'mfs': _FED_BRACKETS_SINGLE,
+    'single': _FED_BRACKETS_SINGLE, 'mfs': _FED_BRACKETS_MFS,
     'hoh': _FED_BRACKETS_HOH,
 }
-_STD_DEDUCTION = {'mfj': 30000, 'qss': 30000, 'single': 15000, 'mfs': 15000, 'hoh': 22500}
-_SS_WAGE_BASE = 176100
+_STD_DEDUCTION = {'mfj': 32200, 'qss': 32200, 'single': 16100, 'mfs': 16100, 'hoh': 24150}
+_SS_WAGE_BASE = 184500
 # Employee half of FICA. The employer pays the same again, which is not the employee's
 # money and is deliberately not shown.
 _SS_RATE = 0.062
@@ -6001,7 +6015,7 @@ _MEDICARE_RATE = 0.0145
 # Additional Medicare, employee only, no employer match and no wage cap.
 _ADDL_MEDICARE_RATE = 0.009
 _ADDL_MEDICARE_THRESHOLD = {'mfj': 250000, 'qss': 250000, 'mfs': 125000}
-_401K_ELECTIVE_LIMIT = 23500   # employee elective deferral cap, traditional + Roth COMBINED
+_401K_ELECTIVE_LIMIT = 24500   # employee elective deferral cap, traditional + Roth COMBINED
 _CTC_PER_CHILD = 2200        # child tax credit, dependents under 17
 _ODC_PER_DEPENDENT = 500     # other-dependent credit
 
@@ -6198,9 +6212,30 @@ def _payroll_rollup(srcs, prof):
 
 # Top of the 0% and 15% long-term capital gains bands, as taxable income. Same vintage as
 # the ordinary brackets above so the two never disagree about which year they describe.
-_LTCG_BREAKPOINTS = {'mfj': (96700, 600050), 'qss': (96700, 600050),
-                     'single': (48350, 533400), 'hoh': (64750, 566700),
-                     'mfs': (48350, 300000)}
+_LTCG_BREAKPOINTS = {'mfj': (98900, 613700), 'qss': (98900, 613700),
+                     'single': (49450, 545500), 'hoh': (66200, 579600),
+                     'mfs': (49450, 306850)}
+
+# State and local tax cap (OBBBA): $40,400 for 2026, half for MFS, cut by 30% of MAGI over
+# the threshold but never below the old $10,000 floor.
+_SALT_CAP = 40400
+_SALT_PHASEDOWN_START = 505000
+_SALT_FLOOR = 10000
+# Charitable (OBBBA, from 2026): itemizers lose the first 0.5% of AGI; people who take the
+# standard deduction get up to $1,000 ($2,000 joint) of cash gifts on top of it.
+_CHARITABLE_FLOOR_PCT = 0.005
+_CHARITABLE_NONITEMIZER = {'mfj': 2000}
+_CHARITABLE_NONITEMIZER_DEFAULT = 1000
+# Schedule 1-A, straight off the 2025 form: overtime capped at $12,500 ($25,000 joint), less
+# $100 per full $1,000 of MAGI over $150,000 ($300,000); car loan interest capped at $10,000,
+# less $200 per $1,000 (rounded UP) over $100,000 ($200,000).
+_OVERTIME_CAP = {'mfj': 25000}
+_OVERTIME_CAP_DEFAULT = 12500
+_OVERTIME_PHASEOUT = {'mfj': 300000}
+_OVERTIME_PHASEOUT_DEFAULT = 150000
+_CAR_LOAN_CAP = 10000
+_CAR_LOAN_PHASEOUT = {'mfj': 200000}
+_CAR_LOAN_PHASEOUT_DEFAULT = 100000
 
 
 def _capital_gain_treatment(short_term, long_term, filing):
@@ -6269,6 +6304,178 @@ def _realized_capital(user_id, yr, filing):
     return out
 
 
+def _fed_tax(agi, deduction, below_line, pref, filing, credits):
+    """(taxable, tax before credits, tax after credits) for one set of return figures.
+
+    Long-term gain stacks on top of ordinary income, so it is split out of taxable income
+    before the brackets apply rather than taxed as if it were wages.
+    """
+    taxable = max(0.0, float(agi) - float(deduction) - float(below_line))
+    pref_in = min(max(0.0, float(pref)), taxable)
+    ordinary = taxable - pref_in
+    before = round(_bracket_tax(ordinary, _FED_BRACKETS[filing])
+                   + _preferential_tax(ordinary, pref_in, filing), 2)
+    return round(taxable, 2), before, round(max(0.0, before - float(credits)), 2)
+
+
+def _mortgage_interest_annual(user_id, prof):
+    """Home mortgage interest for the year and where the figure came from.
+
+    Form 1098 wins when it has been entered. Otherwise a year of amortisation on each
+    mortgage's current balance -- close to the calendar-year figure for a loan in its early
+    years, and labelled as an estimate. HELOCs are deliberately left out: their interest is
+    only deductible when the money built or improved the home, and a HELOC that paid off a
+    credit card does not qualify.
+    """
+    stated = float(prof.mortgage_interest_annual or 0)
+    if stated > 0:
+        return round(stated, 2), 'entered (Form 1098)'
+    total = 0.0
+    for d in Debt.query.filter(_visible(Debt, user_id), Debt.type == 'mortgage').all():
+        bal, r = float(d.balance or 0), float(d.apr or 0) / 1200.0
+        if bal <= 0 or r <= 0:
+            continue
+        pmt = max(float(d.min_payment or 0), bal * r + 1)
+        for _ in range(12):
+            i = bal * r
+            total += i
+            bal = max(0.0, bal - (pmt - i))
+    return round(total, 2), 'estimated from the mortgage balance and rate'
+
+
+_PROPERTY_TAX_WORDS = ('property', 'real estate', 'township', 'county', 'village', 'school tax')
+
+
+def _property_tax_annual(user_id):
+    """Property tax from the tax bills. Matched by name so an income-tax payment filed under
+    the same category is not mistaken for it."""
+    bills = RecurringBill.query.filter(_visible(RecurringBill, user_id),
+                                       RecurringBill.active.is_(True),
+                                       RecurringBill.category == 'taxes').all()
+    hits = [b for b in bills if any(w in ('%s %s' % (b.name or '', b.payee or '')).lower()
+                                    for w in _PROPERTY_TAX_WORDS)]
+    # Straight from amount x cadence: going through the rounded monthly figure and back
+    # multiplies a cent of rounding by twelve, and a deduction should match the bill.
+    return round(sum(float(b.amount or 0) * RecurringBill.FREQ_PER_YEAR.get(b.frequency, 12)
+                     for b in hits), 2)
+
+
+def _itemized_deductions(user_id, prof, filing, agi, state_income_tax):
+    """Schedule A, built from the pieces rather than typed as one total.
+
+    The business carve-out comes off the personal mortgage interest here. That is the whole
+    reason it exists: the same interest on Schedule A and on a farm schedule is a double
+    deduction, and a return has already been filed with exactly that error in it.
+    """
+    mfs = filing == 'mfs'
+    mortgage, mortgage_source = _mortgage_interest_annual(user_id, prof)
+    carve = float(prof.business_mortgage_interest_annual or 0)
+    mortgage_personal = round(max(0.0, mortgage - carve), 2)
+
+    prop = _property_tax_annual(user_id)
+    other_taxes = float(prof.other_taxes_annual or 0)
+    salt_raw = round(prop + float(state_income_tax or 0) + other_taxes, 2)
+    cap = _SALT_CAP / (2.0 if mfs else 1.0)
+    start = _SALT_PHASEDOWN_START / (2.0 if mfs else 1.0)
+    floor = _SALT_FLOOR / (2.0 if mfs else 1.0)
+    if agi > start:
+        cap = max(floor, cap - 0.30 * (agi - start))
+    salt = round(min(salt_raw, cap), 2)
+
+    charitable = float(prof.charitable_annual or 0)
+    char_floor = round(_CHARITABLE_FLOOR_PCT * max(0.0, float(agi)), 2)
+    char_allowed = round(max(0.0, charitable - char_floor), 2)
+
+    computed = round(mortgage_personal + salt + char_allowed, 2)
+    override = float(prof.itemized_deductions or 0)
+    return {
+        'mortgage_interest': mortgage, 'mortgage_interest_source': mortgage_source,
+        'business_mortgage_interest': round(carve, 2),
+        'mortgage_interest_personal': mortgage_personal,
+        'property_tax': prop, 'state_income_tax': round(float(state_income_tax or 0), 2),
+        'other_taxes': round(other_taxes, 2),
+        'salt_before_cap': salt_raw, 'salt_cap': round(cap, 2), 'salt': salt,
+        'charitable': round(charitable, 2), 'charitable_floor': char_floor,
+        'charitable_allowed': char_allowed,
+        'computed_total': computed,
+        'override': override > 0,
+        'total': round(override, 2) if override > 0 else computed,
+    }
+
+
+def _schedule_1a(prof, filing, magi):
+    """Deductions taken whether or not the return itemizes."""
+    joint = filing == 'mfj'
+    ot = float(prof.qualified_overtime_annual or 0)
+    if filing == 'mfs':
+        ot_allowed = 0.0          # a married couple has to file jointly to claim it
+    else:
+        ot_allowed = min(ot, _OVERTIME_CAP.get(filing, _OVERTIME_CAP_DEFAULT))
+        excess = float(magi) - _OVERTIME_PHASEOUT.get(filing, _OVERTIME_PHASEOUT_DEFAULT)
+        if excess > 0:
+            ot_allowed = max(0.0, ot_allowed - (int(excess) // 1000) * 100)
+    car = float(prof.car_loan_interest_annual or 0)
+    car_allowed = min(car, float(_CAR_LOAN_CAP))
+    excess = float(magi) - _CAR_LOAN_PHASEOUT.get(filing, _CAR_LOAN_PHASEOUT_DEFAULT)
+    if excess > 0:
+        car_allowed = max(0.0, car_allowed - (-(-int(excess) // 1000)) * 200)
+    return {'overtime': round(ot_allowed, 2), 'car_loan_interest': round(car_allowed, 2),
+            'total': round(ot_allowed + car_allowed, 2), 'joint': joint}
+
+
+def _business_books(user_id, yr, prof):
+    """Farm and business (Schedule F / C) net for the year, and where it came from.
+
+    A figure on the profile wins: much of a home farm's deduction is allocation -- a share
+    of the utilities, the insurance, depreciation -- that never appears as a transaction,
+    so the books alone understate it badly. Without one, the books are used: income tagged
+    to the entity less its tagged spending so far this year, transfers excluded, and any
+    mortgage interest carved out for the business subtracted as an expense.
+    """
+    ents = [e for e in _visible_entities(user_id).all()
+            if (e.tax_form or ENTITY_TAX_FORMS.get(e.kind)) in ('Schedule C', 'Schedule F')]
+    start, end = date(yr, 1, 1), date(yr, 12, 31)
+    rows = []
+    for e in ents:
+        income = round(sum(x.gross_annual() for x in IncomeSource.query.filter(
+            IncomeSource.entity_id == e.id, IncomeSource.active.is_(True)).all()
+            if x.tax_form != 'W2'), 2)
+        expenses = round(sum(float(t.amount or 0) for t in SpendTransaction.query.filter(
+            _visible(SpendTransaction, user_id), SpendTransaction.entity_id == e.id,
+            SpendTransaction.posted_at >= start, SpendTransaction.posted_at <= end).all()
+            if (t.category or 'other') not in NON_SPEND_CATEGORIES), 2)
+        rows.append({'id': e.id, 'name': e.name,
+                     'tax_form': e.tax_form or ENTITY_TAX_FORMS.get(e.kind),
+                     'income': income, 'expenses': expenses,
+                     'net': round(income - expenses, 2)})
+    carve = float(prof.business_mortgage_interest_annual or 0)
+    books_net = round(sum(r['net'] for r in rows), 2)
+    if prof.business_net_annual is not None:
+        return {'net': round(float(prof.business_net_annual), 2), 'source': 'entered',
+                'books_net_so_far': books_net, 'entities': rows,
+                'entity_ids': [r['id'] for r in rows], 'mortgage_interest': round(carve, 2)}
+    if not rows and not carve:
+        return None
+    return {'net': round(books_net - carve, 2), 'source': 'books so far this year',
+            'books_net_so_far': books_net, 'entities': rows,
+            'entity_ids': [r['id'] for r in rows], 'mortgage_interest': round(carve, 2)}
+
+
+def _project_state_withholding(prof, yr, payroll, fallback):
+    """State income tax paid this year, for the SALT deduction: paystub YTD annualised when
+    there is one, the state estimate otherwise."""
+    ytd = float((payroll or {}).get('ytd_state') or 0)
+    as_of = (payroll or {}).get('ytd_as_of')
+    if not ytd:
+        ytd = float(getattr(prof, 'ytd_state_withheld', 0) or 0)
+        as_of = getattr(prof, 'ytd_as_of', None)
+    if ytd > 0 and as_of and as_of.year == yr:
+        elapsed = (as_of - date(yr, 1, 1)).days + 1
+        if elapsed > 0:
+            return round(ytd * 365.0 / elapsed, 2)
+    return round(float(fallback or 0), 2)
+
+
 def _capital_clause(tax):
     """One sentence on what this year's sales did to the bill, or '' if there were none."""
     cg = (tax or {}).get('capital_gains')
@@ -6301,8 +6508,13 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     if filing in ('single', 'hoh', 'mfs'):
         srcs = [x for x in srcs if (x.owner or 'me') != 'spouse']
 
+    # Farm and business books first, so 1099 income already counted inside them is not
+    # counted a second time as freestanding self-employment income.
+    business = _business_books(user_id, yr, prof)
+    biz_ids = set(business['entity_ids']) if business else set()
     w2_gross = round(sum(x.gross_annual() for x in srcs if x.tax_form == 'W2'), 2)
-    se_income = round(sum(x.gross_annual() for x in srcs if x.tax_form == '1099'), 2)
+    se_income = round(sum(x.gross_annual() for x in srcs
+                          if x.tax_form == '1099' and x.entity_id not in biz_ids), 2)
 
     # Only TRADITIONAL deferrals reduce taxable wages. Roth comes out of the same paycheck
     # and feels identical, but it is post-tax — deducting it would understate the bill.
@@ -6338,7 +6550,7 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     std = _STD_DEDUCTION[filing]
     itemized = float(prof.itemized_deductions or 0)
     deduction = max(std, itemized)
-    taxable = max(0.0, w2_taxable + se_net - half_se - deduction)
+    taxable = max(0.0, w2_taxable + se_income - half_se - deduction)
     fed_before_credits = _bracket_tax(taxable, _FED_BRACKETS[filing])
 
     kids = int(prof.dependents_under_17 or 0)
@@ -6351,37 +6563,65 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     # portion of the CTC can exceed liability in reality, which this does not model.
     fed_income_tax = round(max(0.0, fed_before_credits - credits), 2)
 
-    # Realized capital gains and losses. Computed as a DIFFERENCE against the wage-only tax
-    # rather than folded into federal_income_tax, because that figure also drives take-home
-    # and the cash-flow ledger -- and a stock sale does not change what lands in a paycheck.
-    # What it changes is what is owed at filing, so it goes into the total and the balance.
-    capital = _realized_capital(user_id, yr, filing)
-    if capital and capital['agi_adjustment']:
-        taxable_all = max(0.0, w2_taxable + se_net - half_se + capital['agi_adjustment'] - deduction)
-        pref_in = min(capital['preferential'], taxable_all)
-        ordinary_taxable = taxable_all - pref_in
-        fed_all_before = round(_bracket_tax(ordinary_taxable, _FED_BRACKETS[filing])
-                               + _preferential_tax(ordinary_taxable, pref_in, filing), 2)
-        fed_income_tax_all = round(max(0.0, fed_all_before - credits), 2)
-    else:
-        taxable_all, fed_income_tax_all = taxable, fed_income_tax
-    capital_tax_effect = round(fed_income_tax_all - fed_income_tax, 2)
-    if capital:
-        capital['tax_effect'] = capital_tax_effect
-
-    total_fed = round(fed_income_tax_all + se_tax, 2)
-    withheld, withholding_known, withholding_source = _project_withholding(
-        prof, user_id, yr, payroll)
-    balance_due = round(total_fed - withheld, 2)
-
+    # ------------------------------------------------------------------ the return
+    # Everything above is the WAGE picture, and it drives take-home and the cash-flow
+    # ledger: a stock sale, a farm loss or a mortgage deduction does not change what lands
+    # in a paycheck. The return below is what is owed at filing -- capital gains, the farm
+    # and business schedules, Schedule A, Schedule 1-A -- and it alone sets the balance due.
     rate = float(prof.state_tax_rate or 0)
     exempt = float(prof.state_exemption_per_person or 0) * prof.household_size()
     state_taxable = max(0.0, w2_gross + se_income - pretax - exempt)
     state_tax = round(state_taxable * rate / 100.0, 2) if rate else 0.0
+    state_paid = _project_state_withholding(prof, yr, payroll, state_tax)
+
+    capital = _realized_capital(user_id, yr, filing)
+    cap_adj = capital['agi_adjustment'] if capital else 0.0
+    cap_pref = capital['preferential'] if capital else 0.0
+    biz_net = business['net'] if business else 0.0
+
+    # Only a business PROFIT adds to the self-employment base. A loss would offset other
+    # self-employment income only when it belongs to the same person, which the books do
+    # not record -- so it is not netted, and the SE figure errs high rather than low.
+    se_base_all = round((se_income + max(0.0, biz_net)) * 0.9235, 2)
+    se_tax_all = round(min(se_base_all, ss_room) * 0.124 + se_base_all * 0.029, 2)
+    half_se_all = round(se_tax_all / 2.0, 2)
+    agi_all = round(w2_taxable + se_income + biz_net - half_se_all + cap_adj, 2)
+
+    charitable = float(prof.charitable_annual or 0)
+    nonitem_charity = min(charitable, _CHARITABLE_NONITEMIZER.get(filing, _CHARITABLE_NONITEMIZER_DEFAULT))
+
+    def _deductions(agi):
+        item = _itemized_deductions(user_id, prof, filing, agi, state_paid)
+        s1a = _schedule_1a(prof, filing, agi)
+        if item['total'] > std + nonitem_charity:
+            return item, s1a, 'itemized', item['total'], s1a['total'], 0.0
+        return item, s1a, 'standard', std, s1a['total'] + nonitem_charity, nonitem_charity
+
+    itemized_detail, sched_1a, basis_all, deduction_all, below_all, charity_std = _deductions(agi_all)
+    taxable_all, fed_all_before, fed_income_tax_all = _fed_tax(
+        agi_all, deduction_all, below_all, cap_pref, filing, credits)
+
+    # The capital share of the bill, isolated by working the return again without it.
+    capital_tax_effect = 0.0
+    if capital and (cap_adj or cap_pref):
+        agi_nc = round(agi_all - cap_adj, 2)
+        _, _, _, ded_nc, below_nc, _ = _deductions(agi_nc)
+        fed_nc = _fed_tax(agi_nc, ded_nc, below_nc, 0.0, filing, credits)[2]
+        capital_tax_effect = round(fed_income_tax_all - fed_nc, 2)
+    if capital:
+        capital['tax_effect'] = capital_tax_effect
+
+    total_fed = round(fed_income_tax_all + se_tax_all, 2)
+    withheld, withholding_known, withholding_source = _project_withholding(
+        prof, user_id, yr, payroll)
+    balance_due = round(total_fed - withheld, 2)
+
     # Kept apart from state_tax for the same reason as the federal figure: state_tax feeds
-    # take-home. A flat-rate state taxes the same capped gain or loss that reaches AGI.
-    state_capital_effect = round((capital['agi_adjustment'] if capital else 0) * rate / 100.0, 2) \
-        if rate else 0.0
+    # take-home. A flat-rate state starts from federal AGI, so it sees the capped capital
+    # result and the business net -- but not itemized deductions, which it does not allow.
+    state_capital_effect = round(cap_adj * rate / 100.0, 2) if rate else 0.0
+    state_taxable_return = max(0.0, w2_gross + se_income + biz_net + cap_adj - pretax - exempt)
+    state_tax_return = round(state_taxable_return * rate / 100.0, 2) if rate else 0.0
 
     gross = w2_gross + se_income
     # What is actually left of a W2 paycheck. This is the figure to hold a bank deposit
@@ -6428,12 +6668,26 @@ def _income_tax_estimate(user_id, year=None, filing=None):
         'section125_deductions': section125,
         'posttax_deductions': payroll['posttax'],
         'federal_income_tax': fed_income_tax, 'self_employment_tax': se_tax,
-        # Realized trades. federal_income_tax above is wages only; this is the change the
-        # year's sales make on top, already included in total_federal_tax and balance_due.
+        # The return. federal_income_tax / taxable_income above are the WAGE picture that
+        # drives take-home; these are what is filed, and total_federal_tax and balance_due
+        # come from them.
+        'agi': agi_all,
+        'deduction_basis_return': basis_all,
+        'deduction_used_return': round(deduction_all, 2),
+        'itemized': itemized_detail,
+        'charitable_nonitemizer': round(charity_std, 2),
+        'schedule_1a': sched_1a,
+        'business': business,
+        'taxable_income_return': taxable_all,
+        'federal_income_tax_before_credits_return': fed_all_before,
+        'federal_income_tax_return': fed_income_tax_all,
+        'self_employment_tax_return': se_tax_all,
+        'return_tax_effect': round(total_fed - fed_income_tax - se_tax, 2),
         'capital_gains': capital,
         'capital_gains_tax_effect': capital_tax_effect,
-        'taxable_income_with_capital': round(taxable_all, 2),
+        'taxable_income_with_capital': taxable_all,
         'state_capital_effect': state_capital_effect,
+        'state_tax_return': state_tax_return,
         'total_federal_tax': total_fed,
         'withheld': withheld,
         'withholding_known': withholding_known,
@@ -6442,8 +6696,9 @@ def _income_tax_estimate(user_id, year=None, filing=None):
         'refund': round(-balance_due, 2) if (withholding_known and balance_due < 0) else 0,
         'state': prof.state, 'state_tax_rate': rate, 'state_tax': state_tax,
         'effective_rate': round(total_fed / gross * 100, 1) if gross else 0,
-        'quarterly_estimate': round(max(0.0, se_tax + (fed_income_tax if not withholding_known else 0)) / 4.0, 2),
-        'note': 'Approximate: %d federal brackets, no phase-outs, no AMT, flat-rate state '
+        'quarterly_estimate': round(max(0.0, se_tax_all + (fed_income_tax_all if not withholding_known else 0)) / 4.0, 2),
+        'note': 'Approximate: %d federal brackets and deduction limits; no AMT, no QBI '
+                'deduction, no hobby-loss or excess-business-loss limits; flat-rate state '
                 'approximation. Not tax advice.' % TAX_CONSTANTS_VINTAGE,
     }
 
@@ -6486,10 +6741,23 @@ def finance_tax_profile():
               'employer_match_rate_pct', 'employer_match_limit_pct',
               'pretax_other_annual', 'itemized_deductions',
               'other_credits_annual', 'state_tax_rate', 'state_exemption_per_person',
-              'ytd_federal_withheld', 'ytd_state_withheld'):
+              'ytd_federal_withheld', 'ytd_state_withheld',
+              'mortgage_interest_annual', 'other_taxes_annual', 'charitable_annual',
+              'qualified_overtime_annual', 'car_loan_interest_annual',
+              'business_mortgage_interest_annual'):
         if f in d:
             try:
                 setattr(prof, f, max(0.0, float(d[f] or 0)))
+            except (TypeError, ValueError):
+                pass
+    if 'business_net_annual' in d:
+        # Signed, and blank is a different answer from zero: blank means "use the books".
+        raw = d.get('business_net_annual')
+        if raw in (None, ''):
+            prof.business_net_annual = None
+        else:
+            try:
+                prof.business_net_annual = round(float(raw), 2)
             except (TypeError, ValueError):
                 pass
     if 'state' in d:

@@ -178,9 +178,9 @@
                     <span class="tp-unit" data-unit="$"><input id="tpPre" type="number" min="0" step="100" class="tp-in"></span>
                 </div>
                 <div class="tp-f">
-                    <label for="tpItem">Itemized deductions</label>
+                    <label for="tpItem">Itemized total override</label>
                     <span class="tp-unit" data-unit="$"><input id="tpItem" type="number" min="0" step="100" class="tp-in"></span>
-                    <span class="hint">Leave 0 to use the standard deduction.</span>
+                    <span class="hint">Leave 0 &mdash; it is built from the lines below.</span>
                 </div>
                 <div class="tp-f">
                     <label for="tpCred">Other credits</label>
@@ -193,6 +193,47 @@
                 <div class="tp-f">
                     <label for="tpRate">State rate</label>
                     <span class="tp-unit" data-unit="%"><input id="tpRate" type="number" min="0" step="0.05" class="tp-in"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="tp-section">
+            <div class="tp-legend">From last year&rsquo;s return</div>
+            <div class="tp-note">The parts of a return your transactions cannot show. Copy them off last year&rsquo;s forms; property tax comes from your bills and state tax from your paystubs.</div>
+            <div class="tp-grid narrow">
+                <div class="tp-f">
+                    <label for="tpMortInt">Mortgage interest</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpMortInt" type="number" min="0" step="100" class="tp-in"></span>
+                    <span class="hint">Form 1098 box 1. Leave 0 to estimate it from the mortgage.</span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpBizMort">&hellip; of which claimed for the farm/business</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpBizMort" type="number" min="0" step="100" class="tp-in"></span>
+                    <span class="hint">Taken OFF Schedule A, so the same interest is never deducted twice.</span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpOtherTax">Other state &amp; local taxes</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpOtherTax" type="number" min="0" step="10" class="tp-in"></span>
+                    <span class="hint">Vehicle registration and the like (Schedule A line 5c).</span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpChar">Charitable gifts</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpChar" type="number" min="0" step="50" class="tp-in"></span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpOT">Qualified overtime</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpOT" type="number" min="0" step="100" class="tp-in"></span>
+                    <span class="hint">The premium half of overtime (Schedule 1-A).</span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpCar">Car loan interest</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpCar" type="number" min="0" step="50" class="tp-in"></span>
+                    <span class="hint">Only a NEW, US-assembled vehicle financed after 2024.</span>
+                </div>
+                <div class="tp-f">
+                    <label for="tpBizNet">Farm / business net</label>
+                    <span class="tp-unit" data-unit="$"><input id="tpBizNet" type="number" step="100" class="tp-in" placeholder="use the books"></span>
+                    <span class="hint">Schedule C + F profit, or a loss as a negative. Blank uses the tagged transactions.</span>
                 </div>
             </div>
         </div>
@@ -228,6 +269,7 @@
             <span class="muted" id="incEstStatus" style="font-size:0.8em;"></span>
         </div>
         <div class="summary-grid" id="incEstSummary" style="margin-top:14px;"><div class="summary-tile"><div class="lbl muted">Loading…</div></div></div>
+        <div id="incEstReturn"></div>
         <div id="incEstNote" class="muted" style="margin-top:10px;font-size:0.8em;"></div>
     </div>
 
@@ -432,6 +474,10 @@
                 tpRoth:'roth_retirement_annual', tpRothPct:'roth_retirement_pct',
                 tpPre:'pretax_other_annual', tpItem:'itemized_deductions',
                 tpCred:'other_credits_annual', tpState:'state', tpRate:'state_tax_rate',
+                tpMortInt:'mortgage_interest_annual', tpBizMort:'business_mortgage_interest_annual',
+                tpOtherTax:'other_taxes_annual', tpChar:'charitable_annual',
+                tpOT:'qualified_overtime_annual', tpCar:'car_loan_interest_annual',
+                tpBizNet:'business_net_annual',
                 tpYtdFed:'ytd_federal_withheld', tpYtdState:'ytd_state_withheld',
                 tpAsOf:'ytd_as_of'};
     let TP_MODE = 'amount';
@@ -581,6 +627,11 @@
         for (const [id, key] of Object.entries(TP)) {
             const el = document.getElementById(id);
             if (!el) continue;
+            if (key === 'business_net_annual') {
+                // Blank is a real answer here -- "use the books" -- and must not become zero.
+                body[key] = el.value === '' ? null : parseFloat(el.value);
+                continue;
+            }
             body[key] = (key === 'filing_status' || key === 'state' || key === 'ytd_as_of')
                 ? el.value : (parseFloat(el.value) || 0);
         }
@@ -610,8 +661,12 @@
             const dueVal = !known ? null : (d.balance_due >= 0 ? d.balance_due : d.refund);
             const tiles = [
                 ['Gross Income', fmt(d.w2_wages + d.se_income), '', `W2 ${fmt(d.w2_wages)} · 1099 ${fmt(d.se_income)}`],
-                ['Federal Income Tax', fmt(d.federal_income_tax), '', `taxable ${fmt(d.taxable_income)}`],
-                ['Self-Employment Tax', fmt(d.self_employment_tax), d.self_employment_tax>0?'gain-neg':'', 'on 1099 income'],
+                ['Deduction', fmt(d.deduction_used_return), '',
+                 d.deduction_basis_return === 'itemized' ? 'itemized' : 'standard'],
+                ['Federal Income Tax', fmt(d.federal_income_tax_return), '', `taxable ${fmt(d.taxable_income_return)}`],
+                ['Self-Employment Tax', fmt(d.self_employment_tax_return), d.self_employment_tax_return>0?'gain-neg':'', 'on 1099 and business profit'],
+                ...(d.business ? [['Farm / Business', fmt(d.business.net), d.business.net < 0 ? 'gain-pos' : '',
+                    d.business.source]] : []),
                 // Realized trades, as the change they make to the bill -- so the tiles still add
                 // up to the total without the wage-only income-tax tile changing meaning.
                 ...(d.capital_gains ? [['Capital Gains / Losses', fmt(d.capital_gains_tax_effect),
@@ -627,12 +682,42 @@
                 ['Quarterly Estimate', fmt(d.quarterly_estimate), '', 'set aside per quarter'],
             ];
             grid.innerHTML = tiles.map(t=>`<div class="summary-tile"><div class="lbl">${t[0]}</div><div class="val ${t[2]}">${t[1]}</div><div class="sub">${t[3]}</div></div>`).join('');
+            renderReturnBreakdown(d);
             renderRetirementResolved(d);
             renderPayrollPerSource(d);
             const st = document.getElementById('incEstStatus');
             if (st) st.textContent = `${d.filing_status} · household of ${d.household_size} · ${d.constants_vintage} brackets`;
             note.textContent = (d.note || '') + (d.withholding_source ? '  Withholding: ' + d.withholding_source : '');
         } catch(e) { grid.innerHTML = '<div class="summary-tile"><div class="lbl gain-neg">Could not load estimate.</div></div>'; }
+    }
+
+    /* The return line by line, so a balance due can be checked rather than trusted. Every
+       figure is one the estimate already computed; nothing is re-derived here. */
+    function renderReturnBreakdown(d) {
+        const el = document.getElementById('incEstReturn');
+        if (!el || !d) return;
+        const it = d.itemized || {}, s1a = d.schedule_1a || {}, biz = d.business, cg = d.capital_gains;
+        const row = (label, val, sub) => `<tr><td>${label}${sub ? `<div class="muted" style="font-size:0.85em;">${sub}</div>` : ''}</td><td style="text-align:right;white-space:nowrap;">${val}</td></tr>`;
+        const rows = [
+            row('Wages (after pre-tax)', fmt(d.w2_wages - (d.pretax_deductions || 0))),
+            d.se_income ? row('1099 income', fmt(d.se_income)) : '',
+            biz ? row('Farm / business', fmt(biz.net), biz.source + (biz.mortgage_interest ? ` &middot; includes ${fmt(biz.mortgage_interest)} of mortgage interest` : '')) : '',
+            cg ? row('Capital gains / losses', fmt(cg.agi_adjustment), cg.loss_carryforward ? `${fmt(cg.loss_carryforward)} carries forward` : '') : '',
+            row('<strong>Adjusted gross income</strong>', `<strong>${fmt(d.agi)}</strong>`),
+            d.deduction_basis_return === 'itemized'
+                ? row('Itemized deductions', '&minus;' + fmt(d.deduction_used_return),
+                      `mortgage interest ${fmt(it.mortgage_interest_personal)} (${it.mortgage_interest_source}${it.business_mortgage_interest ? `, less ${fmt(it.business_mortgage_interest)} claimed for the business` : ''}) &middot; state &amp; local taxes ${fmt(it.salt)}${it.salt < it.salt_before_cap ? ' (capped)' : ''} &middot; charity ${fmt(it.charitable_allowed)}`)
+                : row('Standard deduction', '&minus;' + fmt(d.deduction_used_return),
+                      `itemizing would be ${fmt(it.total)}`),
+            d.charitable_nonitemizer ? row('Charity (without itemizing)', '&minus;' + fmt(d.charitable_nonitemizer)) : '',
+            s1a.total ? row('Schedule 1-A', '&minus;' + fmt(s1a.total), `overtime ${fmt(s1a.overtime)} &middot; car loan interest ${fmt(s1a.car_loan_interest)}`) : '',
+            row('<strong>Taxable income</strong>', `<strong>${fmt(d.taxable_income_return)}</strong>`),
+            row('Tax', fmt(d.federal_income_tax_before_credits_return)),
+            row('Credits', '&minus;' + fmt(d.credits)),
+            d.self_employment_tax_return ? row('Self-employment tax', fmt(d.self_employment_tax_return)) : '',
+            row('<strong>Total federal tax</strong>', `<strong>${fmt(d.total_federal_tax)}</strong>`),
+        ].join('');
+        el.innerHTML = `<details style="margin-top:12px;"><summary class="muted" style="cursor:pointer;font-size:0.88em;">How the return is figured</summary><div style="overflow-x:auto;"><table class="fin-table" style="margin-top:8px;font-size:0.88em;"><tbody>${rows}</tbody></table></div></details>`;
     }
 
     /* ===== Tax Documents & Receipts (Phase 3) ===== */

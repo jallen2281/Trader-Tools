@@ -74,7 +74,7 @@ check('Roth resolves to 3% of salary', e['roth_retirement'] == 4500.0, e['roth_r
 check('ONLY traditional counts as a pre-tax deduction',
       e['pretax_deductions'] == 4500.0, e['pretax_deductions'])
 check('taxable income = salary - traditional - MFJ standard deduction',
-      e['taxable_income'] == SALARY - 4500 - 30000, e['taxable_income'])
+      e['taxable_income'] == SALARY - 4500 - 32200, e['taxable_income'])
 check('total deferral reported as 6%', e['total_deferral_pct'] == 6.0, e['total_deferral_pct'])
 check('basis is spelled out for the reader', '3% traditional' in e['retirement_basis']
       and 'Roth' in e['retirement_basis'], e['retirement_basis'])
@@ -98,7 +98,7 @@ e = est()
 check('100% match up to 6% on a 6% deferral = 9000', e['employer_match'] == 9000.0, e['employer_match'])
 check('nothing unclaimed at the cap', e['unclaimed_match'] == 0.0, e['unclaimed_match'])
 check('match does NOT change taxable income — it was never in wages',
-      e['taxable_income'] == SALARY - 4500 - 30000, e['taxable_income'])
+      e['taxable_income'] == SALARY - 4500 - 32200, e['taxable_income'])
 
 set_profile(pretax_retirement_pct=1, roth_retirement_pct=1)
 e2 = est()

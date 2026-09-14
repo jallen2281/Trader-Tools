@@ -64,7 +64,7 @@ check('explains why withholding is unknown', 'no year-to-date figure' in est['wi
       or 'W-2 exists yet' in est['withholding_source'], est['withholding_source'])
 check('spouse income excluded for a single filer', est['w2_wages'] == 150000.0, est['w2_wages'])
 check('defaults to single, not the old hardcoded MFJ', est['filing_status'] == 'single')
-check('reports which year the brackets come from', est['constants_vintage'] == 2025,
+check('reports which year the brackets come from', est['constants_vintage'] == 2026,
       est['constants_vintage'])
 solo_tax = est['total_federal_tax']
 check('total tax computed on the single filer', 24000 < solo_tax < 27000, solo_tax)
@@ -98,7 +98,7 @@ with app.app_context():
 check('spouse income now counted (MFJ)', est2['w2_wages'] == 210000.0, est2['w2_wages'])
 check('pre-tax 401k reduces taxable income',
       est2['taxable_income'] < est2['w2_wages'] - est2['deduction_used'] + 1, est2['taxable_income'])
-check('MFJ standard deduction applied', est2['deduction_used'] == 30000, est2['deduction_used'])
+check('MFJ standard deduction applied', est2['deduction_used'] == 32200, est2['deduction_used'])
 check('child tax credit applied for 2 children',
       est2['child_tax_credit'] == 2 * A._CTC_PER_CHILD, est2['child_tax_credit'])
 check('credits reduce the income tax',
@@ -137,8 +137,8 @@ with app.app_context():
     single = A._income_tax_estimate(1, filing='single')
     mfj = A._income_tax_estimate(1, filing='mfj')
     hoh = A._income_tax_estimate(1, filing='hoh')
-check('single deduction is 15000', single['deduction_used'] == 15000, single['deduction_used'])
-check('head of household deduction is 22500', hoh['deduction_used'] == 22500, hoh['deduction_used'])
+check('single deduction is 16100', single['deduction_used'] == 16100, single['deduction_used'])
+check('head of household deduction is 24150', hoh['deduction_used'] == 24150, hoh['deduction_used'])
 # MFJ reports MORE tax here only because it also includes the spouse's $60k — comparing the
 # end figures across statuses confounds the brackets with who is on the return. Test the
 # bracket property directly, on identical taxable income.
