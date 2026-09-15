@@ -1240,19 +1240,50 @@ def _month_bounds(month=None):
     return first, nxt - timedelta(days=1)
 
 
-def _spend_actuals(user_id, start, end):
-    """Actual spend per category over [start, end]. Refunds are negative, so they net out."""
+# A spread longer than three years is a capital purchase, not a budget line.
+MAX_SPREAD_MONTHS = 36
+
+
+def _spend_actuals(user_id, start, end, detail=False):
+    """Budget spend per category over [start, end]. Refunds are negative, so they net out.
+
+    A purchase spread over several months contributes its share to each month it covers,
+    whenever it was paid -- so the query reaches back far enough to catch a prebuy made
+    months ago that is still being used this month. With detail=True also returns the
+    spread portion per category, so the card can say how much of a month is a bulk buy.
+    """
     rows = SpendTransaction.query.filter(
         _visible(SpendTransaction, user_id),
         SpendTransaction.posted_at >= start,
         SpendTransaction.posted_at <= end).all()
-    out = {}
+    out, spread = {}, {}
     for t in rows:
+        c = t.category or 'other'
+        if c in NON_SPEND_CATEGORIES or (t.spread_months or 1) > 1:
+            continue            # spread purchases are counted by coverage below
+        out[c] = out.get(c, 0) + float(t.amount or 0)
+
+    # A spread can start before the payment (paid late) or after it (a prebuy), so look a
+    # full spread-length either side of the window.
+    reach = timedelta(days=31 * (MAX_SPREAD_MONTHS + 1))
+    for t in SpendTransaction.query.filter(
+            _visible(SpendTransaction, user_id),
+            SpendTransaction.spread_months > 1,
+            SpendTransaction.posted_at >= start - reach,
+            SpendTransaction.posted_at <= end + reach).all():
         c = t.category or 'other'
         if c in NON_SPEND_CATEGORIES:
             continue
-        out[c] = round(out.get(c, 0) + float(t.amount or 0), 2)
-    return out
+        m = date(start.year, start.month, 1)
+        while m <= end:
+            share = t.spread_share(m)
+            if share:
+                out[c] = out.get(c, 0) + share
+                spread[c] = spread.get(c, 0) + share
+            m = date(m.year + (m.month // 12), m.month % 12 + 1, 1)
+    out = {c: round(v, 2) for c, v in out.items()}
+    spread = {c: round(v, 2) for c, v in spread.items()}
+    return (out, spread) if detail else out
 
 
 def _apply_spend_fields(x, d):
@@ -1294,6 +1325,30 @@ def _apply_spend_fields(x, d):
             x.account_id = int(d['account_id']) if d.get('account_id') not in (None, '') else None
         except (TypeError, ValueError):
             x.account_id = None
+    if 'spread_months' in d:
+        raw = d.get('spread_months')
+        if raw in (None, ''):
+            x.spread_months = None
+        else:
+            try:
+                n = int(float(raw))
+            except (TypeError, ValueError):
+                raise ValueError('spread_months must be a whole number of months')
+            if not 1 <= n <= MAX_SPREAD_MONTHS:
+                raise ValueError('a purchase can be spread over 1 to %d months' % MAX_SPREAD_MONTHS)
+            x.spread_months = n if n > 1 else None
+    if 'spread_start' in d:
+        raw = (d.get('spread_start') or '').strip()
+        if not raw:
+            x.spread_start = None
+        else:
+            try:
+                parsed = datetime.strptime(raw[:7], '%Y-%m').date()
+            except ValueError:
+                raise ValueError('spread_start must be a month, YYYY-MM')
+            x.spread_start = date(parsed.year, parsed.month, 1)
+    if not x.spread_months:
+        x.spread_start = None       # a start month means nothing without a spread
     if 'transfer_to' in d:
         _apply_transfer_to(x, d.get('transfer_to'))
     if 'pending' in d:
@@ -2863,7 +2918,7 @@ def _budget_rollup(user_id, month=None):
     budgets = BudgetCategory.query.filter(_visible(BudgetCategory, user_id)).all()
     bills = RecurringBill.query.filter(_visible(RecurringBill, user_id),
                                        RecurringBill.active.is_(True)).all()
-    actual = _spend_actuals(user_id, start, end)
+    actual, spread = _spend_actuals(user_id, start, end, detail=True)
     committed = {}
     for b in bills:
         committed[b.category] = round(committed.get(b.category, 0) + b.monthly_amount(), 2)
@@ -2872,6 +2927,7 @@ def _budget_rollup(user_id, month=None):
         com, act = committed.get(cat, 0), actual.get(cat, 0)
         proj = round(max(com, act), 2)
         return {**base, 'committed_monthly': com, 'actual_monthly': act,
+                'spread_monthly': spread.get(cat, 0),
                 'projected_monthly': proj, 'remaining': round(limit - proj, 2),
                 'over': proj > limit and limit > 0}
 

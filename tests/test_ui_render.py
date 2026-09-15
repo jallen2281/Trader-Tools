@@ -116,6 +116,8 @@ check('and the list says which card', 'billSourceLabel(' in b)
 check('a transfer can name the account it landed in',
       'id="tToAcct"' in b and 'toggleTransferTo(' in b)
 check('a CSV import can name the card it came from', 'id="mPaidFrom"' in b)
+check('a purchase can be spread over the months it covers',
+      'id="tSpread"' in b and 'id="tSpreadStart"' in b and 'spread_monthly' in b)
 check('recurring-charges card present', 'recurringBody' in b)
 check('its actions are wired', 'recAdopt(' in b and 'recDecide(' in b)
 check('it is fetched alongside the rest of the budgeting load',

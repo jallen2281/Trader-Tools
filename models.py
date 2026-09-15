@@ -1724,6 +1724,17 @@ class SpendTransaction(db.Model):
     to_account_id = db.Column(db.Integer, db.ForeignKey('finance_accounts.id'))
     to_debt_id = db.Column(db.Integer, db.ForeignKey('debts.id'))
     pending = db.Column(db.Boolean, default=False)
+    # A purchase paid once and used up over months: a propane prebuy for the winter, a bulk
+    # feed order that lasts a season. Counted in full against the month it cleared, it spikes
+    # that month's budget and leaves the months it actually feeds looking cheap. With a spread
+    # the BUDGET takes an equal share in each month covered. The cash-flow ledger and the tax
+    # books keep the payment date -- the money really left that day, and the return is on the
+    # cash method.
+    #   spread_months -- NULL (or 1) counts in the month paid
+    #   spread_start  -- first month covered, stored as the 1st; NULL = the month paid.
+    #                    A prebuy paid in September for October-March starts in October.
+    spread_months = db.Column(db.Integer)
+    spread_start = db.Column(db.Date)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -1743,6 +1754,34 @@ class SpendTransaction(db.Model):
             return 'account:%d' % self.to_account_id
         return None
 
+    def spread_first_month(self):
+        d = self.spread_start or self.posted_at
+        return date(d.year, d.month, 1)
+
+    def spread_last_month(self):
+        first = self.spread_first_month()
+        idx = first.year * 12 + first.month - 1 + int(self.spread_months or 1) - 1
+        return date(idx // 12, idx % 12 + 1, 1)
+
+    def spread_share(self, month_start):
+        """This purchase's share of the budget for the month beginning `month_start`.
+
+        Equal shares, with the last month taking the rounding so the shares always add back
+        to exactly what was paid -- $1,000 over three months is 333.33, 333.33, 333.34, not
+        three 333.33s that quietly lose a cent.
+        """
+        amt = float(self.amount or 0)
+        n = int(self.spread_months or 1)
+        if n <= 1:
+            p = self.posted_at
+            return amt if (p.year, p.month) == (month_start.year, month_start.month) else 0.0
+        first = self.spread_first_month()
+        idx = (month_start.year * 12 + month_start.month) - (first.year * 12 + first.month)
+        if idx < 0 or idx >= n:
+            return 0.0
+        base = round(amt / n, 2)
+        return round(amt - base * (n - 1), 2) if idx == n - 1 else base
+
     def to_dict(self):
         return {
             'share_level': self.share_level or 'none',
@@ -1758,6 +1797,9 @@ class SpendTransaction(db.Model):
             'external_id': self.external_id, 'plaid_account_id': self.plaid_account_id,
             'tax_document_id': self.tax_document_id,
             'pending': bool(self.pending), 'notes': self.notes,
+            'spread_months': int(self.spread_months) if (self.spread_months or 1) > 1 else None,
+            'spread_start': self.spread_first_month().strftime('%Y-%m') if (self.spread_months or 1) > 1 else None,
+            'spread_end': self.spread_last_month().strftime('%Y-%m') if (self.spread_months or 1) > 1 else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'to_account_id': self.to_account_id, 'to_debt_id': self.to_debt_id,
             'transfer_to': self.transfer_to(),
