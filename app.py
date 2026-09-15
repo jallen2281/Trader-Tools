@@ -2622,6 +2622,65 @@ def _record_deposit(item, txn, acct_types):
     row.kind = _classify_deposit(txn, acct_types.get(aid))
 
 
+# A transfer and its landing are usually a day apart and sometimes a long weekend.
+TRANSFER_PAIR_DAYS = 4
+
+
+def _pair_transfers(user_id, since=None):
+    """Recognise money moving between the user's own accounts by finding both halves.
+
+    Name rules catch "To Checking" and "AMEX EPAYMENT" but not "JPMORGAN CHASE BANK, NA" --
+    and a $9,000 move to a Chase account read as $9,000 of spending. The reliable signal is
+    the other half: an outflow on one connected account and an inbound transfer of exactly
+    the same amount on ANOTHER connected account within a few days.
+
+    Deliberately narrow, because a wrong match hides real spending:
+      - both halves must come from the bank (a hand-entered row is never paired),
+      - the amounts must match to the cent and the accounts must differ,
+      - the inbound half must be a transfer or a card payment, never income,
+      - each deposit pairs with one outflow, the nearest in date,
+      - a row that was paired once and put back to spending is left alone for good.
+    Returns the number of pairs made.
+    """
+    q = SpendTransaction.query.filter(
+        SpendTransaction.user_id == user_id,
+        SpendTransaction.plaid_account_id.isnot(None),
+        SpendTransaction.paired_deposit_id.is_(None),
+        SpendTransaction.amount > 0)
+    dq = PlaidDeposit.query.filter(PlaidDeposit.user_id == user_id,
+                                   PlaidDeposit.kind.in_(('transfer_in', 'card_payment')))
+    if since:
+        q = q.filter(SpendTransaction.posted_at >= since - timedelta(days=TRANSFER_PAIR_DAYS))
+        dq = dq.filter(PlaidDeposit.posted_at >= since)
+    outflows = [t for t in q.all() if (t.category or 'other') not in NON_SPEND_CATEGORIES]
+    claimed = {pid for (pid,) in db.session.query(SpendTransaction.paired_deposit_id).filter(
+        SpendTransaction.user_id == user_id, SpendTransaction.paired_deposit_id.isnot(None)).all()}
+    links = {a.account_id: a for a in PlaidAccount.query.filter_by(user_id=user_id).all()}
+    used, pairs = set(), 0
+    for dep in sorted(dq.all(), key=lambda d: (d.posted_at, d.id)):
+        if dep.id in claimed:
+            continue
+        amt = round(float(dep.amount or 0), 2)
+        cands = [t for t in outflows
+                 if t.id not in used and t.plaid_account_id != dep.plaid_account_id
+                 and round(float(t.amount or 0), 2) == amt
+                 and abs((t.posted_at - dep.posted_at).days) <= TRANSFER_PAIR_DAYS]
+        if not cands:
+            continue
+        out = min(cands, key=lambda t: (abs((t.posted_at - dep.posted_at).days), t.id))
+        used.add(out.id)
+        out.category = 'transfer'
+        out.paired_deposit_id = dep.id
+        dest = links.get(dep.plaid_account_id)
+        if dest is not None:
+            if dest.linked_debt_id and dest.linked_debt_id != out.debt_id:
+                out.to_debt_id, out.to_account_id = dest.linked_debt_id, None
+            elif dest.linked_account_id and dest.linked_account_id != out.account_id:
+                out.to_account_id, out.to_debt_id = dest.linked_account_id, None
+        pairs += 1
+    return pairs
+
+
 def _attribute_linked_transactions(user_id, only_account=None):
     """Point imported transactions at the record their bank account is linked to.
 
@@ -2946,6 +3005,12 @@ def _plaid_sync_item(item, client=None, backfill=False):
         _attribute_linked_transactions(item.user_id)
     except Exception as e:
         logger.warning('plaid: attributing transactions failed for item %s: %s', item.id, e)
+    # After attribution, so the destination of a pair can be read off the linked account.
+    # Looks back far enough to catch a transfer whose other half synced on an earlier run.
+    try:
+        _pair_transfers(item.user_id, since=None if backfill else date.today() - timedelta(days=45))
+    except Exception as e:
+        logger.warning('plaid: pairing transfers failed for item %s: %s', item.id, e)
     item.cursor = cursor
     item.last_synced_at = datetime.utcnow()
     item.status = 'active'

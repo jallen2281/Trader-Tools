@@ -62,6 +62,7 @@ SUITES = [
     ('tax_deductions', 'Schedule A, Schedule 1-A and the farm books in the return'),
     ('spread_purchases', 'bulk buys counted across the months they cover'),
     ('ledger', 'every dollar in and out, by account, in one view'),
+    ('transfer_pairing', 'transfers recognised by matching both halves'),
     ('credit', 'credit utilization and score trends'),
     ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),

@@ -1735,6 +1735,11 @@ class SpendTransaction(db.Model):
     #                    A prebuy paid in September for October-March starts in October.
     spread_months = db.Column(db.Integer)
     spread_start = db.Column(db.Date)
+    # The inbound half this outflow was matched to when it was recognised as a transfer. Kept
+    # after the match rather than only used during it: it is what lets a user's undo stick --
+    # a row that was paired and then put back to spending is never paired again -- and what
+    # stops one deposit being claimed by two outflows.
+    paired_deposit_id = db.Column(db.Integer, db.ForeignKey('plaid_deposits.id'), index=True)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -1797,6 +1802,7 @@ class SpendTransaction(db.Model):
             'external_id': self.external_id, 'plaid_account_id': self.plaid_account_id,
             'tax_document_id': self.tax_document_id,
             'pending': bool(self.pending), 'notes': self.notes,
+            'paired_deposit_id': self.paired_deposit_id,
             'spread_months': int(self.spread_months) if (self.spread_months or 1) > 1 else None,
             'spread_start': self.spread_first_month().strftime('%Y-%m') if (self.spread_months or 1) > 1 else None,
             'spread_end': self.spread_last_month().strftime('%Y-%m') if (self.spread_months or 1) > 1 else None,

@@ -817,7 +817,7 @@
                 const amtCls = r.direction === 'in' ? 'pos' : (r.direction === 'transfer' ? 'muted' : '');
                 const sign = r.amount >= 0 ? '+' : '&minus;';
                 const badges = (r.kind === 'deposit' ? ' <span class="badge b-inv" style="font-size:0.72em;">deposit</span>' : '') +
-                    (r.direction === 'transfer' ? ' <span class="badge b-inv" style="font-size:0.72em;">transfer</span>' : '') +
+                    (r.direction === 'transfer' ? ` <span class="badge b-inv" style="font-size:0.72em;"${r.txn && r.txn.paired_deposit_id ? ' title="matched to the deposit on the other account"' : ''}>${r.txn && r.txn.paired_deposit_id ? 'transfer &middot; paired' : 'transfer'}</span>` : '') +
                     (r.pending ? ' <span class="badge b-inv" style="font-size:0.72em;">pending</span>' : '') +
                     (r.spread_months ? ` <span class="badge b-inv" style="font-size:0.72em;">over ${r.spread_months} mo</span>` : '');
                 return `<tr>

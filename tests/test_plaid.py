@@ -243,6 +243,25 @@ with app.app_context():
           [p.external_id for p in paychecks])
 check('the removal is counted', res['removed'] >= 1, res)
 
+print('\n--- a sync pairs a transfer with its other half ---')
+from datetime import date as _date  # noqa: E402
+_today = _date.today().isoformat()
+_out = txn('xp-out', 'CHASE CARD PMT', 300.00, 'TRANSFER_OUT', date=_today)
+_out['account_id'] = 'acc-chk'
+_in = txn('xp-in', 'PAYMENT RECEIVED', -300.00, 'TRANSFER_IN', date=_today)
+_in['account_id'] = 'acc-visa'
+FAKE.pages = [{'added': [_out, _in], 'modified': [], 'removed': [],
+               'next_cursor': 'cur-x', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+with app.app_context():
+    paid = A.SpendTransaction.query.filter_by(user_id=2, external_id='plaid:xp-out').first()
+    landed = A.PlaidDeposit.query.filter_by(user_id=2, external_id='plaid:xp-in').first()
+    check('the outflow is recorded as a transfer', paid is not None and paid.category == 'transfer',
+          paid and paid.category)
+    check('paired to the payment that landed on the card',
+          paid is not None and landed is not None and paid.paired_deposit_id == landed.id,
+          (paid and paid.paired_deposit_id, landed and landed.id))
+
 print('\n--- pagination follows has_more ---')
 FAKE.pages = [
     {'added': [txn('p1', 'PAGE ONE', 10.0, 'GENERAL_MERCHANDISE')],
