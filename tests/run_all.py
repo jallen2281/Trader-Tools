@@ -63,6 +63,7 @@ SUITES = [
     ('spread_purchases', 'bulk buys counted across the months they cover'),
     ('ledger', 'every dollar in and out, by account, in one view'),
     ('transfer_pairing', 'transfers recognised by matching both halves'),
+    ('mileage', 'business mileage log, Schedule C books, per-business SE'),
     ('credit', 'credit utilization and score trends'),
     ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),

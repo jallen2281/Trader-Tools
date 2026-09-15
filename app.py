@@ -33,7 +33,7 @@ import os
 
 # Phase 2: Database and Authentication
 try:
-    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, RecurringDecision, CreditScore, PlaidItem, PlaidAccount, PlaidDeposit, TaxDocument, TaxProfile, Household, HouseholdMember, Entity
+    from models import db, User, Watchlist, Alert, Portfolio, Transaction, OptionsPosition, AnalysisHistory, MLPattern, MLPrediction, PortfolioSnapshot, PortfolioAccount, Dividend, DiscussionThread, ThreadReply, ThreadVote, CopyTradingFollow, Notification, PaperTrade, TradingSOP, Group, FinanceAccount, Debt, AIInsight, IncomeSource, IncomeEvent, RecurringBill, BudgetCategory, SpendTransaction, RecurringDecision, CreditScore, PlaidItem, PlaidAccount, PlaidDeposit, TaxDocument, TaxProfile, Household, HouseholdMember, Entity, MileageLog
     from db_config import init_database
     from auth import init_auth, get_auth_routes, require_api_auth
     from monitoring_service import init_monitoring_service, get_monitoring_service
@@ -1114,10 +1114,53 @@ FARM_CATEGORIES = {
     'farm_other': 'Other farm expenses',
 }
 
-# Which extra categories each kind of books offers on top of the household set. Only farm
-# is filled in; Schedule C and E have their own line items and can be added the same way
-# without touching anything that reads this.
-ENTITY_CATEGORY_SETS = {'farm': FARM_CATEGORIES}
+# Schedule C lines, worded for a small service business such as a real estate agent. The
+# extras beyond the form's own lines are the ones agents actually spend on -- MLS and board
+# dues, continuing education, lockboxes and signs -- so they are not all dumped in "other".
+BUSINESS_CATEGORIES = {
+    'biz_advertising': 'Advertising (signs, listings, photography)',
+    'biz_car_truck': 'Car and truck, actual expenses (not with standard mileage)',
+    'biz_parking_tolls': 'Parking and tolls',
+    'biz_commissions_fees': 'Commissions and fees (brokerage splits, transaction fees)',
+    'biz_contract_labor': 'Contract labor',
+    'biz_depreciation': 'Depreciation',
+    'biz_insurance': 'Insurance (E&O, business)',
+    'biz_interest': 'Interest (business)',
+    'biz_legal_professional': 'Legal and professional services',
+    'biz_office': 'Office expense',
+    'biz_rent_lease': 'Rent or lease',
+    'biz_repairs': 'Repairs and maintenance',
+    'biz_supplies': 'Supplies (lockboxes, staging)',
+    'biz_taxes_licenses': 'Taxes and licenses (license renewal)',
+    'biz_travel': 'Travel',
+    'biz_meals': 'Meals (50% deductible)',
+    'biz_utilities': 'Utilities',
+    'biz_phone_internet': 'Phone and internet (business share)',
+    'biz_dues_subscriptions': 'Dues and subscriptions (MLS, board, association)',
+    'biz_education': 'Continuing education',
+    'biz_gifts': 'Client gifts ($25 per person limit)',
+    'biz_other': 'Other business expenses',
+}
+
+# Which extra categories each kind of books offers on top of the household set.
+ENTITY_CATEGORY_SETS = {'farm': FARM_CATEGORIES, 'business': BUSINESS_CATEGORIES}
+
+# Business meals are half deductible; everything else in the books counts in full.
+_HALF_DEDUCTIBLE = {'biz_meals'}
+
+# IRS business standard mileage rates, by the date they took effect. 2026 changed mid-year:
+# fuel prices pushed the rate from 72.5 to 76 cents for July through December, so a trip's
+# rate depends on its date, not just its year.
+MILEAGE_RATES = [(date(2024, 1, 1), 0.67), (date(2025, 1, 1), 0.70),
+                 (date(2026, 1, 1), 0.725), (date(2026, 7, 1), 0.76)]
+
+
+def mileage_rate(on):
+    rate = MILEAGE_RATES[0][1]
+    for start, r in MILEAGE_RATES:
+        if on >= start:
+            rate = r
+    return rate
 
 
 def categories_for_entity(kind):
@@ -1132,7 +1175,7 @@ def categories_for_entity(kind):
 
 def category_label(slug):
     """Human name for a slug. Farm lines read as their Schedule F wording."""
-    return FARM_CATEGORIES.get(slug, (slug or '').replace('_', ' '))
+    return FARM_CATEGORIES.get(slug) or BUSINESS_CATEGORIES.get(slug) or (slug or '').replace('_', ' ')
 
 
 HOUSEHOLD_CATEGORIES = {'housing', 'utilities', 'transportation', 'insurance', 'food',
@@ -1150,7 +1193,7 @@ NON_SPEND_CATEGORIES = {'transfer'}
 # just because the record has not been tagged to the farm yet — the tag and the category
 # are set in the same form, and the order the fields happen to be applied in should not
 # decide whether the save works.
-BUDGET_CATEGORIES = set(HOUSEHOLD_CATEGORIES) | set(FARM_CATEGORIES)
+BUDGET_CATEGORIES = set(HOUSEHOLD_CATEGORIES) | set(FARM_CATEGORIES) | set(BUSINESS_CATEGORIES)
 
 
 # Merchant/description keyword -> budget category, first match wins. Deliberately dumb and
@@ -1802,6 +1845,144 @@ def _visible_entities(user_id):
     return Entity.query.filter(clause, Entity.active.is_(True))
 
 
+MAX_TRIP_MILES = 2000
+
+
+def _apply_trip_fields(t, d, uid):
+    """Validate and set a trip. Raises ValueError with the reason, for a 400."""
+    if 'trip_date' in d or t.trip_date is None:
+        raw = (d.get('trip_date') or '').strip()
+        try:
+            t.trip_date = datetime.strptime(raw, '%Y-%m-%d').date()
+        except ValueError:
+            raise ValueError('trip_date must be a date, YYYY-MM-DD')
+    if 'purpose' in d or not t.purpose:
+        purpose = (d.get('purpose') or '').strip()
+        if not purpose:
+            raise ValueError('a business purpose is required -- the IRS will ask what the drive was for')
+        t.purpose = purpose[:200]
+    for f, n in (('origin', 160), ('destination', 160), ('vehicle', 80)):
+        if f in d:
+            setattr(t, f, ((d.get(f) or '').strip()[:n] or None))
+    if 'notes' in d:
+        t.notes = (d.get('notes') or '').strip() or None
+    if 'round_trip' in d:
+        t.round_trip = bool(d.get('round_trip'))
+
+    def num(v):
+        if v in (None, ''):
+            return None
+        try:
+            return round(float(v), 1)
+        except (TypeError, ValueError):
+            raise ValueError('odometer and miles must be numbers')
+
+    if 'start_odometer' in d or 'end_odometer' in d:
+        t.start_odometer, t.end_odometer = num(d.get('start_odometer')), num(d.get('end_odometer'))
+    if t.start_odometer is not None and t.end_odometer is not None:
+        if t.end_odometer <= t.start_odometer:
+            raise ValueError('the ending odometer must be higher than the starting one')
+        t.miles = round(t.end_odometer - t.start_odometer, 1)     # the readings win over a typed figure
+    elif 'miles' in d:
+        t.miles = num(d.get('miles'))
+    if t.miles is None or t.miles <= 0:
+        raise ValueError('miles must be more than zero')
+    if t.total_miles() > MAX_TRIP_MILES:
+        raise ValueError('a single trip over %d miles is almost certainly a typo' % MAX_TRIP_MILES)
+    if 'entity_id' in d:
+        eid = d.get('entity_id')
+        if eid in (None, ''):
+            t.entity_id = None
+        else:
+            try:
+                eid = int(eid)
+            except (TypeError, ValueError):
+                raise ValueError('entity_id must be a number')
+            if not _visible_entities(uid).filter(Entity.id == eid).first():
+                raise ValueError('those books were not found')
+            t.entity_id = eid
+
+
+@app.route('/api/finance/mileage', methods=['GET', 'POST'])
+@require_api_auth
+def finance_mileage():
+    """The business mileage log and what it is worth at the IRS rate."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    if request.method == 'POST':
+        t = MileageLog(user_id=uid)
+        try:
+            _apply_trip_fields(t, request.get_json() or {}, uid)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        db.session.add(t)
+        db.session.commit()
+        out = t.to_dict()
+        out['rate'] = mileage_rate(t.trip_date)
+        out['deduction'] = round(t.total_miles() * out['rate'], 2)
+        return jsonify(out), 201
+
+    try:
+        yr = int(request.args.get('year') or datetime.now().year)
+    except ValueError:
+        yr = datetime.now().year
+    q = MileageLog.query.filter(_visible(MileageLog, uid),
+                                MileageLog.trip_date >= date(yr, 1, 1),
+                                MileageLog.trip_date <= date(yr, 12, 31))
+    ent = request.args.get('entity')
+    if ent:
+        q = q.filter(MileageLog.entity_id == int(ent)) if ent != 'none' else q.filter(MileageLog.entity_id.is_(None))
+    books = {e.id: e.name for e in _visible_entities(uid).all()}
+    trips, by_book = [], {}
+    for t in q.order_by(MileageLog.trip_date.desc(), MileageLog.id.desc()).all():
+        r = t.to_dict()
+        r['rate'] = mileage_rate(t.trip_date)
+        r['deduction'] = round(t.total_miles() * r['rate'], 2)
+        r['book'] = books.get(t.entity_id)
+        trips.append(r)
+        b = by_book.setdefault(t.entity_id, {'entity_id': t.entity_id, 'book': books.get(t.entity_id),
+                                             'miles': 0.0, 'deduction': 0.0, 'trips': 0})
+        b['miles'] = round(b['miles'] + r['total_miles'], 1)
+        b['deduction'] = round(b['deduction'] + r['deduction'], 2)
+        b['trips'] += 1
+    vehicles = sorted({v for (v,) in db.session.query(MileageLog.vehicle).filter(
+        MileageLog.user_id == uid, MileageLog.vehicle.isnot(None)).distinct().all()})
+    return jsonify({
+        'year': yr, 'trips': trips, 'count': len(trips),
+        'totals': {'miles': round(sum(r['total_miles'] for r in trips), 1),
+                   'deduction': round(sum(r['deduction'] for r in trips), 2)},
+        'by_book': sorted(by_book.values(), key=lambda b: -b['miles']),
+        'rates': [{'from': d0.isoformat(), 'rate': r} for d0, r in MILEAGE_RATES],
+        'vehicles': vehicles,
+    })
+
+
+@app.route('/api/finance/mileage/<int:tid>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def finance_modify_mileage(tid):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    t = _get_editable(MileageLog, tid, uid)
+    if not t:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        db.session.delete(t)
+        db.session.commit()
+        return jsonify({'success': True})
+    try:
+        _apply_trip_fields(t, request.get_json() or {}, uid)
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
+    db.session.commit()
+    out = t.to_dict()
+    out['rate'] = mileage_rate(t.trip_date)
+    out['deduction'] = round(t.total_miles() * out['rate'], 2)
+    return jsonify(out)
+
+
 @app.route('/api/finance/entities', methods=['GET', 'POST'])
 @require_api_auth
 def finance_entities():
@@ -1933,6 +2114,7 @@ def _entity_report(user_id, entity_id, year=None):
 
     accounts = scoped(FinanceAccount).all()
     debts = scoped(Debt).all()
+    miles, mileage = _mileage_for(user_id, entity_id, start, end)
 
     return {
         'entity': ent.to_dict() if ent else {'id': None, 'name': 'Unassigned',
@@ -1942,6 +2124,8 @@ def _entity_report(user_id, entity_id, year=None):
         'expenses': expenses,
         'net': round(income - expenses, 2),
         'deductible_receipts': deductible,
+        'mileage_miles': miles,
+        'mileage_deduction': mileage,
         'receipts_on_file': len(docs),
         'transactions': len(txns),
         # Labelled as well as slugged, so a farm's lines read as their Schedule F wording
@@ -6681,6 +6865,17 @@ def _schedule_1a(prof, filing, magi):
             'total': round(ot_allowed + car_allowed, 2), 'joint': joint}
 
 
+def _mileage_for(user_id, entity_id, start, end):
+    """(miles, deduction) logged for a set of books in [start, end], each trip at the rate in
+    force on its own date."""
+    q = MileageLog.query.filter(_visible(MileageLog, user_id), MileageLog.trip_date >= start,
+                                MileageLog.trip_date <= end)
+    q = q.filter(MileageLog.entity_id == entity_id) if entity_id else q.filter(MileageLog.entity_id.is_(None))
+    trips = q.all()
+    miles = round(sum(t.total_miles() for t in trips), 1)
+    return miles, round(sum(t.total_miles() * mileage_rate(t.trip_date) for t in trips), 2)
+
+
 def _business_books(user_id, yr, prof):
     """Farm and business (Schedule F / C) net for the year, and where it came from.
 
@@ -6698,24 +6893,35 @@ def _business_books(user_id, yr, prof):
         income = round(sum(x.gross_annual() for x in IncomeSource.query.filter(
             IncomeSource.entity_id == e.id, IncomeSource.active.is_(True)).all()
             if x.tax_form != 'W2'), 2)
-        expenses = round(sum(float(t.amount or 0) for t in SpendTransaction.query.filter(
+        expenses = round(sum(float(t.amount or 0) * (0.5 if t.category in _HALF_DEDUCTIBLE else 1.0)
+                             for t in SpendTransaction.query.filter(
             _visible(SpendTransaction, user_id), SpendTransaction.entity_id == e.id,
             SpendTransaction.posted_at >= start, SpendTransaction.posted_at <= end).all()
             if (t.category or 'other') not in NON_SPEND_CATEGORIES), 2)
+        miles, mileage = _mileage_for(user_id, e.id, start, end)
         rows.append({'id': e.id, 'name': e.name,
                      'tax_form': e.tax_form or ENTITY_TAX_FORMS.get(e.kind),
                      'income': income, 'expenses': expenses,
-                     'net': round(income - expenses, 2)})
+                     'mileage_miles': miles, 'mileage_deduction': mileage,
+                     'net': round(income - expenses - mileage, 2)})
     carve = float(prof.business_mortgage_interest_annual or 0)
     books_net = round(sum(r['net'] for r in rows), 2)
+    mileage_total = round(sum(r['mileage_deduction'] for r in rows), 2)
     if prof.business_net_annual is not None:
-        return {'net': round(float(prof.business_net_annual), 2), 'source': 'entered',
-                'books_net_so_far': books_net, 'entities': rows,
+        net = round(float(prof.business_net_annual), 2)
+        return {'net': net, 'source': 'entered', 'se_profit': max(0.0, net),
+                'books_net_so_far': books_net, 'entities': rows, 'mileage_deduction': mileage_total,
                 'entity_ids': [r['id'] for r in rows], 'mortgage_interest': round(carve, 2)}
     if not rows and not carve:
         return None
+    # Self-employment tax is filed per person, and two books can belong to two people -- a
+    # farm loss on one spouse's Schedule F does not reduce the other's Schedule SE. The
+    # books do not record whose each business is, so only profits are summed for SE: it
+    # errs high rather than letting one business's loss hide the other's tax.
+    se_profit = max(0.0, round(sum(max(0.0, r['net']) for r in rows) - carve, 2))
     return {'net': round(books_net - carve, 2), 'source': 'books so far this year',
-            'books_net_so_far': books_net, 'entities': rows,
+            'se_profit': se_profit, 'books_net_so_far': books_net, 'entities': rows,
+            'mileage_deduction': mileage_total,
             'entity_ids': [r['id'] for r in rows], 'mortgage_interest': round(carve, 2)}
 
 
@@ -6840,7 +7046,7 @@ def _income_tax_estimate(user_id, year=None, filing=None):
     # Only a business PROFIT adds to the self-employment base. A loss would offset other
     # self-employment income only when it belongs to the same person, which the books do
     # not record -- so it is not netted, and the SE figure errs high rather than low.
-    se_base_all = round((se_income + max(0.0, biz_net)) * 0.9235, 2)
+    se_base_all = round((se_income + (business.get('se_profit', max(0.0, biz_net)) if business else 0.0)) * 0.9235, 2)
     se_tax_all = round(min(se_base_all, ss_room) * 0.124 + se_base_all * 0.029, 2)
     half_se_all = round(se_tax_all / 2.0, 2)
     agi_all = round(w2_taxable + se_income + biz_net - half_se_all + cap_adj, 2)

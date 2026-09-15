@@ -124,6 +124,17 @@
         <div id="entBody"><p class="muted">Loading&hellip;</p></div>
     </div>
 
+    <div class="fin-card" id="mileage">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Mileage log <span class="muted" id="milHead" style="font-size:0.62em;font-weight:400;">business drives at the IRS standard rate</span></h2>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select id="milYear" class="fin-in" style="padding:4px 8px;" onchange="loadMileage()"></select>
+                <button class="btn2 primary" onclick="openTrip(null)">+ Log a trip</button>
+            </div>
+        </div>
+        <div id="mileageBody"><p class="muted">Loading&hellip;</p></div>
+    </div>
+
     <!-- Spending -->
     <div class="fin-card" id="transactions">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
@@ -1722,12 +1733,104 @@
             ]);
             ENTITIES = list.entities || [];
             renderEntities(rep);
+            if (!MILEAGE) loadMileage();
         } catch(e) { box.innerHTML = '<p class="muted" style="padding:12px;">Could not load books.</p>'; }
         try {
             const d = await fetch('/api/finance/entities',{credentials:'same-origin'}).then(r=>r.json());
             CATEGORY_SETS = d.category_sets || {};
             if (d.household_categories && d.household_categories.length) HOUSEHOLD_CATS = d.household_categories;
         } catch (e) { /* the household set is already the default */ }
+    }
+    /* A mileage log the IRS will accept is a record made at the time: date, where, why, how
+       far. So one row per drive with a required purpose, and the rate is looked up by the
+       trip's date because 2026 changed rates mid-year. */
+    let MILEAGE = null;
+    async function loadMileage() {
+        const sel = document.getElementById('milYear');
+        if (!sel) return;
+        if (!sel.options.length) {
+            const y = new Date().getFullYear();
+            for (let i = y; i >= y - 3; i--) sel.add(new Option(i, i));
+        }
+        try {
+            MILEAGE = await fetch('/api/finance/mileage?year=' + sel.value, {credentials:'same-origin'}).then(r => r.json());
+            renderMileage(MILEAGE);
+        } catch (e) { document.getElementById('mileageBody').innerHTML = '<p class="muted" style="padding:12px;">Could not load the mileage log.</p>'; }
+    }
+    function renderMileage(d) {
+        const box = document.getElementById('mileageBody'), trips = d.trips || [];
+        document.getElementById('milHead').innerHTML = trips.length
+            ? `${d.totals.miles.toLocaleString()} mi &middot; ${fmt2(d.totals.deduction)} deduction in ${d.year}`
+            : 'business drives at the IRS standard rate';
+        if (!trips.length) {
+            box.innerHTML = `<p class="muted" style="padding:12px;">No trips logged for ${d.year}. Log each business drive the day you make it &mdash; showings, listing appointments, closings, client meetings. The drive from home to a regular office is commuting and does not count.</p>`;
+            return;
+        }
+        const books = (d.by_book || []).map(b => `<span style="margin-right:16px;"><strong>${esc(b.book || 'No book')}</strong> ${b.miles.toLocaleString()} mi &middot; ${fmt2(b.deduction)}</span>`).join('');
+        box.innerHTML = `<div class="muted" style="font-size:0.85em;margin-bottom:10px;">${books}</div>` +
+            '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Date</th><th>Trip</th><th>Book</th><th style="text-align:right;">Miles</th><th style="text-align:right;">Deduction</th><th></th></tr></thead><tbody>' +
+            trips.map(t => `<tr>
+                <td style="white-space:nowrap;">${esc(t.trip_date)}</td>
+                <td><strong>${esc(t.purpose)}</strong><div class="muted" style="font-size:0.8em;">${[t.origin, t.destination].filter(Boolean).map(esc).join(' &rarr; ')}${t.vehicle ? ' &middot; ' + esc(t.vehicle) : ''}</div></td>
+                <td style="font-size:0.88em;">${t.book ? esc(t.book) : '<span class="muted">no book</span>'}</td>
+                <td style="text-align:right;white-space:nowrap;">${t.total_miles}${t.round_trip ? ' <span class="muted" style="font-size:0.8em;">round trip</span>' : ''}</td>
+                <td style="text-align:right;white-space:nowrap;">${fmt2(t.deduction)}<div class="muted" style="font-size:0.78em;">@ ${(t.rate * 100).toFixed(1)}&cent;</div></td>
+                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openTrip(${attrJson(t)})'>edit</button> <button class="link-btn danger" onclick="delTrip(${t.id})">&#10005;</button></td>
+            </tr>`).join('') + '</tbody></table></div>';
+    }
+    function tripPref(k, v) {
+        try { if (v === undefined) return localStorage.getItem('mil_' + k) || ''; localStorage.setItem('mil_' + k, v); } catch (e) { return ''; }
+    }
+    function openTrip(t) {
+        const e = t || {trip_date: new Date().toISOString().slice(0, 10), vehicle: tripPref('vehicle'),
+                        entity_id: parseInt(tripPref('book'), 10) || ((ENTITIES || []).find(x => x.kind === 'business') || {}).id};
+        const vehicles = (MILEAGE && MILEAGE.vehicles) || [];
+        showModal(`<h2 style="margin:0 0 8px;">${t ? 'Edit' : 'Log a'} trip</h2>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Date</label><input id="mDateT" type="date" class="fin-in" style="width:100%;" value="${e.trip_date || ''}"></div>
+              <div style="flex:1;"><label class="fld">Books</label><select id="mBook" class="fin-in" style="width:100%;"><option value="">&mdash;</option>${(ENTITIES || []).map(x => `<option value="${x.id}" ${x.id === e.entity_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+            </div>
+            <label class="fld">Business purpose</label><input id="mPurpose" class="fin-in" style="width:100%;" value="${esc(e.purpose || '')}" placeholder="Showing at 412 Elm St for the Nguyens">
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">From</label><input id="mFrom" class="fin-in" style="width:100%;" value="${esc(e.origin || '')}" placeholder="Home"></div>
+              <div style="flex:1;"><label class="fld">To</label><input id="mTo" class="fin-in" style="width:100%;" value="${esc(e.destination || '')}" placeholder="412 Elm St, Okemos"></div>
+            </div>
+            <div style="display:flex;gap:10px;align-items:flex-end;">
+              <div style="flex:1;"><label class="fld">Miles <span class="muted" style="font-weight:400;">(one way)</span></label><input id="mMiles" type="number" step="0.1" min="0" class="fin-in" style="width:100%;" value="${e.miles || ''}"></div>
+              <label style="flex:1;display:flex;align-items:center;gap:6px;font-size:0.88em;padding-bottom:8px;"><input type="checkbox" id="mRound" ${e.round_trip ? 'checked' : ''}> Round trip (doubles it)</label>
+            </div>
+            <details style="margin:6px 0;" ${e.start_odometer != null ? 'open' : ''}><summary class="muted" style="font-size:0.85em;cursor:pointer;">Odometer readings instead</summary>
+              <div style="display:flex;gap:10px;margin-top:6px;">
+                <div style="flex:1;"><label class="fld">Start</label><input id="mOdoA" type="number" step="0.1" class="fin-in" style="width:100%;" value="${e.start_odometer ?? ''}"></div>
+                <div style="flex:1;"><label class="fld">End</label><input id="mOdoB" type="number" step="0.1" class="fin-in" style="width:100%;" value="${e.end_odometer ?? ''}"></div>
+              </div>
+            </details>
+            <label class="fld">Vehicle</label><input id="mVehicle" class="fin-in" style="width:100%;" list="mVehicles" value="${esc(e.vehicle || '')}" placeholder="2024 Silverado HD">
+            <datalist id="mVehicles">${vehicles.map(v => `<option value="${esc(v)}">`).join('')}</datalist>
+            <div class="muted" style="font-size:0.76em;margin:6px 0 2px;line-height:1.45;">Deducted at the IRS rate for the trip's date (72.5&cent; a mile to June 2026, 76&cent; from July). Using the standard rate means that vehicle's gas and repairs are NOT also deducted &mdash; but parking and tolls still are, under "Parking and tolls".</div>
+            <div style="display:flex;gap:10px;margin-top:10px;"><button class="btn2 primary" onclick="saveTrip(${t ? t.id : 'null'})">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="mMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
+    }
+    async function saveTrip(id) {
+        const g = i => document.getElementById(i);
+        const body = {trip_date: g('mDateT').value, entity_id: g('mBook').value || null,
+                      purpose: g('mPurpose').value, origin: g('mFrom').value, destination: g('mTo').value,
+                      miles: g('mMiles').value, round_trip: g('mRound').checked,
+                      start_odometer: g('mOdoA').value, end_odometer: g('mOdoB').value,
+                      vehicle: g('mVehicle').value};
+        try {
+            const r = await fetch(id ? `/api/finance/mileage/${id}` : '/api/finance/mileage', {
+                method: id ? 'PUT' : 'POST', headers: {'Content-Type': 'application/json'},
+                credentials: 'same-origin', body: JSON.stringify(body)});
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || 'Could not save');
+            tripPref('vehicle', body.vehicle || ''); tripPref('book', body.entity_id || '');
+            closeModal(); loadMileage(); loadEntities();
+        } catch (e) { g('mMsg').textContent = e.message; }
+    }
+    async function delTrip(id) {
+        if (!confirm('Delete this trip?')) return;
+        await fetch(`/api/finance/mileage/${id}`, {method: 'DELETE', credentials: 'same-origin'});
+        loadMileage(); loadEntities();
     }
     function renderEntities(rep) {
         const box = document.getElementById('entBody');
@@ -1744,6 +1847,7 @@
                 <td style="text-align:right;">${fmt(r.income)}</td>
                 <td style="text-align:right;">${fmt(r.expenses)}</td>
                 <td style="text-align:right;" class="${r.net < 0 ? 'neg' : 'pos'}">${fmt(r.net)}</td>
+                <td style="text-align:right;white-space:nowrap;">${r.mileage_deduction ? fmt(r.mileage_deduction) + `<div class="muted" style="font-size:0.78em;">${r.mileage_miles} mi</div>` : '<span class="muted">&mdash;</span>'}</td>
                 <td style="text-align:right;">${fmt(r.deductible_receipts)}</td>
                 <td style="text-align:right;white-space:nowrap;">${e.id
                     ? `<button class="link-btn" onclick='openEntity(${attrJson(e)})'>edit</button>` : ''}</td>
@@ -1751,7 +1855,7 @@
         };
         box.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr>' +
             '<th>Books</th><th style="text-align:right;">Income</th><th style="text-align:right;">Expenses</th>' +
-            '<th style="text-align:right;">Net</th><th style="text-align:right;" title="Receipts explicitly marked deductible — reported apart from total expenses on purpose">Deductible</th><th></th>' +
+            '<th style="text-align:right;">Net</th><th style="text-align:right;" title="Business miles at the IRS standard rate">Mileage</th><th style="text-align:right;" title="Receipts explicitly marked deductible — reported apart from total expenses on purpose">Deductible</th><th></th>' +
             '</tr></thead><tbody>' + rows.map(r => line(r, false)).join('') +
             (rep.unassigned && (rep.unassigned.expenses || rep.unassigned.transactions)
                 ? line(rep.unassigned, true) : '') +
@@ -1839,8 +1943,9 @@
               ).join('')}</optgroup>` : '';
         // The farm lines lead when a farm is selected: they are the ones being looked for.
         const blank = blankLabel ? `<option value="" ${selected?'':'selected'}>${blankLabel}</option>` : '';
+        const form = {farm: 'Schedule F', business: 'Schedule C', rental: 'Schedule E'}[entityKindOf(entityId)] || 'Books';
         return blank + (extra.length
-            ? group('Schedule F', extra) + group('Household', household)
+            ? group(form, extra) + group('Household', household)
             : group('Household', household));
     }
     /* Re-rendered when the books change, keeping the current pick if it is still valid —

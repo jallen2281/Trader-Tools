@@ -1961,6 +1961,50 @@ class PlaidAccount(db.Model):
         }
 
 
+class MileageLog(db.Model):
+    """One business drive, for the standard mileage deduction.
+
+    The IRS wants a record kept at or near the time of the drive: the date, where, why, and
+    how far. A year-end guess from memory is exactly what an audit throws out, so each trip
+    is its own row with its purpose, not a monthly total.
+
+    `miles` is the distance one way; `round_trip` doubles it. Odometer readings are optional
+    -- when both are given the distance is taken from them rather than typed.
+    """
+    __tablename__ = 'mileage_logs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    share_level = db.Column(db.String(10), default='none')   # none | view | edit
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
+    trip_date = db.Column(db.Date, nullable=False, index=True)
+    miles = db.Column(db.Numeric(8, 1, asdecimal=False), nullable=False)
+    round_trip = db.Column(db.Boolean, default=False)
+    start_odometer = db.Column(db.Numeric(9, 1, asdecimal=False))
+    end_odometer = db.Column(db.Numeric(9, 1, asdecimal=False))
+    origin = db.Column(db.String(160))
+    destination = db.Column(db.String(160))
+    purpose = db.Column(db.String(200), nullable=False)
+    vehicle = db.Column(db.String(80))
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def total_miles(self):
+        return round(float(self.miles or 0) * (2 if self.round_trip else 1), 1)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'entity_id': self.entity_id, 'share_level': self.share_level or 'none',
+            'trip_date': self.trip_date.isoformat() if self.trip_date else None,
+            'miles': float(self.miles or 0), 'round_trip': bool(self.round_trip),
+            'total_miles': self.total_miles(),
+            'start_odometer': None if self.start_odometer is None else float(self.start_odometer),
+            'end_odometer': None if self.end_odometer is None else float(self.end_odometer),
+            'origin': self.origin, 'destination': self.destination, 'purpose': self.purpose,
+            'vehicle': self.vehicle, 'notes': self.notes,
+        }
+
+
 class PlaidDeposit(db.Model):
     """Money arriving in a connected account.
 
