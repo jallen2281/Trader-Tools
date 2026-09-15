@@ -222,6 +222,27 @@ check('re-sync with no changes imports nothing new',
 check('but accounts are still refreshed, since balances move without transactions',
       res['accounts'] == 2, res)
 
+print('\n--- a pending paycheck that posts leaves ONE deposit, not two ---')
+# The bank sends the pending deposit under one id; when it posts, Plaid removes that id and
+# adds the posted one. Only spending used to be deleted on `removed`, so the pending copy
+# stayed and the paycheck showed up twice.
+FAKE.pages = [{'added': [txn('pend-1', 'GENESEE CHRISTIA PAYROLL', -1881.28, 'INCOME',
+                             date='2026-09-10', pending=True)],
+               'modified': [], 'removed': [], 'next_cursor': 'cur-p1', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+FAKE.pages = [{'added': [txn('post-1', 'ORIG CO NAME:GENESEE CHRISTIA', -1881.28, 'INCOME',
+                             date='2026-09-10')],
+               'modified': [], 'removed': [{'transaction_id': 'pend-1'}],
+               'next_cursor': 'cur-p2', 'has_more': False}]
+res = admin.post('/api/plaid/items/%d/sync' % ITEM_ID).get_json()
+with app.app_context():
+    paychecks = A.PlaidDeposit.query.filter_by(user_id=2, amount=1881.28).all()
+    check('exactly one deposit for the paycheck', len(paychecks) == 1,
+          [(p.external_id, p.description) for p in paychecks])
+    check('and it is the posted one', paychecks and paychecks[0].external_id == 'plaid:post-1',
+          [p.external_id for p in paychecks])
+check('the removal is counted', res['removed'] >= 1, res)
+
 print('\n--- pagination follows has_more ---')
 FAKE.pages = [
     {'added': [txn('p1', 'PAGE ONE', 10.0, 'GENERAL_MERCHANDISE')],

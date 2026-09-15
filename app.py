@@ -1163,6 +1163,7 @@ SPEND_CATEGORY_RULES = [
     # double-count that made a month of transfers read as $75,706 of spending.
     ('transfer', ('transfer', 'to checking', 'to savings', 'from checking', 'from savings',
                   'epayment', 'card online', 'online payment', 'payment thank you',
+                  'payment-thank you',
                   'autopay', 'bank transfer', 'internal transfer', 'ach withdrawal')),
     ('housing', ('rent', 'mortgage', 'hoa ', 'property mgmt', 'landlord')),
     ('utilities', ('electric', 'energy', 'water dept', 'sewer', 'utility', 'comcast', 'xfinity',
@@ -2185,6 +2186,136 @@ def finance_income_reconciliation():
     return jsonify(_income_reconciliation(uid, months=months))
 
 
+_DEPOSIT_KIND_LABELS = {'income': 'Income', 'transfer_in': 'Transfer in',
+                        'card_payment': 'Card payment', 'refund': 'Refund',
+                        'unknown': 'Unclassified'}
+
+
+def _ledger_rows(uid, start, end):
+    """Every movement of money in [start, end], in one list, signed the way a bank shows it:
+    money in positive, money out negative.
+
+    Spending and deposits live in separate tables on purpose -- a deposit must never be
+    summed into spending -- and until now nothing put them side by side, so paychecks were
+    invisible and a statement could not be reconciled against anything. This is that view.
+    It sums nothing across the two; each row says which direction it moves.
+    """
+    plaid_names = {a.account_id: a.display_name()
+                   for a in PlaidAccount.query.filter_by(user_id=uid).all()}
+    fin = {a.id: a.name for a in FinanceAccount.query.filter(_visible(FinanceAccount, uid)).all()}
+    debts = {d.id: d.name for d in Debt.query.filter(_visible(Debt, uid)).all()}
+    books = {e.id: e.name for e in _visible_entities(uid).all()}
+    sources = {x.id: x for x in IncomeSource.query.filter(_visible(IncomeSource, uid)).all()}
+
+    rows = []
+    for t in SpendTransaction.query.filter(
+            _visible(SpendTransaction, uid),
+            SpendTransaction.posted_at >= start, SpendTransaction.posted_at <= end).all():
+        amt = float(t.amount or 0)
+        cat = t.category or 'other'
+        if t.plaid_account_id:
+            key, name = t.plaid_account_id, plaid_names.get(t.plaid_account_id, 'Connected account')
+        elif t.debt_id:
+            key, name = 'debt:%d' % t.debt_id, debts.get(t.debt_id, 'Card')
+        elif t.account_id:
+            key, name = 'account:%d' % t.account_id, fin.get(t.account_id, 'Account')
+        else:
+            key, name = 'none', 'No account'
+        rows.append({
+            'kind': 'spend', 'id': t.id,
+            'posted_at': t.posted_at.isoformat(),
+            'description': t.description, 'merchant': t.merchant,
+            'amount': round(-amt, 2),
+            'direction': 'transfer' if cat in NON_SPEND_CATEGORIES else ('in' if amt < 0 else 'out'),
+            'category': cat, 'category_label': category_label(cat),
+            'account_key': key, 'account_name': name,
+            'book_id': t.entity_id, 'book': books.get(t.entity_id),
+            'source': t.source, 'pending': bool(t.pending),
+            'spread_months': t.spread_months if (t.spread_months or 1) > 1 else None,
+            'txn': t.to_dict(),
+        })
+    for d in PlaidDeposit.query.filter(
+            PlaidDeposit.user_id == uid,
+            PlaidDeposit.posted_at >= start, PlaidDeposit.posted_at <= end).all():
+        src = sources.get(d.income_source_id)
+        rows.append({
+            'kind': 'deposit', 'id': d.id,
+            'posted_at': d.posted_at.isoformat(),
+            'description': d.description, 'merchant': d.merchant,
+            'amount': round(float(d.amount or 0), 2),
+            'direction': 'transfer' if d.kind in ('transfer_in', 'card_payment') else 'in',
+            'category': d.kind, 'category_label': src.name if src else _DEPOSIT_KIND_LABELS.get(d.kind, d.kind),
+            'income_source_id': d.income_source_id,
+            'account_key': d.plaid_account_id or 'none',
+            'account_name': plaid_names.get(d.plaid_account_id, 'Connected account'),
+            'book_id': src.entity_id if src else None,
+            'book': books.get(src.entity_id) if src else None,
+            'source': 'plaid', 'pending': False, 'spread_months': None,
+        })
+    rows.sort(key=lambda r: (r['posted_at'], r['kind'], r['id']), reverse=True)
+    return rows
+
+
+@app.route('/api/finance/ledger', methods=['GET'])
+@require_api_auth
+def finance_ledger():
+    """All money in and out for a month, filterable by direction, account, book and text."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    start, end = _month_bounds(request.args.get('month'))
+    rows = _ledger_rows(uid, start, end)
+
+    accounts = {}
+    for r in rows:
+        accounts[r['account_key']] = r['account_name']
+    for a in PlaidAccount.query.filter_by(user_id=uid).all():
+        accounts.setdefault(a.account_id, a.display_name())
+
+    direction = (request.args.get('direction') or 'all').lower()
+    if direction in ('in', 'out', 'transfer'):
+        rows = [r for r in rows if r['direction'] == direction]
+    acct = request.args.get('account')
+    if acct:
+        rows = [r for r in rows if r['account_key'] == acct]
+    book = request.args.get('book')
+    if book:
+        rows = [r for r in rows if (str(r['book_id']) if r['book_id'] else 'none') == book]
+    term = (request.args.get('q') or '').strip().lower()
+    if term:
+        rows = [r for r in rows if term in ('%s %s %s' % (r['description'] or '', r['merchant'] or '',
+                                                          r['category_label'] or '')).lower()]
+
+    def total(pred, sign=1):
+        return round(sum(sign * r['amount'] for r in rows if pred(r)), 2)
+
+    money_in = total(lambda r: r['direction'] == 'in')
+    money_out = total(lambda r: r['direction'] == 'out', -1)
+    per_acct = {}
+    for r in rows:
+        a = per_acct.setdefault(r['account_key'], {'account': r['account_name'], 'in': 0.0, 'out': 0.0})
+        if r['direction'] == 'in':
+            a['in'] = round(a['in'] + r['amount'], 2)
+        elif r['direction'] == 'out':
+            a['out'] = round(a['out'] - r['amount'], 2)
+    return jsonify({
+        'month': start.strftime('%Y-%m'),
+        'rows': rows,
+        'count': len(rows),
+        'totals': {
+            'money_in': money_in,
+            'money_out': money_out,
+            'net': round(money_in - money_out, 2),
+            'transfers_in': total(lambda r: r['direction'] == 'transfer' and r['amount'] > 0),
+            'transfers_out': total(lambda r: r['direction'] == 'transfer' and r['amount'] < 0, -1),
+        },
+        'by_account': sorted(({**v, 'net': round(v['in'] - v['out'], 2)} for v in per_acct.values()),
+                             key=lambda v: v['account']),
+        'accounts': sorted(({'key': k, 'name': v} for k, v in accounts.items()), key=lambda x: x['name']),
+        'books': [{'id': e.id, 'name': e.name} for e in _visible_entities(uid).all()],
+    })
+
+
 @app.route('/api/finance/deposits', methods=['GET'])
 @require_api_auth
 def finance_deposits():
@@ -2800,6 +2931,12 @@ def _plaid_sync_item(item, client=None, backfill=False):
         for txn in out.get('removed', []):
             ext = 'plaid:%s' % txn.get('transaction_id')
             n = SpendTransaction.query.filter_by(user_id=item.user_id, external_id=ext).delete(
+                synchronize_session=False)
+            # Deposits too. A pending paycheck arrives under one transaction id and posts under
+            # another, and Plaid retires the pending one with a `removed`. Only spending was
+            # being deleted, so every pending deposit that later posted stayed behind as a
+            # duplicate -- and the income check counted that paycheck twice.
+            n += PlaidDeposit.query.filter_by(user_id=item.user_id, external_id=ext).delete(
                 synchronize_session=False)
             removed += n
         cursor = out.get('next_cursor') or cursor

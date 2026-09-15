@@ -125,6 +125,24 @@
     </div>
 
     <!-- Spending -->
+    <div class="fin-card" id="transactions">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <h2 style="margin:0;">Transactions <span class="muted" style="font-size:0.62em;font-weight:400;">every dollar in and out, by account</span></h2>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input type="month" id="ledMonth" class="fin-in" style="padding:4px 8px;" onchange="loadLedger()">
+                <select id="ledDir" class="fin-in" style="padding:4px 8px;" onchange="loadLedger()">
+                    <option value="all">All</option><option value="in">Money in</option>
+                    <option value="out">Money out</option><option value="transfer">Transfers</option>
+                </select>
+                <select id="ledAcct" class="fin-in" style="padding:4px 8px;max-width:220px;" onchange="loadLedger()"><option value="">All accounts</option></select>
+                <select id="ledBook" class="fin-in" style="padding:4px 8px;" onchange="loadLedger()"><option value="">All books</option></select>
+                <input id="ledQ" class="fin-in" style="padding:4px 8px;width:150px;" placeholder="Search" oninput="ledgerSearch()">
+            </div>
+        </div>
+        <div id="ledgerTotals"></div>
+        <div id="ledgerBody"><p class="muted">Loading&hellip;</p></div>
+    </div>
+
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
             <h2 style="margin:0;">Spending <span class="muted" id="spendTotal" style="font-size:0.65em;font-weight:400;"></span></h2>
@@ -757,6 +775,61 @@
 
     /* ===== Bills, Budget & Cash-flow (Phase 2) ===== */
     function spendMonth(){ const el=document.getElementById('spendMonth'); return (el && el.value) || ''; }
+    /* The whole picture for a month: paychecks, refunds and transfers alongside spending.
+       Spending and deposits are stored apart so a deposit can never be summed into spending;
+       this only lists them together, and totals each direction separately. */
+    let LEDGER_T = null;
+    function ledgerSearch() { clearTimeout(LEDGER_T); LEDGER_T = setTimeout(loadLedger, 300); }
+    async function loadLedger() {
+        const g = i => document.getElementById(i);
+        const body = g('ledgerBody');
+        if (!body) return;
+        const qs = new URLSearchParams();
+        if (g('ledMonth').value) qs.set('month', g('ledMonth').value);
+        if (g('ledDir').value !== 'all') qs.set('direction', g('ledDir').value);
+        if (g('ledAcct').value) qs.set('account', g('ledAcct').value);
+        if (g('ledBook').value) qs.set('book', g('ledBook').value);
+        if (g('ledQ').value.trim()) qs.set('q', g('ledQ').value.trim());
+        try {
+            const d = await fetch('/api/finance/ledger?' + qs.toString(), {credentials:'same-origin'}).then(r => r.json());
+            if (!g('ledMonth').value && d.month) g('ledMonth').value = d.month;
+            const keepAcct = g('ledAcct').value, keepBook = g('ledBook').value;
+            g('ledAcct').innerHTML = '<option value="">All accounts</option>' +
+                (d.accounts||[]).map(a => `<option value="${esc(a.key)}" ${a.key===keepAcct?'selected':''}>${esc(a.name)}</option>`).join('');
+            g('ledBook').innerHTML = '<option value="">All books</option><option value="none" ' + (keepBook==='none'?'selected':'') + '>No book</option>' +
+                (d.books||[]).map(b => `<option value="${b.id}" ${String(b.id)===keepBook?'selected':''}>${esc(b.name)}</option>`).join('');
+            renderLedger(d);
+        } catch (e) { body.innerHTML = '<p class="neg" style="padding:12px;">Could not load transactions.</p>'; }
+    }
+    function renderLedger(d) {
+        const t = d.totals || {}, rows = d.rows || [];
+        const tile = (label, val, cls) => `<div style="flex:1;min-width:130px;"><div class="muted" style="font-size:0.78em;">${label}</div><div class="${cls||''}" style="font-weight:600;font-size:1.05em;">${val}</div></div>`;
+        document.getElementById('ledgerTotals').innerHTML = `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;">
+            ${tile('Money in', '+' + fmt2(t.money_in || 0), 'pos')}
+            ${tile('Money out', '&minus;' + fmt2(t.money_out || 0), '')}
+            ${tile('Net', (t.net >= 0 ? '+' : '&minus;') + fmt2(Math.abs(t.net || 0)), t.net >= 0 ? 'pos' : 'neg')}
+            ${tile('Transfers', fmt2(t.transfers_out || 0) + ' out &middot; ' + fmt2(t.transfers_in || 0) + ' in', 'muted')}
+        </div>`;
+        const body = document.getElementById('ledgerBody');
+        if (!rows.length) { body.innerHTML = `<p class="muted" style="padding:12px;">Nothing posted${d.month ? ' in ' + esc(d.month) : ''} for these filters.</p>`; return; }
+        body.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Book &middot; category</th><th style="text-align:right;">Amount</th><th></th></tr></thead><tbody>' +
+            rows.map(r => {
+                const amtCls = r.direction === 'in' ? 'pos' : (r.direction === 'transfer' ? 'muted' : '');
+                const sign = r.amount >= 0 ? '+' : '&minus;';
+                const badges = (r.kind === 'deposit' ? ' <span class="badge b-inv" style="font-size:0.72em;">deposit</span>' : '') +
+                    (r.direction === 'transfer' ? ' <span class="badge b-inv" style="font-size:0.72em;">transfer</span>' : '') +
+                    (r.pending ? ' <span class="badge b-inv" style="font-size:0.72em;">pending</span>' : '') +
+                    (r.spread_months ? ` <span class="badge b-inv" style="font-size:0.72em;">over ${r.spread_months} mo</span>` : '');
+                return `<tr>
+                    <td style="white-space:nowrap;">${esc(r.posted_at)}</td>
+                    <td><strong>${esc(r.description || '')}</strong>${badges}${r.merchant && r.merchant !== r.description ? `<div class="muted" style="font-size:0.8em;">${esc(r.merchant)}</div>` : ''}</td>
+                    <td style="font-size:0.88em;">${esc(r.account_name || '')}</td>
+                    <td style="font-size:0.88em;">${r.book ? esc(r.book) : '<span class="muted">no book</span>'}<div class="muted" style="font-size:0.85em;">${esc(r.category_label || r.category || '')}</div></td>
+                    <td style="text-align:right;white-space:nowrap;" class="${amtCls}">${sign}${fmt2(Math.abs(r.amount))}</td>
+                    <td style="text-align:right;">${r.kind === 'spend' ? `<button class="link-btn" onclick='openTxn(${attrJson(r.txn)})'>edit</button>` : ''}</td>
+                </tr>`;
+            }).join('') + '</tbody></table></div>';
+    }
     async function loadBudgeting() {
         const m = spendMonth(), qs = m ? `?month=${m}` : '';
         try {
@@ -774,6 +847,7 @@
             if(mEl && !mEl.value && txns.month) mEl.value = txns.month;
             REC = rec; CREDIT = cred; PLAN = plan;
             renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns); renderRecurring(rec); renderCredit(cred); renderDebtPlan(plan);
+            loadLedger();
         } catch(e){ document.getElementById('billsBody').innerHTML='<p class="neg" style="padding:12px;">Could not load budgeting.</p>'; }
     }
     function renderBills(d) {
