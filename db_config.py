@@ -202,17 +202,80 @@ def _add_column_if_missing(db, inspector, table, column, col_type, default=None)
     return False
 
 
+# Any constant shared by every replica. Identifies "the schema migration" to Postgres.
+_SCHEMA_LOCK_KEY = 7315021
+
+
 def init_database(app):
-    """Initialize database with app"""
+    """Initialize database with app.
+
+    The schema work runs under a Postgres advisory lock so replicas take turns. A rollout
+    starts every pod at once, and each one creates missing tables and runs migrations on
+    start: two creating the same new table collide in pg_class, and the loser's init
+    aborts -- that pod then answers 503 on readiness forever while the others serve. The
+    orphaned-sequence cleanup below is worse under a race: a pod working from a stale table
+    list can drop the id sequence of a table another pod has just created.
+
+    A transaction-scoped lock on its own connection: it is released when that transaction
+    ends, including when a pod dies mid-migration, so a crash can never leave the others
+    waiting on a lock nobody holds.
+    """
     from models import db
-    
-    # Configure app
+
     app.config.from_object(DatabaseConfig)
-    
-    # Initialize SQLAlchemy
     db.init_app(app)
-    
-    # Create tables
+
+    with app.app_context():
+        held = _acquire_schema_lock(db)
+        try:
+            _init_schema(app, db)
+        finally:
+            _release_schema_lock(held)
+    return db
+
+
+def _acquire_schema_lock(db):
+    """Block until no other replica is migrating. Returns what release needs, or None."""
+    if not _is_postgres(db):
+        return None
+    from sqlalchemy import text
+    conn = None
+    try:
+        conn = db.engine.connect()
+        trans = conn.begin()
+        # Bounded: a migration that takes minutes is broken, and waiting forever behind it
+        # would hang every other pod too. Past the timeout this pod proceeds unlocked.
+        conn.execute(text("SET LOCAL statement_timeout = '180s'"))
+        conn.execute(text('SELECT pg_advisory_xact_lock(:k)'), {'k': _SCHEMA_LOCK_KEY})
+        logger.info('✓ schema lock acquired')
+        return conn, trans
+    except Exception as e:
+        logger.warning('schema lock not taken, migrating without it: %s', e)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return None
+
+
+def _release_schema_lock(held):
+    if not held:
+        return
+    conn, trans = held
+    try:
+        trans.commit()          # ending the transaction releases the xact lock
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _init_schema(app, db):
+    """Create tables and run migrations. Called with the schema lock held."""
     with app.app_context():
         is_pg = _is_postgres(db)
 
