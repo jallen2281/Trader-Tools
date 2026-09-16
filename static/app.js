@@ -917,11 +917,34 @@ function formatPatternType(type) {
 // MODAL FUNCTIONALITY
 // =======================
 
+/**
+ * Hide a modal the same way the page shows it.
+ *
+ * Two conventions live side by side: older modals are shown with an inline
+ * style.display, newer ones (portfolio, finances) with an `active` class that CSS turns
+ * into display:flex. Closing a CLASS modal by setting an inline display:none looked
+ * harmless and was not: inline styles beat classes, so every later classList.add('active')
+ * was overruled and the modal could never be opened again until the page was reloaded.
+ * That is exactly what happened on the portfolio page -- click a holding, click the
+ * backdrop, and no holding would open again.
+ */
+function _closeModalEl(modal) {
+    if (!modal) return;
+    modal.classList.remove('active');
+    // Only touch the inline display if the modal was SHOWN with one. A class-driven modal
+    // carries no inline display, and writing one here would outrank the class for the life
+    // of the page. Testing the class instead is not enough: another handler on the same
+    // element may already have removed it before this one runs.
+    if (modal.style.display && modal.style.display !== 'none') {
+        modal.style.display = 'none';
+    }
+}
+
 function initializeModals() {
     // Close buttons
     document.querySelectorAll('.modal-close').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            e.target.closest('.modal').style.display = 'none';
+            _closeModalEl(e.target.closest('.modal'));
         });
     });
 
@@ -929,7 +952,7 @@ function initializeModals() {
     document.querySelectorAll('.modal').forEach(modal => {
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
-                modal.style.display = 'none';
+                _closeModalEl(modal);
             }
         });
     });

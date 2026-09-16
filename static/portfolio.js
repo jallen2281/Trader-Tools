@@ -29,6 +29,25 @@ document.addEventListener('DOMContentLoaded', () => {
 /**
  * Setup modal close handlers (click outside to close)
  */
+/**
+ * Show / hide a modal on this page. Both clear any inline display first: another script
+ * setting display:none inline would otherwise outrank the `active` class for good, and the
+ * modal could never be shown again without a page reload.
+ */
+function showModalEl(id) {
+    const m = document.getElementById(id);
+    if (!m) return;
+    m.style.display = '';
+    m.classList.add('active');
+}
+
+function hideModalEl(id) {
+    const m = document.getElementById(id);
+    if (!m) return;
+    m.classList.remove('active');
+    m.style.display = '';
+}
+
 function setupModalCloseHandlers() {
     const modals = ['holdingModal', 'addPositionModal', 'createAlertModal'];
     
@@ -38,7 +57,7 @@ function setupModalCloseHandlers() {
             modal.addEventListener('click', (e) => {
                 // Close if clicked on the modal backdrop (not the content)
                 if (e.target === modal) {
-                    modal.classList.remove('active');
+                    closeModalById(modalId);
                 }
             });
         }
@@ -50,7 +69,7 @@ function setupModalCloseHandlers() {
             modals.forEach(modalId => {
                 const modal = document.getElementById(modalId);
                 if (modal && modal.classList.contains('active')) {
-                    modal.classList.remove('active');
+                    closeModalById(modalId);
                     // Reset forms if needed
                     if (modalId === 'addPositionModal') {
                         document.getElementById('addPositionForm').reset();
@@ -504,7 +523,7 @@ async function openHoldingModal(holdingId, type = 'stock') {
             </div>
         `;
         
-        document.getElementById('holdingModal').classList.add('active');
+        showModalEl('holdingModal');
         updateTargetsPreview(data.cost_basis);
 
         // Multi-model AI analysis (all holdings) — button-triggered to control cost.
@@ -804,9 +823,18 @@ function getActionClass(action) {
 }
 
 function closeHoldingModal() {
-    document.getElementById('holdingModal').classList.remove('active');
+    hideModalEl('holdingModal');
     stopPriceChart();
 }
+
+/** Close by id, through the modal's own close function so its cleanup runs. */
+function closeModalById(modalId) {
+    if (modalId === 'holdingModal') return closeHoldingModal();
+    if (modalId === 'addPositionModal') return closeAddPositionModal();
+    if (modalId === 'createAlertModal') return closeCreateAlertModal();
+    hideModalEl(modalId);
+}
+window.closeModalById = closeModalById;
 
 // Make function globally accessible
 window.closeHoldingModal = closeHoldingModal;
@@ -971,14 +999,14 @@ function renderAlertItem(alert) {
  * Open create alert modal
  */
 function openCreateAlertModal() {
-    document.getElementById('createAlertModal').classList.add('active');
+    showModalEl('createAlertModal');
 }
 
 // Make function globally accessible
 window.openCreateAlertModal = openCreateAlertModal;
 
 function closeCreateAlertModal() {
-    document.getElementById('createAlertModal').classList.remove('active');
+    hideModalEl('createAlertModal');
     document.getElementById('createAlertForm').reset();
 }
 
@@ -1277,7 +1305,7 @@ function showError(message) {
  * Add Position Modal Functions
  */
 function openAddPositionModal() {
-    document.getElementById('addPositionModal').classList.add('active');
+    showModalEl('addPositionModal');
     // Reset form
     document.getElementById('addPositionForm').reset();
     updateTotalCost();
@@ -1292,7 +1320,7 @@ function openAddPositionModal() {
 window.openAddPositionModal = openAddPositionModal;
 
 function closeAddPositionModal() {
-    document.getElementById('addPositionModal').classList.remove('active');
+    hideModalEl('addPositionModal');
     document.getElementById('addPositionForm').reset();
 }
 

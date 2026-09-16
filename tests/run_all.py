@@ -64,6 +64,7 @@ SUITES = [
     ('ledger', 'every dollar in and out, by account, in one view'),
     ('transfer_pairing', 'transfers recognised by matching both halves'),
     ('mileage', 'business mileage log, Schedule C books, per-business SE'),
+    ('modal_reopen', 'a modal reopens after being dismissed by clicking off (runs under node)'),
     ('credit', 'credit utilization and score trends'),
     ('credit_api', 'credit limits, score readings and sharing'),
     ('overview', 'whole-picture overview and observations'),
