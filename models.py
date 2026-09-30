@@ -1533,9 +1533,13 @@ class RecurringBill(db.Model):
     paid from."""
     __tablename__ = 'recurring_bills'
 
-    # occurrences per year, for normalizing any frequency to a monthly figure
+    # occurrences per year, for normalizing any frequency to a monthly figure.
+    #
+    # 'one_time' is 0 on purpose. A planned lump -- a card payoff, Christmas, a deductible --
+    # is not part of the recurring monthly floor and must not raise it; it earns its place in
+    # the cash-flow projection by falling on a date, not by pretending to be a monthly cost.
     FREQ_PER_YEAR = {'weekly': 52, 'biweekly': 26, 'semimonthly': 24, 'monthly': 12,
-                     'quarterly': 4, 'semiannual': 2, 'annual': 1}
+                     'quarterly': 4, 'semiannual': 2, 'annual': 1, 'one_time': 0}
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
@@ -1599,6 +1603,10 @@ class RecurringBill(db.Model):
         d = self._anchor()
         if not d:
             return []
+        # A one-off happens once. Stepping it like a cadence would put a $2,800 card payoff
+        # in every month of the projection and make the running balance fiction.
+        if self.frequency == 'one_time':
+            return [d]
         out, freq = [], self.frequency
         for _ in range(n):
             out.append(d)

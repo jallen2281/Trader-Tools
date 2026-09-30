@@ -1081,7 +1081,7 @@ def finance_delete_income_event(iid, eid):
 # Must stay in step with RecurringBill.FREQ_PER_YEAR, which is what turns any of these
 # into a monthly figure for the budget floor.
 BILL_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly',
-                    'semiannual', 'annual'}
+                    'semiannual', 'annual', 'one_time'}
 BUDGET_KINDS = {'expense', 'savings', 'income'}
 # Schedule F, Part II. A farm's costs do not map onto a household's: "groceries" and
 # "subscriptions" say nothing about seed, feed or custom hire, and at tax time the return
@@ -6798,8 +6798,15 @@ def _property_tax_annual(user_id):
                                     for w in _PROPERTY_TAX_WORDS)]
     # Straight from amount x cadence: going through the rounded monthly figure and back
     # multiplies a cent of rounding by twelve, and a deduction should match the bill.
-    return round(sum(float(b.amount or 0) * RecurringBill.FREQ_PER_YEAR.get(b.frequency, 12)
-                     for b in hits), 2)
+    #
+    # A one-off tax bill counts ONCE, not zero. FREQ_PER_YEAR says 0 so a planned lump stays
+    # out of the monthly budget floor, but a property tax actually paid this year is
+    # deductible this year -- taking the cadence literally here would silently drop it from
+    # Schedule A. Same treatment an 'annual' bill already gets: counted once, no date test.
+    def _per_year(b):
+        return 1 if b.frequency == 'one_time' else RecurringBill.FREQ_PER_YEAR.get(b.frequency, 12)
+
+    return round(sum(float(b.amount or 0) * _per_year(b) for b in hits), 2)
 
 
 def _itemized_deductions(user_id, prof, filing, agi, state_income_tax):

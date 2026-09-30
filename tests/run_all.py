@@ -61,6 +61,7 @@ SUITES = [
     ('tax_capital', 'realized capital gains and losses in the tax estimate'),
     ('tax_deductions', 'Schedule A, Schedule 1-A and the farm books in the return'),
     ('spread_purchases', 'bulk buys counted across the months they cover'),
+    ('one_time_bills', 'a single planned payment lands once and not in the monthly floor'),
     ('ledger', 'every dollar in and out, by account, in one view'),
     ('transfer_pairing', 'transfers recognised by matching both halves'),
     ('mileage', 'business mileage log, Schedule C books, per-business SE'),

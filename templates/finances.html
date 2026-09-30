@@ -245,7 +245,12 @@
     const INCOME_TAX_FORMS = ['W2','1099','none'];
     /* "semiannual" rather than "bi-annual", which people read as both twice a year and
        every two years. Property tax and auto insurance are the usual cases. */
-    const BILL_FREQS = ['weekly','biweekly','semimonthly','monthly','quarterly','semiannual','annual'];
+    const BILL_FREQS = ['weekly','biweekly','semimonthly','monthly','quarterly','semiannual','annual','one_time'];
+    /* A one-off is last because it is not a cadence at all: a planned lump that lands on its
+       date, shows in the cash-flow projection once, and adds nothing to the monthly floor. */
+    const BILL_FREQ_LABEL = {weekly:'weekly', biweekly:'every 2 weeks', semimonthly:'twice a month',
+                             monthly:'monthly', quarterly:'quarterly', semiannual:'twice a year',
+                             annual:'yearly', one_time:'one-off (a single planned payment)'};
     const BUDGET_CATS = ['housing','utilities','transportation','insurance','food','debt','subscriptions','healthcare','childcare','savings','entertainment','personal','taxes','other'];
     const BUDGET_KINDS = ['expense','savings','income'];
     let OUTLOOK = null, BILLS = null;
@@ -1200,7 +1205,7 @@
             </div>
             <div style="display:flex;gap:10px;">
               <div style="flex:1;"><label class="fld">Amount $</label><input id="bAmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.amount||0}"></div>
-              <div style="flex:1;"><label class="fld">Frequency</label><select id="bFreq" class="fin-in" style="width:100%;">${BILL_FREQS.map(f=>`<option ${e.frequency===f?'selected':''}>${f}</option>`).join('')}</select></div>
+              <div style="flex:1;"><label class="fld">Frequency</label><select id="bFreq" class="fin-in" style="width:100%;">${BILL_FREQS.map(f=>`<option value="${f}" ${e.frequency===f?'selected':''}>${BILL_FREQ_LABEL[f]||f}</option>`).join('')}</select></div>
             </div>
             <div style="display:flex;gap:10px;">
               <div style="flex:1;"><label class="fld">Next due date</label><input id="bNext" type="date" class="fin-in" style="width:100%;" value="${e.next_due_date||''}"></div>
