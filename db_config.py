@@ -32,7 +32,13 @@ def _build_sqlalchemy_url():
         host, port = host_port.rsplit(':', 1)
     else:
         host, port = host_port, '5432'
-    return f"postgresql://{user}:{quote_plus(password)}@{host}:{port}/{db}"
+    # +psycopg2 is NOT decoration. A bare "postgresql://" lets SQLAlchemy pick the driver,
+    # and it changed that pick in 2.1 from psycopg2 to psycopg (v3). The image ships
+    # psycopg2-binary, so the first build that resolved SQLAlchemy 2.1 came up with
+    # ModuleNotFoundError: No module named 'psycopg', failed init_database, and served 503
+    # on readiness -- from a commit that touched none of this. Naming the driver makes the
+    # dependency explicit and survives the next default change.
+    return f"postgresql+psycopg2://{user}:{quote_plus(password)}@{host}:{port}/{db}"
 
 class DatabaseConfig:
     """Database configuration"""

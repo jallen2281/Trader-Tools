@@ -12,7 +12,12 @@ ta==0.11.0
 mplfinance==0.12.10b0
 matplotlib==3.8.2
 requests==2.31.0
-SQLAlchemy>=2.0.0
+# Held below 2.1 deliberately. 2.1 changes the default postgresql:// driver to psycopg v3,
+# which is not in this image, and an unpinned upper bound meant a routine rebuild picked it
+# up and took the pods down on readiness. db_config names +psycopg2 explicitly as well, so
+# lifting this pin is a decision rather than an accident -- but it still needs psycopg3
+# added (or the driver kept) before it can move.
+SQLAlchemy>=2.0.0,<2.1
 Flask-SQLAlchemy>=3.0.0
 psycopg2-binary>=2.9.0
 Flask-Login>=0.6.3
