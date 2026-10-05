@@ -10728,6 +10728,182 @@ def record_portfolio_transaction():
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/portfolio/transfer', methods=['POST'])
+@require_api_auth
+def transfer_portfolio_holding():
+    """Move part of a holding to another account, or off-platform entirely.
+
+    A transfer is not a sale. No cash changes hands, so no account's cash balance
+    moves and no gain is realised on the amount that arrives - it keeps the cost
+    basis it already had. That matters because exchanges generally do not record a
+    price at transfer time, and inventing one would restate the gain on a position
+    that was only moved.
+
+    The network fee is different. That quantity is gone, so it is a disposal:
+    recorded at the transfer's unit price, realising whatever gain or loss it
+    carried, but crediting no cash because none was received.
+
+    Body:
+        holding_id      source holding
+        to_account_id   destination portfolio account, or null to withdraw off-platform
+        quantity        units that arrive at the destination
+        fee_quantity    units consumed by the network (optional, default 0)
+        unit_price      price per unit, or omit and send total_value
+        total_value     value of quantity + fee together; unit price is derived from it
+    """
+    if not PHASE2_ENABLED:
+        return jsonify({'error': 'Phase 2 not enabled'}), 503
+
+    try:
+        user_id = _get_current_user_id()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        data = request.get_json() or {}
+        holding = Portfolio.query.filter_by(id=data.get('holding_id'), user_id=user_id).first()
+        if not holding:
+            return jsonify({'error': 'Holding not found'}), 404
+
+        try:
+            quantity = float(data.get('quantity') or 0)
+            fee_quantity = float(data.get('fee_quantity') or 0)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Quantity and fee must be numbers'}), 400
+
+        if quantity <= 0:
+            return jsonify({'error': 'Transfer quantity must be greater than zero'}), 400
+        if fee_quantity < 0:
+            return jsonify({'error': 'Fee cannot be negative'}), 400
+
+        held = float(holding.quantity)
+        leaving = quantity + fee_quantity
+        # Guard against floating point making an exact "send everything" look short.
+        if leaving - held > 1e-9:
+            return jsonify({'error': f'Only {held} held; {leaving} would leave the account'}), 400
+
+        # Unit price: given directly, derived from the total, or finally the last
+        # known price. The total covers quantity AND fee, which is how an exchange
+        # reports it - "sent 0.01, fee 0.000015, total $809.98".
+        unit_price = data.get('unit_price')
+        total_value = data.get('total_value')
+        if unit_price not in (None, ''):
+            unit_price = float(unit_price)
+        elif total_value not in (None, '') and leaving > 0:
+            unit_price = float(total_value) / leaving
+        else:
+            unit_price = float(holding.current_price or holding.average_cost or 0)
+
+        source_cost = float(holding.average_cost or 0)
+        symbol = holding.symbol
+        asset_type = holding.asset_type or 'stock'
+        source_account_id = holding.account_id
+
+        destination = None
+        to_account_id = data.get('to_account_id')
+        if to_account_id not in (None, '', 'external'):
+            to_account_id = int(to_account_id)
+            if to_account_id == source_account_id:
+                return jsonify({'error': 'Source and destination accounts are the same'}), 400
+            if not PortfolioAccount.query.filter_by(id=to_account_id, user_id=user_id).first():
+                return jsonify({'error': 'Destination account not found'}), 404
+
+            destination = Portfolio.query.filter_by(
+                user_id=user_id, symbol=symbol, asset_type=asset_type, account_id=to_account_id
+            ).first()
+        else:
+            to_account_id = None
+
+        # --- move the quantity -------------------------------------------------
+        remaining = held - leaving
+        if remaining <= 1e-9:
+            db.session.delete(holding)
+            remaining = 0.0
+        else:
+            holding.quantity = remaining
+            holding.last_updated = datetime.utcnow()
+
+        if to_account_id is not None:
+            if destination:
+                # Weighted average: the arriving units bring their own basis with
+                # them rather than being marked to the transfer price.
+                existing_qty = float(destination.quantity)
+                existing_cost = float(destination.average_cost or 0)
+                combined = existing_qty + quantity
+                destination.average_cost = (
+                    ((existing_qty * existing_cost) + (quantity * source_cost)) / combined
+                    if combined else source_cost
+                )
+                destination.quantity = combined
+                destination.last_updated = datetime.utcnow()
+            else:
+                destination = Portfolio(
+                    user_id=user_id,
+                    account_id=to_account_id,
+                    symbol=symbol,
+                    asset_type=asset_type,
+                    quantity=quantity,
+                    average_cost=source_cost,
+                    current_price=holding.current_price,
+                    purchase_date=datetime.utcnow(),
+                    last_updated=datetime.utcnow(),
+                )
+                db.session.add(destination)
+
+        # --- the paper trail ---------------------------------------------------
+        now = datetime.utcnow()
+        db.session.add(Transaction(
+            user_id=user_id, account_id=source_account_id, symbol=symbol,
+            asset_type=asset_type, transaction_type='transfer_out',
+            quantity=quantity, price=unit_price, transaction_date=now,
+            notes=f'Transfer out to account {to_account_id}' if to_account_id else 'Withdrawn off-platform',
+        ))
+
+        if to_account_id is not None:
+            db.session.add(Transaction(
+                user_id=user_id, account_id=to_account_id, symbol=symbol,
+                asset_type=asset_type, transaction_type='transfer_in',
+                quantity=quantity, price=unit_price, transaction_date=now,
+                notes=f'Transfer in from account {source_account_id}',
+            ))
+
+        realised = None
+        if fee_quantity > 0:
+            # The fee is disposed of at the transfer price. Its gain or loss is
+            # against the basis it carried; no cash is credited, because none came in.
+            realised = round(fee_quantity * (unit_price - source_cost), 2)
+            db.session.add(Transaction(
+                user_id=user_id, account_id=source_account_id, symbol=symbol,
+                asset_type=asset_type, transaction_type='fee',
+                quantity=fee_quantity, price=unit_price, transaction_date=now,
+                notes=f'Network fee on transfer; disposed at {unit_price:.8f}',
+            ))
+
+        db.session.commit()
+
+        logger.info(
+            "Transfer: user %s moved %s %s (fee %s) from account %s to %s at %s",
+            user_id, quantity, symbol, fee_quantity, source_account_id, to_account_id, unit_price,
+        )
+
+        return jsonify({
+            'message': 'Transfer recorded',
+            'symbol': symbol,
+            'quantity': quantity,
+            'fee_quantity': fee_quantity,
+            'unit_price': unit_price,
+            'total_value': round(leaving * unit_price, 2),
+            'cost_basis_carried': source_cost,
+            'fee_realised_gain': realised,
+            'source_remaining': remaining,
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error recording transfer: {e}")
+        logger.error(traceback.format_exc())
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/price-history', methods=['GET'])
 @require_api_auth
 def get_price_history():

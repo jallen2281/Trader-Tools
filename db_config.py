@@ -98,6 +98,33 @@ def _is_postgres(db):
     return str(db.engine.url).startswith('postgresql')
 
 
+def _widen_column(db, table, column, col_type):
+    """Widen an existing column's type.
+
+    _add_column_if_missing and _sync_missing_columns both only ADD columns - neither
+    can change one that already exists, so a model whose precision grew leaves the
+    database silently rounding. That is how a 0.0000015 BTC network fee becomes zero
+    against NUMERIC(15,6).
+
+    Widening only. Going the other way would truncate stored values, so this is never
+    used to shrink and the caller is expected to pass a type that is strictly larger.
+    Postgres rewrites the table for a numeric change, which is fine at these sizes.
+
+    Same failure posture as the rest of the migrations here: one column that will not
+    alter is logged loudly and the rest continue, because aborting the initializer
+    skips init_auth and makes every endpoint answer a misleading 401.
+    """
+    from sqlalchemy import text
+    try:
+        db.session.execute(text(f'ALTER TABLE {table} ALTER COLUMN {column} TYPE {col_type}'))
+        db.session.commit()
+        return True
+    except Exception as e:
+        db.session.rollback()
+        logger.warning("MIGRATION: could not widen %s.%s to %s - %s", table, column, col_type, e)
+        return False
+
+
 def _sync_missing_columns(db, skip_tables=()):
     """Add every column present on a model but missing from its existing table.
 
@@ -360,6 +387,21 @@ def _init_schema(app, db):
             inspector = inspect(db.engine)
             if _add_column_if_missing(db, inspector, 'income_sources', 'est_tax_rate', 'NUMERIC(5,2)', '0'):
                 logger.info("✓ Added 1099/irregular columns to income_sources table")
+
+        # Migrate: crypto precision. These columns shipped at NUMERIC(15,6)/(10,4),
+        # which cannot hold a satoshi (8dp) and capped a unit price at $999,999.
+        # Widening is safe for existing rows; narrowing would not be. Postgres is
+        # happy to no-op an ALTER to the type a column already has, so this does not
+        # need a guard - it is idempotent in practice and cheap at these table sizes.
+        for _table, _column, _type in (
+            ('portfolio', 'quantity', 'NUMERIC(20,8)'),
+            ('portfolio', 'average_cost', 'NUMERIC(18,8)'),
+            ('portfolio', 'current_price', 'NUMERIC(18,8)'),
+            ('transactions', 'quantity', 'NUMERIC(20,8)'),
+            ('transactions', 'price', 'NUMERIC(18,8)'),
+            ('transactions', 'transaction_type', 'VARCHAR(20)'),
+        ):
+            _widen_column(db, _table, _column, _type)
 
         # Migrate: privacy-consent columns on users (create_all never alters an existing table)
         inspector = inspect(db.engine)

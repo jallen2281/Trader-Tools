@@ -222,9 +222,13 @@ class Portfolio(db.Model):
     account_id = db.Column(db.Integer, db.ForeignKey('portfolio_accounts.id'), nullable=True, index=True)
     symbol = db.Column(db.String(10), nullable=False, index=True)
     asset_type = db.Column(db.String(20), nullable=False)  # 'stock', 'option', 'etf'
-    quantity = db.Column(db.Numeric(15, 6, asdecimal=False), nullable=False)
-    average_cost = db.Column(db.Numeric(10, 4, asdecimal=False), nullable=False)
-    current_price = db.Column(db.Numeric(10, 4, asdecimal=False))
+    # 8 decimals because crypto needs them: at 6, a 0.0000015 BTC network fee
+    # rounds to nothing and the position silently drifts. Price carries 8 too -
+    # a unit price derived from a transfer total is rarely round, and 10,4 also
+    # capped a single unit at $999,999.
+    quantity = db.Column(db.Numeric(20, 8, asdecimal=False), nullable=False)
+    average_cost = db.Column(db.Numeric(18, 8, asdecimal=False), nullable=False)
+    current_price = db.Column(db.Numeric(18, 8, asdecimal=False))
     purchase_date = db.Column(db.DateTime, default=datetime.utcnow)
     last_updated = db.Column(db.DateTime, default=datetime.utcnow)
     # Position context (Phase 4b): so the recommendation engine doesn't mis-flag
@@ -280,9 +284,12 @@ class Transaction(db.Model):
     account_id = db.Column(db.Integer, db.ForeignKey('portfolio_accounts.id'), nullable=True, index=True)
     symbol = db.Column(db.String(10), nullable=False, index=True)
     asset_type = db.Column(db.String(20), nullable=False)  # 'stock', 'option', 'etf'
-    transaction_type = db.Column(db.String(10), nullable=False)  # 'buy' or 'sell'
-    quantity = db.Column(db.Numeric(15, 6, asdecimal=False), nullable=False)
-    price = db.Column(db.Numeric(10, 4, asdecimal=False), nullable=False)
+    # 'buy' | 'sell' | 'transfer_out' | 'transfer_in' | 'fee'
+    # transfer_out/in move a position between accounts without touching cash;
+    # 'fee' is a disposal of the asset itself, as a crypto network fee is.
+    transaction_type = db.Column(db.String(20), nullable=False)
+    quantity = db.Column(db.Numeric(20, 8, asdecimal=False), nullable=False)
+    price = db.Column(db.Numeric(18, 8, asdecimal=False), nullable=False)
     commission = db.Column(db.Numeric(10, 2, asdecimal=False), default=0)
     transaction_date = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     notes = db.Column(db.Text)

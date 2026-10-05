@@ -1859,6 +1859,7 @@ async function openSellPositionModal(holdingId, type = 'stock') {
                         <option value="partial">Sell Partial Quantity</option>
                         <option value="full">Sell All</option>
                         <option value="edit">Edit Cost Basis</option>
+                        <option value="transfer">Transfer / Send</option>
                     </select>
                 </div>
                 
@@ -1888,6 +1889,29 @@ async function openSellPositionModal(holdingId, type = 'stock') {
                 <div class="form-group" id="editDateGroup" style="display: none;">
                     <label>Purchase Date</label>
                     <input type="date" id="editPurchaseDate" value="${holdingData && holdingData.purchase_date ? new Date(holdingData.purchase_date).toISOString().split('T')[0] : ''}">
+                </div>
+
+                <div class="form-group" id="transferGroup" style="display: none;">
+                    <label>Send to</label>
+                    <select id="transferDestination">
+                        <option value="external">Off-platform (withdrawal)</option>
+                        ${portfolioAccounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+                    </select>
+
+                    <label style="margin-top:10px;">Quantity sent <small class="muted">(what arrives)</small></label>
+                    <input type="number" id="transferQuantity" min="0.00000001" step="any"
+                           oninput="updateTransferDerived()"
+                           ${holdingData && holdingData.quantity ? `max="${holdingData.quantity}"` : ''}>
+
+                    <label style="margin-top:10px;">Network fee <small class="muted">(in coins, not dollars)</small></label>
+                    <input type="number" id="transferFee" min="0" step="any" value="0"
+                           oninput="updateTransferDerived()">
+
+                    <label style="margin-top:10px;">Total value <small class="muted">(covering quantity + fee)</small></label>
+                    <input type="number" id="transferTotal" min="0" step="0.01"
+                           oninput="updateTransferDerived()">
+
+                    <small id="transferDerived" class="muted" style="display:block;margin-top:8px;"></small>
                 </div>
                 
                 <div style="display: flex; gap: 10px; margin-top: 20px;">
@@ -1932,7 +1956,51 @@ function toggleSellFields() {
         dateGroup.style.display = 'block';
         document.getElementById('sellQuantity').required = false;
         document.getElementById('sellPrice').required = false;
+    } else if (action === 'transfer') {
+        quantityGroup.style.display = 'none';
+        priceGroup.style.display = 'none';
+        editGroup.style.display = 'none';
+        dateGroup.style.display = 'none';
+        document.getElementById('sellQuantity').required = false;
+        document.getElementById('sellPrice').required = false;
+        document.getElementById('transferQuantity').required = true;
     }
+
+    const transferGroup = document.getElementById('transferGroup');
+    if (transferGroup) {
+        transferGroup.style.display = action === 'transfer' ? 'block' : 'none';
+    }
+}
+
+/**
+ * Show the unit price implied by the total, the way an exchange reports a
+ * transfer: "sent 0.01, fee 0.000015, total $809.98" means a unit price of
+ * 809.98 / 0.010015. Exchanges rarely record a price on a transfer, so deriving
+ * it from the total is the only way to value the fee that was burned.
+ */
+function updateTransferDerived() {
+    const out = document.getElementById('transferDerived');
+    if (!out) { return; }
+
+    const quantity = parseFloat(document.getElementById('transferQuantity').value) || 0;
+    const fee = parseFloat(document.getElementById('transferFee').value) || 0;
+    const total = parseFloat(document.getElementById('transferTotal').value) || 0;
+    const leaving = quantity + fee;
+
+    if (!leaving) {
+        out.textContent = '';
+        return;
+    }
+
+    const parts = [`${leaving.toFixed(8).replace(/0+$/, '').replace(/\.$/, '')} leaves the account`];
+    if (total > 0) {
+        const unit = total / leaving;
+        parts.push(`unit price $${unit.toLocaleString(undefined, {maximumFractionDigits: 2})}`);
+        if (fee > 0) {
+            parts.push(`fee worth $${(fee * unit).toFixed(2)}`);
+        }
+    }
+    out.textContent = parts.join(' \u00b7 ');
 }
 
 /**
@@ -1966,6 +2034,36 @@ async function processSellPosition(event, holdingId, type = 'stock') {
             } else {
                 throw new Error('Failed to update position');
             }
+        } else if (action === 'transfer') {
+            // A transfer is not a sale: no cash moves, and the quantity that
+            // arrives keeps the cost basis it already had. Only the network fee
+            // is disposed of. The server derives the unit price from the total.
+            const destination = document.getElementById('transferDestination').value;
+            const body = {
+                holding_id: holdingId,
+                to_account_id: destination === 'external' ? null : parseInt(destination, 10),
+                quantity: parseFloat(document.getElementById('transferQuantity').value),
+                fee_quantity: parseFloat(document.getElementById('transferFee').value) || 0
+            };
+
+            const total = parseFloat(document.getElementById('transferTotal').value);
+            if (!isNaN(total) && total > 0) {
+                body.total_value = total;
+            }
+
+            const response = await fetch('/api/portfolio/transfer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to record transfer');
+            }
+            showToast(result.fee_quantity
+                ? `Transferred ${result.quantity} ${result.symbol}; fee of ${result.fee_quantity} disposed`
+                : `Transferred ${result.quantity} ${result.symbol}`, 'success');
         } else {
             // Process sell transaction
             const quantity = action === 'full' ? null : parseFloat(document.getElementById('sellQuantity').value);
