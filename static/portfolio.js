@@ -1864,7 +1864,15 @@ async function openSellPositionModal(holdingId, type = 'stock') {
                 
                 <div class="form-group" id="sellQuantityGroup">
                     <label>Quantity to Sell</label>
-                    <input type="number" id="sellQuantity" min="1" step="any" required>
+                    <!-- min was 1, which made any crypto position unsellable: 0.01 BTC
+                         failed browser validation before the request was ever sent.
+                         One satoshi is the smallest meaningful unit here, and still
+                         rules out zero and negatives. -->
+                    <input type="number" id="sellQuantity" min="0.00000001" step="any"
+                           ${holdingData && holdingData.quantity ? `max="${holdingData.quantity}"` : ''} required>
+                    ${holdingData && holdingData.quantity
+                        ? `<small class="muted">You hold ${holdingData.quantity}</small>`
+                        : ''}
                 </div>
                 
                 <div class="form-group" id="sellPriceGroup">
