@@ -3951,6 +3951,23 @@ def _occurrences_for(days, per_year):
 def _variable_daily_burn(user_id, today=None):
     """Everyday spending the bill calendar does not model, as a per-day figure.
 
+    OFF BY DEFAULT, and the reason is the data rather than the method. The ledger records
+    a card payment twice -- the debit leaving checking and the matching credit arriving on
+    the card -- and when neither side is categorised as a transfer they are simply a large
+    positive and a large negative in the spending stream. They net out, so the TOTAL looks
+    plausible while every subset of it is wrong. Measured against one real household this
+    produced $57.99 of apparent everyday spending across ninety days, next to merchant
+    subtotals in the thousands.
+
+    No separation method survives that. Subtracting an average, matching merchants and
+    filtering by category were each tried and each returned a confidently different wrong
+    answer, because the input double-counts in both directions.
+
+    The fix is upstream: pair card payments and mark them as transfers, which
+    _pair_transfers already does for the ones it recognises. Once the spending stream only
+    contains spending, turn this on with ?variable=1 and check the figure against a month
+    you remember before trusting it.
+
     The projection used to be scheduled bills and paychecks only, which quietly made it a
     best case: groceries, fuel, feed and the long tail of card charges never appeared, so
     the running balance drifted further above reality the further out you looked.
@@ -4033,7 +4050,7 @@ def _variable_daily_burn(user_id, today=None):
     }
 
 
-def _finance_cashflow(user_id, days=60, starting_balance=None, include_variable=True):
+def _finance_cashflow(user_id, days=60, starting_balance=None, include_variable=False):
     """Project inflows (scheduled paychecks) and outflows (recurring bills and everyday
     spending) over the next `days`, with a running balance. Irregular income is excluded
     (no schedule to project)."""
@@ -4563,8 +4580,8 @@ def finance_cashflow():
     days = request.args.get('days', type=int) or 60
     days = max(7, min(days, 180))
     sb = request.args.get('starting_balance', type=float)
-    # Opt out for the bills-only view this endpoint used to return.
-    inc_var = (request.args.get('variable') or '1').lower() not in ('0', 'false', 'no')
+    # OFF by default, deliberately -- see _variable_daily_burn. Opt in with ?variable=1.
+    inc_var = (request.args.get('variable') or '0').lower() in ('1', 'true', 'yes')
     try:
         return jsonify(_finance_cashflow(uid, days=days, starting_balance=sb,
                                          include_variable=inc_var))

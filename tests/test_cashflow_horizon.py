@@ -163,7 +163,8 @@ with A.app.app_context():
     check('they sum to the same figure', abs(items - totals) < 0.02, (items, totals))
 
     print('\n--- it lands in the projection and moves the balance ---')
-    with_var = A._finance_cashflow(UID, days=60, starting_balance=10000.0)
+    with_var = A._finance_cashflow(UID, days=60, starting_balance=10000.0,
+                                   include_variable=True)
     without = A._finance_cashflow(UID, days=60, starting_balance=10000.0,
                                   include_variable=False)
     vevents = [e for e in with_var['events'] if e['type'] == 'variable']
@@ -191,10 +192,13 @@ with A.app.app_context():
     with c.session_transaction() as sess:
         sess['_user_id'] = str(UID)
         sess['_fresh'] = True
-    on = c.get('/api/finance/cashflow?days=60').get_json()
-    off = c.get('/api/finance/cashflow?days=60&variable=0').get_json()
-    check('on by default', on['variable_daily'] > 0, on.get('variable_daily'))
-    check('off when asked', off['variable_daily'] == 0, off.get('variable_daily'))
+    # OFF by default: the separation is only as good as the categorisation of the
+    # ledger, and a projection that is quietly wrong is worse than one that is plainly
+    # incomplete. See _variable_daily_burn for what has to be true before it is trusted.
+    off = c.get('/api/finance/cashflow?days=60').get_json()
+    on = c.get('/api/finance/cashflow?days=60&variable=1').get_json()
+    check('off by default', off['variable_daily'] == 0, off.get('variable_daily'))
+    check('on when asked for', on['variable_daily'] > 0, on.get('variable_daily'))
     check('and the balances differ accordingly',
           off['ending_balance'] > on['ending_balance'],
           (off['ending_balance'], on['ending_balance']))
