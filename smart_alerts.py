@@ -371,7 +371,12 @@ class SmartAlertsEngine:
             if data.empty:
                 return None
             
-            current_price = data['Close'].iloc[-1]
+            # float(), not the raw pandas value. data['Close'].iloc[-1] is a
+            # numpy.float64, and psycopg2 has no adapter for it -- it falls back to
+            # repr(), so the UPDATE goes out as `SET current_price=np.float64(35.74)`
+            # and Postgres reads `np` as a schema name. Every alert price refresh was
+            # failing with InvalidSchemaName, so alerts were never re-priced at all.
+            current_price = float(data['Close'].iloc[-1])
             
             # Update alert's current price
             alert.current_price = current_price
@@ -553,7 +558,7 @@ class SmartAlertsEngine:
             if data.empty:
                 return None
             
-            current_price = data['Close'].iloc[-1]
+            current_price = float(data['Close'].iloc[-1])
             
             # Calculate P&L
             cost_basis = float(holding.average_cost)

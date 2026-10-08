@@ -394,7 +394,7 @@ class PortfolioAnalyzer:
                 for holding in stock_holdings:
                     yf_sym = normalize_crypto_symbol(holding.symbol, holding.asset_type)
                     if yf_sym in prices:
-                        holding.current_price = prices[yf_sym]
+                        holding.current_price = float(prices[yf_sym])
                         holding.last_updated = datetime.now()
             
             # Update options prices

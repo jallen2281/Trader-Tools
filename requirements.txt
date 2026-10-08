@@ -17,11 +17,27 @@
 # malicious redirect, python-dotenv could overwrite files through a symlink, and flask
 # omitted a Vary: Cookie header. The Security Scan workflow had been failing on these for
 # weeks; it was right.
+#
+# python-jose was REMOVED rather than bumped. It carried a CRITICAL advisory
+# (GHSA-3qf3-8w2g-rqmx, algorithm-confusion guard bypassed by DER-encoded public keys) with
+# no fixed version published, and nothing in this codebase imports it -- authlib brings
+# joserfc for the JWT work that is actually done. A dead dependency cannot be exploited
+# through code that does not call it, but it is still in the image, still in every scan,
+# and still one careless import away from mattering.
 
 flask>=3.1.3,<4             # <3.1.3: missing Vary: Cookie on session access
 yfinance>=1.2.0               # intentionally unbounded: see the note above
 pandas>=2.1.4,<3
-numpy>=1.26.2,<3
+# Held below 2.0, and this one is on me. Loosening it to <3 in this very commit pulled
+# numpy 2.x, which changed scalar repr() from "35.74" to "np.float64(35.74)". psycopg2 has
+# no adapter for numpy scalars and falls back to repr(), so every UPDATE carrying a price
+# went out as `SET current_price=np.float64(35.74)` and Postgres read `np` as a schema
+# name. Alert re-pricing failed silently in production within minutes of the rollout.
+#
+# The call sites are being coerced with float() where found, which is the real fix, but
+# "where found" is doing load-bearing work in that sentence -- numpy values reach the ORM
+# from several directions. The pin goes back until that audit is actually done.
+numpy>=1.26.2,<2
 plotly>=5.18.0,<7
 pillow>=12.3.0,<13          # <12.3: 32 advisories incl. arbitrary code execution
 ollama>=0.1.6,<1
@@ -42,7 +58,6 @@ Flask-SQLAlchemy>=3.0.0,<4
 psycopg2-binary>=2.9.0,<3
 Flask-Login>=0.6.3,<0.7
 authlib>=1.2.0,<2
-python-jose>=3.3.0,<4
 cryptography>=45.0.0          # intentionally unbounded: see the note above
 scikit-learn>=1.0.0,<2
 

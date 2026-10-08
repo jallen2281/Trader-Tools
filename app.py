@@ -9432,7 +9432,7 @@ def list_portfolio_holdings():
 
         for holding in holdings:
             if holding.symbol in fresh_prices:
-                holding.current_price = fresh_prices[holding.symbol]
+                holding.current_price = float(fresh_prices[holding.symbol])
                 holding.last_updated = now
                 prices_updated = True
             elif holding.symbol in stale_syms and holding.current_price:
