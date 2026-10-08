@@ -3890,9 +3890,70 @@ def _net_paycheck_estimates(user_id, srcs=None):
     return out
 
 
-def _finance_cashflow(user_id, days=60, starting_balance=None):
-    """Project inflows (scheduled paychecks) and outflows (recurring bills) over the next
-    `days`, with a running balance. Irregular income is excluded (no schedule to project)."""
+# How far back to look when measuring everyday spending. Long enough to average over a
+# lumpy month (a bulk feed run, a big grocery week), short enough to follow a real change
+# in habits rather than one from last spring.
+VARIABLE_SPEND_LOOKBACK_DAYS = 90
+
+
+def _occurrences_for(days, per_year):
+    """How many occurrences of a `per_year` cadence it takes to cover `days`.
+
+    Asking for a fixed 12 was a bug with teeth: twelve weekly bills cover 84 days and
+    twelve biweekly paychecks cover 168, so a 180-day projection ran out of INCOME while
+    expenses kept arriving, and the ending balance read thousands of dollars too low. The
+    +2 is slack for an anchor date that has already passed and for the partial period at
+    the far end.
+    """
+    if per_year <= 0:
+        return 1                            # one-offs happen once; see upcoming_due_dates
+    return max(3, int(days * per_year / 365.0) + 2)
+
+
+def _variable_daily_burn(user_id, today=None):
+    """Everyday spending the bill calendar does not model, as a per-day figure.
+
+    The projection used to be scheduled bills and paychecks only, which quietly made it a
+    best case: groceries, fuel, feed and the long tail of card charges never appeared, so
+    the running balance drifted further above reality the further out you looked.
+
+    Measured rather than budgeted, because a budget says what should happen. The trailing
+    actuals already exclude transfers and already spread bulk buys, so a propane prebuy
+    counts as the months it covers instead of spiking the week it cleared.
+
+    Bills are subtracted, not filtered. They sit in the trailing spend as transactions AND
+    are projected ahead individually, so leaving them in would charge the projection twice
+    for the same mortgage. Subtracting the monthly-equivalent of the active bills leaves
+    the residual -- the part nothing else models -- which is what belongs here.
+    """
+    today = today or date.today()
+    end = today - timedelta(days=1)         # yesterday: today is still accumulating
+    start = end - timedelta(days=VARIABLE_SPEND_LOOKBACK_DAYS - 1)
+    window_days = (end - start).days + 1
+    if window_days <= 0:
+        return 0.0, {}
+    spent = sum(_spend_actuals(user_id, start, end).values())
+    bills_monthly = sum(b.monthly_amount() for b in RecurringBill.query.filter(
+        _visible(RecurringBill, user_id), RecurringBill.active.is_(True)).all())
+    bills_in_window = bills_monthly * 12.0 / 365.0 * window_days
+    # Never negative. Bills exceeding observed spend means the history is short or a bill
+    # is not landing as a transaction -- both are reasons to model nothing extra, not to
+    # credit the projection with money it will not have.
+    residual = max(0.0, spent - bills_in_window)
+    daily = residual / window_days
+    return round(daily, 2), {
+        'window_days': window_days,
+        'observed_spend': round(spent, 2),
+        'bills_in_window': round(bills_in_window, 2),
+        'residual': round(residual, 2),
+        'monthly': round(daily * 365.0 / 12.0, 2),
+    }
+
+
+def _finance_cashflow(user_id, days=60, starting_balance=None, include_variable=True):
+    """Project inflows (scheduled paychecks) and outflows (recurring bills and everyday
+    spending) over the next `days`, with a running balance. Irregular income is excluded
+    (no schedule to project)."""
     today = date.today()
     horizon = today + timedelta(days=days)
     events = []
@@ -3906,16 +3967,33 @@ def _finance_cashflow(user_id, days=60, starting_balance=None):
         amt = est['net'] if est else 0.0
         if src.irregular or amt <= 0:
             continue
-        for pd in src.upcoming_paydates(12):
+        n = _occurrences_for(days, IncomeSource.PAY_PERIODS.get(src.pay_frequency, 26))
+        for pd in src.upcoming_paydates(n):
             if today <= pd <= horizon:
                 events.append({'date': pd.isoformat(), 'label': src.name,
                                'amount': round(amt, 2), 'type': 'income',
                                'gross': est['gross'], 'basis': est.get('basis')})
     for b in RecurringBill.query.filter(_visible(RecurringBill, user_id),
                                         RecurringBill.active.is_(True)).all():
-        for dd in b.upcoming_due_dates(12):
+        n = _occurrences_for(days, RecurringBill.FREQ_PER_YEAR.get(b.frequency, 12))
+        for dd in b.upcoming_due_dates(n):
             if today <= dd <= horizon:
                 events.append({'date': dd.isoformat(), 'label': b.name, 'amount': -round(float(b.amount or 0), 2), 'type': 'bill'})
+
+    burn, burn_detail = (_variable_daily_burn(user_id) if include_variable else (0.0, {}))
+    if burn > 0:
+        # Weekly buckets. Daily would bury the scheduled items the calendar exists to show;
+        # monthly would drop four weeks of groceries on one date and move the low point to
+        # the wrong day -- and the low point is the number people act on.
+        cursor = today
+        while cursor < horizon:
+            chunk_end = min(cursor + timedelta(days=7), horizon)
+            n_days = (chunk_end - cursor).days
+            if n_days > 0:
+                events.append({'date': chunk_end.isoformat(),
+                               'label': 'Everyday spending (projected)',
+                               'amount': -round(burn * n_days, 2), 'type': 'variable'})
+            cursor = chunk_end
     events.sort(key=lambda e: e['date'])
 
     # Starting balance: caller-provided, else sum of liquid manual accounts (checking/savings/cash).
@@ -3934,6 +4012,7 @@ def _finance_cashflow(user_id, days=60, starting_balance=None):
         'ending_balance': round(bal, 2), 'lowest_balance': round(lowest, 2),
         'total_in': round(sum(e['amount'] for e in events if e['amount'] > 0), 2),
         'total_out': round(sum(-e['amount'] for e in events if e['amount'] < 0), 2),
+        'variable_daily': burn, 'variable': burn_detail,
         'events': events,
     }
 
@@ -3992,6 +4071,125 @@ def _detected_recurring(user_id, today=None):
         'undeclared_count': len(undeclared),
         'lookback_days': RECURRING_LOOKBACK_DAYS,
     }
+
+
+# What counts as drift worth surfacing. Under these a bill is doing its job -- a utility
+# that swings a few dollars month to month is not a configuration error, and flagging it
+# would only teach people to ignore the card.
+BILL_DRIFT_MIN_DOLLARS = 5.00
+BILL_DRIFT_MIN_PCT = 0.05
+BILL_DRIFT_MIN_DAYS = 2
+# One occurrence is an anecdote: it cannot distinguish a changed bill from a one-off
+# adjustment, a partial payment or a refund landing on the same merchant.
+BILL_DRIFT_MIN_OCCURRENCES = 2
+
+
+def _day_of_month_gap(a, b):
+    """Distance between two days of the month, the short way round.
+
+    The 1st and the 30th are two days apart, not twenty-nine. Straight subtraction makes
+    every bill that pays at a month boundary look wildly misconfigured.
+    """
+    d = abs(int(a) - int(b))
+    return min(d, 31 - d)
+
+
+def _bill_drift(user_id, today=None):
+    """Active bills whose configured amount or due day disagrees with what actually posts.
+
+    A bill is a PROJECTION, and a stale one is worse than a missing one. A mortgage
+    configured for the 7th that really pays on the 1st puts a phantom payment in the
+    middle of the window: the money has already gone, the calendar spends it again, and
+    the projected low point drops by the full amount. That is a number someone could
+    reasonably cancel a debt payoff over -- so the drift is worth finding before they act
+    on it.
+
+    Built on the recurring-charge detector rather than re-deriving any of this: it already
+    groups the ledger by merchant, takes a median amount so one odd month cannot move the
+    answer, infers the cadence, and matches a group to the bill that declares it.
+    """
+    today = today or date.today()
+    det = _detected_recurring(user_id, today=today)
+    bills = {b.id: b for b in RecurringBill.query.filter(
+        _visible(RecurringBill, user_id), RecurringBill.active.is_(True)).all()}
+
+    out = []
+    for ch in det['charges']:
+        b = bills.get(ch.get('matched_bill_id'))
+        if (b is None or ch['status'] != 'active'
+                or ch['occurrences'] < BILL_DRIFT_MIN_OCCURRENCES):
+            continue
+
+        issues, suggest = [], {}
+        configured = round(float(b.amount or 0), 2)
+        actual = ch['typical_amount']
+        delta = round(actual - configured, 2)
+        if abs(delta) >= max(BILL_DRIFT_MIN_DOLLARS, configured * BILL_DRIFT_MIN_PCT):
+            issues.append({
+                'kind': 'amount', 'configured': configured, 'actual': actual,
+                'delta': delta,
+                # Annualised so the list can rank a small monthly drift above a large
+                # one-off: 40 dollars a month matters more than 200 dollars a year.
+                'annual_impact': round(delta * 365.0 / max(ch['interval_days'], 1), 2),
+            })
+            suggest['amount'] = actual
+
+        # Day-of-month only means anything for a monthly rhythm. A weekly bill has no
+        # stable day, and an annual one is better judged on its date than its day.
+        if b.frequency == 'monthly' and ch['cadence'] == 'monthly':
+            anchor_date = b._anchor()
+            cfg_day = b.due_day or (anchor_date.day if anchor_date else None)
+            # The day it LAST posted, not the projected next one. next_expected is
+            # last_seen plus a median gap, so a 30-day median against 31-day months walks
+            # the day backwards and invents drift that is really just rounding.
+            act_day = _parse_iso_date(ch['last_seen'])
+            if cfg_day and act_day:
+                gap = _day_of_month_gap(cfg_day, act_day.day)
+                if gap >= BILL_DRIFT_MIN_DAYS:
+                    issues.append({'kind': 'due_day', 'configured': int(cfg_day),
+                                   'actual': act_day.day, 'delta': gap})
+                    suggest['due_day'] = act_day.day
+                    suggest['next_due_date'] = ch['next_expected']
+
+        if ch['cadence'] != b.frequency and ch['cadence'] in RecurringBill.FREQ_PER_YEAR:
+            issues.append({'kind': 'cadence', 'configured': b.frequency,
+                           'actual': ch['cadence'], 'delta': None})
+            suggest['frequency'] = ch['cadence']
+
+        if issues:
+            out.append({
+                'bill_id': b.id, 'name': b.name, 'payee': b.payee,
+                'merchant': ch['label'], 'occurrences': ch['occurrences'],
+                'last_seen': ch['last_seen'], 'issues': issues, 'suggested': suggest,
+            })
+
+    # Worst first, by what the amount drift costs over a year; a date-only drift has no
+    # dollar value but still outranks nothing.
+    def _weight(row):
+        return max([abs(i.get('annual_impact') or 0) for i in row['issues']] or [0])
+
+    out.sort(key=lambda r: -_weight(r))
+    return {'drifted': out, 'checked': len(bills)}
+
+
+def _parse_iso_date(s):
+    try:
+        return date(*[int(x) for x in str(s)[:10].split('-')])
+    except Exception:
+        return None
+
+
+@app.route('/api/finance/bills/drift', methods=['GET'])
+@require_api_auth
+def finance_bill_drift():
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        return jsonify(_bill_drift(uid))
+    except Exception as e:
+        logger.error('Error in bill drift: %s', e, exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/finance/recurring', methods=['GET'])
@@ -4282,8 +4480,11 @@ def finance_cashflow():
     days = request.args.get('days', type=int) or 60
     days = max(7, min(days, 180))
     sb = request.args.get('starting_balance', type=float)
+    # Opt out for the bills-only view this endpoint used to return.
+    inc_var = (request.args.get('variable') or '1').lower() not in ('0', 'false', 'no')
     try:
-        return jsonify(_finance_cashflow(uid, days=days, starting_balance=sb))
+        return jsonify(_finance_cashflow(uid, days=days, starting_balance=sb,
+                                         include_variable=inc_var))
     except Exception as e:
         logger.error(f"Error in cashflow: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
@@ -4826,7 +5027,11 @@ def _finance_observations(p):
              'would be wrong if any of them were already counted inside another.'
              % ', '.join(c['accounts']))
     for g in (p.get('portfolio_gaps') or []):
-        _obs(out, 'note', 'portfolio_gap:%s' % g['id'],
+        # Severity by size. At a flat 'note' a $2,660 divergence sat at the bottom of the
+        # list next to a renamed subscription, and went unread for weeks while the
+        # positions it describes were used to answer "can I afford this?".
+        gap_sev = 'warning' if abs(g['variance']) >= 1000 else 'note'
+        _obs(out, gap_sev, 'portfolio_gap:%s' % g['id'],
              '%s is %s adrift from the broker' % (g['name'], _money(abs(g['variance']))),
              'The broker reports %s and the tracked positions add up to %s. A gap that way '
              'is usually cash or a holding that is not recorded — the positions are never '

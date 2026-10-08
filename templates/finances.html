@@ -193,6 +193,17 @@
         <div id="creditBody"><p class="muted">Loading&hellip;</p></div>
     </div>
 
+    <!-- Declared bills that no longer match what actually posts -->
+    <div class="fin-card" id="driftCard" style="display:none;">
+        <h2 style="margin:0 0 6px;">Bills that have drifted <span class="muted" id="driftCount" style="font-size:0.65em;font-weight:400;"></span></h2>
+        <p class="muted" style="font-size:0.8em;margin:0 0 12px;line-height:1.5;">
+            A bill is a prediction, so a stale one spends money the calendar has already
+            spent. Each row compares what you declared against what the ledger actually
+            shows, and can correct the bill in one click.
+        </p>
+        <div id="driftBody"></div>
+    </div>
+
     <!-- Recurring charges found in the ledger -->
     <div class="fin-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:10px;">
@@ -849,7 +860,7 @@
     async function loadBudgeting() {
         const m = spendMonth(), qs = m ? `?month=${m}` : '';
         try {
-            const [bills, budgets, cash, txns, rec, cred, plan] = await Promise.all([
+            const [bills, budgets, cash, txns, rec, cred, plan, drift] = await Promise.all([
                 fetch('/api/finance/bills',{credentials:'same-origin'}).then(r=>r.json()),
                 fetch(`/api/finance/budgets${qs}`,{credentials:'same-origin'}).then(r=>r.json()),
                 fetch('/api/finance/cashflow?days=60',{credentials:'same-origin'}).then(r=>r.json()),
@@ -857,12 +868,13 @@
                 fetch('/api/finance/recurring',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
                 fetch('/api/finance/credit',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
                 fetch('/api/finance/debt-plan',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
+                fetch('/api/finance/bills/drift',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null),
             ]);
             BILLS = bills.bills||[];
             const mEl=document.getElementById('spendMonth');
             if(mEl && !mEl.value && txns.month) mEl.value = txns.month;
             REC = rec; CREDIT = cred; PLAN = plan;
-            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns); renderRecurring(rec); renderCredit(cred); renderDebtPlan(plan);
+            renderBills(bills); renderBudgets(budgets.budgets||[]); renderCashflow(cash); renderSpending(txns); renderRecurring(rec); renderCredit(cred); renderDebtPlan(plan); renderDrift(drift);
             loadLedger();
         } catch(e){ document.getElementById('billsBody').innerHTML='<p class="neg" style="padding:12px;">Could not load budgeting.</p>'; }
     }
@@ -1265,6 +1277,48 @@
             await applyShareEntity('bill', id || saved.id);
             closeModal(); loadBudgeting();
         }catch(e){ g('bMsg').textContent=e.message; }
+    }
+    /* ---- bills whose configured amount or due day no longer matches the ledger ---- */
+    const DRIFT_LABEL = {amount:'amount', due_day:'due day', cadence:'frequency'};
+    function driftIssue(i) {
+        if(i.kind === 'amount')
+            return `declared ${fmt2(i.configured)}, actually ${fmt2(i.actual)}` +
+                   (i.annual_impact ? ` <span class="muted">(${i.annual_impact>0?'+':''}${fmt(i.annual_impact)}/yr)</span>` : '');
+        if(i.kind === 'due_day')
+            return `declared day ${i.configured}, actually pays day ${i.actual}` +
+                   ` <span class="muted">(${i.delta} day${i.delta===1?'':'s'} out)</span>`;
+        return `declared ${esc(String(i.configured))}, looks ${esc(String(i.actual))}`;
+    }
+    function renderDrift(d) {
+        const card=document.getElementById('driftCard'), el=document.getElementById('driftBody');
+        const rows=(d&&d.drifted)||[];
+        if(!rows.length){ card.style.display='none'; return; }
+        card.style.display='';
+        document.getElementById('driftCount').textContent =
+            `· ${rows.length} of ${d.checked} bill${d.checked===1?'':'s'}`;
+        el.innerHTML='<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Bill</th><th>What differs</th><th>Seen</th><th></th></tr></thead><tbody>'+
+            rows.map(r=>`<tr>
+                <td><strong>${esc(r.name)}</strong><div class="muted" style="font-size:0.8em;">${esc(r.merchant||r.payee||'')}</div></td>
+                <td>${r.issues.map(i=>`<div><span class="badge b-inv">${DRIFT_LABEL[i.kind]||esc(i.kind)}</span> ${driftIssue(i)}</div>`).join('')}</td>
+                <td class="muted" style="font-size:0.84em;white-space:nowrap;">${r.occurrences}&times;<div>last ${esc(r.last_seen)}</div></td>
+                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='applyDrift(${r.bill_id}, ${JSON.stringify(r.suggested)})'>use actual</button></td>
+            </tr>`).join('')+'</tbody></table></div>';
+    }
+    /* Writes only the fields the comparison actually disagreed on, so accepting a due-day
+       correction cannot quietly overwrite an amount the user set deliberately. */
+    async function applyDrift(id, suggested) {
+        const b=(BILLS||[]).find(x=>x.id===id);
+        if(!b){ alert('Reload the page and try again.'); return; }
+        const body={name:b.name, payee:b.payee||'', category:b.category,
+            amount:b.amount, frequency:b.frequency,
+            next_due_date:b.next_due_date||'', due_day:b.due_day||'',
+            autopay:!!b.autopay, linked_debt_id:b.linked_debt_id||null,
+            paid_from:b.paid_from||''};
+        Object.assign(body, suggested);
+        const r=await fetch(`/api/finance/bills/${id}`,{method:'PUT',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(!r.ok){ alert('Could not update that bill.'); return; }
+        loadBudgeting();
     }
     async function delBill(id){ if(!confirm('Delete this bill?'))return; await fetch(`/api/finance/bills/${id}`,{method:'DELETE',credentials:'same-origin'}); loadBudgeting(); }
     /* budget modal */
