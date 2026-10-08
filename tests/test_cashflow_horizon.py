@@ -71,7 +71,11 @@ with A.app.app_context():
     db.session.add(RecurringBill(user_id=UID, name='Weekly thing', category='other',
                                  amount=25.00, frequency='weekly',
                                  next_due_date=TODAY + timedelta(days=1)))
-    db.session.add(RecurringBill(user_id=UID, name='Rent', category='housing',
+    # The payee has to be what the charge is actually labelled: bill charges are
+    # identified by merchant, so a bill nobody can match to its own transactions is a
+    # bill whose cost gets counted twice.
+    db.session.add(RecurringBill(user_id=UID, name='Rent', payee='Landlord',
+                                 category='housing',
                                  amount=1500.00, frequency='monthly',
                                  next_due_date=TODAY + timedelta(days=5)))
     db.session.commit()
@@ -117,18 +121,46 @@ with A.app.app_context():
     burn, detail = A._variable_daily_burn(UID)
     check('a burn rate is produced', burn > 0, (burn, detail))
     check('it reports the window it measured', detail.get('window_days') == 90, detail)
-    check('observed spend is every transaction in the window',
-          detail.get('observed_spend') == round(GROCERIES + 4500 + weekly_hits * 25, 2),
-          detail)
-    check('bills are subtracted, not ignored', detail.get('bills_in_window', 0) > 0, detail)
     # The whole point: rent and the weekly bill are projected ahead on their own, so they
     # must not also ride along in the burn. Anything near the full observed spend means
     # the mortgage is being charged to the projection twice.
-    check('the residual is the unmodelled spending, not the bills',
-          abs(detail['residual'] - GROCERIES) < 150, (detail['residual'], GROCERIES))
+    check('only the unmodelled spending is counted',
+          abs(detail.get('observed_spend', 0) - GROCERIES) < 0.02,
+          (detail.get('observed_spend'), GROCERIES))
+    check('the bill charges are recognised as bills',
+          abs(detail.get('matched_to_bills', 0) - (4500 + weekly_hits * 25)) < 0.02,
+          detail)
     check('which is roughly the daily grocery run', abs(burn - 20.00) < 2.0, burn)
     check('and a monthly figure is reported',
           abs(detail['monthly'] - burn * 365 / 12) < 1.0, detail)
+
+    print('\n--- a capital purchase does not become a daily habit ---')
+    # The real case: a trailer bought inside the window. It is not everyday spending, and
+    # a mean that swallows it is worse than useless -- it put the measured burn at more
+    # than twice the truth and dragged the projected low point thousands of dollars under.
+    db.session.add(SpendTransaction(
+        user_id=UID, posted_at=TODAY - timedelta(days=30), merchant='Travel Trailer',
+        description='WITHDRAWAL - Travel Trailer', category='housing', amount=18750.00))
+    db.session.commit()
+    burn2, detail2 = A._variable_daily_burn(UID)
+    check('the one-off is excluded', detail2['excluded_count'] == 1, detail2)
+    check('and reported, not silently dropped', detail2['excluded_oneoffs'] == 18750.00,
+          detail2)
+    check('the threshold scales off the declared bills',
+          detail2['outlier_threshold'] > 1500, detail2)
+    check('so the burn rate is unmoved by it', abs(burn2 - burn) < 0.01, (burn, burn2))
+    check('rather than exploding', burn2 < 25.0, burn2)
+    # A mortgage-sized payment is NOT an outlier -- it belongs in the average and is
+    # subtracted as a bill. Excluding it would double-count the removal.
+    check('the threshold sits above a single rent payment',
+          detail2['outlier_threshold'] > 1500.0, detail2['outlier_threshold'])
+
+    print('\n--- the per-item view agrees with the budget total ---')
+    # _spend_items must stay a different VIEW of the same money, not a second opinion.
+    w_start, w_end = TODAY - timedelta(days=90), TODAY - timedelta(days=1)
+    items = sum(a for _m, _c, a in A._spend_items(UID, w_start, w_end))
+    totals = sum(A._spend_actuals(UID, w_start, w_end).values())
+    check('they sum to the same figure', abs(items - totals) < 0.02, (items, totals))
 
     print('\n--- it lands in the projection and moves the balance ---')
     with_var = A._finance_cashflow(UID, days=60, starting_balance=10000.0)

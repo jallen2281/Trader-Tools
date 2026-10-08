@@ -1330,6 +1330,41 @@ def _spend_actuals(user_id, start, end, detail=False):
     return (out, spread) if detail else out
 
 
+def _spend_items(user_id, start, end):
+    """The same spending _spend_actuals totals, but one (merchant, category, amount)
+    at a time.
+
+    Needed because an average can be destroyed by a single row, and a total cannot tell
+    you that. Mirrors _spend_actuals exactly -- transfers excluded, a spread purchase
+    contributing its monthly shares rather than its face value -- so anything measured
+    here adds up to what the budget shows.
+    """
+    for t in SpendTransaction.query.filter(
+            _visible(SpendTransaction, user_id),
+            SpendTransaction.posted_at >= start,
+            SpendTransaction.posted_at <= end).all():
+        c = t.category or 'other'
+        if c in NON_SPEND_CATEGORIES or (t.spread_months or 1) > 1:
+            continue
+        yield (t.merchant or t.description or ''), c, float(t.amount or 0)
+
+    reach = timedelta(days=31 * (MAX_SPREAD_MONTHS + 1))
+    for t in SpendTransaction.query.filter(
+            _visible(SpendTransaction, user_id),
+            SpendTransaction.spread_months > 1,
+            SpendTransaction.posted_at >= start - reach,
+            SpendTransaction.posted_at <= end + reach).all():
+        c = t.category or 'other'
+        if c in NON_SPEND_CATEGORIES:
+            continue
+        m = date(start.year, start.month, 1)
+        while m <= end:
+            share = t.spread_share(m)
+            if share:
+                yield (t.merchant or t.description or ''), c, share
+            m = date(m.year + (m.month // 12), m.month % 12 + 1, 1)
+
+
 def _apply_spend_fields(x, d):
     if 'posted_at' in d:
         s = (d.get('posted_at') or '').strip()
@@ -3894,6 +3929,9 @@ def _net_paycheck_estimates(user_id, srcs=None):
 # lumpy month (a bulk feed run, a big grocery week), short enough to follow a real change
 # in habits rather than one from last spring.
 VARIABLE_SPEND_LOOKBACK_DAYS = 90
+# Lower bound for the one-off cutoff, so a household that has not declared its bills yet
+# gets a sane threshold instead of zero (which would exclude everything).
+VARIABLE_SPEND_OUTLIER_FLOOR = 1500.0
 
 
 def _occurrences_for(days, per_year):
@@ -3932,21 +3970,66 @@ def _variable_daily_burn(user_id, today=None):
     window_days = (end - start).days + 1
     if window_days <= 0:
         return 0.0, {}
-    spent = sum(_spend_actuals(user_id, start, end).values())
-    bills_monthly = sum(b.monthly_amount() for b in RecurringBill.query.filter(
-        _visible(RecurringBill, user_id), RecurringBill.active.is_(True)).all())
-    bills_in_window = bills_monthly * 12.0 / 365.0 * window_days
-    # Never negative. Bills exceeding observed spend means the history is short or a bill
-    # is not landing as a transaction -- both are reasons to model nothing extra, not to
-    # credit the projection with money it will not have.
-    residual = max(0.0, spent - bills_in_window)
-    daily = residual / window_days
+
+    bills = RecurringBill.query.filter(_visible(RecurringBill, user_id),
+                                       RecurringBill.active.is_(True)).all()
+    bills_monthly = sum(b.monthly_amount() for b in bills)
+
+    # Bill charges are IDENTIFIED and skipped, not subtracted as an average.
+    #
+    # Subtracting the monthly-equivalent of every declared bill looked equivalent and was
+    # not: an annual bill contributes to that average twelve months a year while its
+    # transaction appears in the window at most once. On a real household carrying a
+    # winter property tax and an insurance premium, the theoretical figure exceeded the
+    # observed spending outright and the burn came out at exactly zero -- the feature
+    # silently did nothing, which is the worst of the three possible answers.
+    #
+    # Matching on merchant has the opposite failure: a bill whose name does not resemble
+    # its payee ("Electric" against "DTE Energy") goes unmatched and its charge stays in
+    # the burn, where it is also projected as a bill -- counted twice. That errs high
+    # rather than to zero, it is bounded by one bill, and the drift card surfaces exactly
+    # those unmatched bills so the fix is a rename rather than a mystery.
+    bill_keys = set()
+    for b in bills:
+        for candidate in (b.payee, b.name):
+            k = recurring_detector.merchant_key(candidate)
+            if k:
+                bill_keys.add(k)
+    bill_firsts = {k.split()[0] for k in bill_keys if k.split()}
+
+    # A capital purchase is not everyday spending, and one of them destroys a mean. A
+    # trailer bought for $18,750 inside the window put the measured burn at $172/day
+    # against a real figure nearer $70 -- wrong in the alarming direction, which is its
+    # own kind of useless: a projection nobody believes gets ignored exactly like one
+    # that lies the other way.
+    #
+    # The cutoff is one month of this household's own declared bills rather than a
+    # constant, so it scales with the size of their finances. It sits naturally above a
+    # mortgage payment and below a vehicle purchase.
+    outlier_at = max(bills_monthly, VARIABLE_SPEND_OUTLIER_FLOOR)
+    spent = excluded = billed = 0.0
+    excluded_n = 0
+    for merchant, _cat, amount in _spend_items(user_id, start, end):
+        if amount >= outlier_at:
+            excluded += amount
+            excluded_n += 1
+            continue
+        k = recurring_detector.merchant_key(merchant)
+        first = k.split()[0] if k and k.split() else ''
+        if k and (k in bill_keys or (first and first in bill_firsts)):
+            billed += amount            # already on the calendar as a bill
+            continue
+        spent += amount
+
+    daily = spent / window_days
     return round(daily, 2), {
         'window_days': window_days,
         'observed_spend': round(spent, 2),
-        'bills_in_window': round(bills_in_window, 2),
-        'residual': round(residual, 2),
+        'matched_to_bills': round(billed, 2),
         'monthly': round(daily * 365.0 / 12.0, 2),
+        'outlier_threshold': round(outlier_at, 2),
+        'excluded_oneoffs': round(excluded, 2),
+        'excluded_count': excluded_n,
     }
 
 
