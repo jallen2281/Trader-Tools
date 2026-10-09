@@ -412,6 +412,15 @@
               <div style="flex:1;"><label class="fld">Pay frequency</label><select id="iFreq" class="fin-in" style="width:100%;" onchange="incPreview()">${PAY_FREQS.map(f=>`<option ${e.pay_frequency===f?'selected':''}>${f}</option>`).join('')}</select></div>
               <div style="flex:1;"><label class="fld">Next pay date</label><input id="iNext" type="date" class="fin-in" style="width:100%;" value="${e.next_pay_date||''}"></div>
             </div>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Second day of month <span class="muted">(semimonthly only)</span></label><input id="iPayDay2" type="number" min="1" max="31" class="fin-in" style="width:100%;" placeholder="e.g. 25" value="${e.pay_day_2||''}"></div>
+              <div style="flex:1;"><label class="fld">If it lands on a weekend</label><select id="iWeekend" class="fin-in" style="width:100%;">${[['none','paid that day'],['before','paid the Friday before'],['after','paid the Monday after']].map(([v,l])=>`<option value="${v}" ${(e.weekend_rule||'none')===v?'selected':''}>${l}</option>`).join('')}</select></div>
+            </div>
+            <p class="muted" style="font-size:0.78em;margin:4px 0 0;line-height:1.45;">
+              Semimonthly pays twice a month on fixed days. Put one in <em>next pay date</em>
+              and the other here &mdash; the 10th and 25th, say. Left blank it assumes the
+              1st and 15th.
+            </p>
             <div id="iTaxRateBox"><label class="fld">Tax set-aside % <span class="muted">(1099 — covers income + ~15.3% self-employment tax; ~25–30% typical)</span></label><input id="iTaxRate" type="number" step="1" class="fin-in" style="width:100%;" value="${e.est_tax_rate||28}" oninput="incPreview()"></div>
             <div id="iPayrollBox" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
               <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
@@ -556,6 +565,7 @@
             annual_salary:parseFloat(g('iSalary').value)||0,hourly_rate:parseFloat(g('iRate').value)||0,
             hours_per_week:parseFloat(g('iHours').value)||0,ot_multiplier:parseFloat(g('iOtMult').value)||1.5,
             ot_threshold_hours:parseFloat(g('iOtThresh').value)||40,pay_frequency:g('iFreq').value,next_pay_date:g('iNext').value,
+            pay_day_2:g('iPayDay2').value||null, weekend_rule:g('iWeekend').value,
             pretax_retirement_mode:'percent',
             pretax_retirement_pct:parseFloat(g('iPreTaxPct').value)||0,
             roth_retirement_pct:parseFloat(g('iRothPct').value)||0,
@@ -1279,7 +1289,7 @@
         }catch(e){ g('bMsg').textContent=e.message; }
     }
     /* ---- bills whose configured amount or due day no longer matches the ledger ---- */
-    const DRIFT_LABEL = {amount:'amount', due_day:'due day', cadence:'frequency'};
+    const DRIFT_LABEL = {amount:'amount', due_day:'due day', cadence:'frequency', mismatch:'wrong charges?'};
     function driftIssue(i) {
         if(i.kind === 'amount')
             return `declared ${fmt2(i.configured)}, actually ${fmt2(i.actual)}` +
@@ -1287,6 +1297,12 @@
         if(i.kind === 'due_day')
             return `declared day ${i.configured}, actually pays day ${i.actual}` +
                    ` <span class="muted">(${i.delta} day${i.delta===1?'':'s'} out)</span>`;
+        if(i.kind === 'mismatch')
+            return `this bill may not be these charges &mdash; declared ` +
+                   `<strong>${esc(String(i.configured))}</strong>, the charges run ` +
+                   `<strong>${esc(String(i.actual))}</strong>` +
+                   `${i.merchant?` at ${esc(String(i.merchant))}`:''}. Both the amount and ` +
+                   `the frequency disagree, so check the payee before changing anything.`;
         return `declared ${esc(String(i.configured))}, looks ${esc(String(i.actual))}`;
     }
     function renderDrift(d) {
@@ -1301,7 +1317,7 @@
                 <td><strong>${esc(r.name)}</strong><div class="muted" style="font-size:0.8em;">${esc(r.merchant||r.payee||'')}</div></td>
                 <td>${r.issues.map(i=>`<div><span class="badge b-inv">${DRIFT_LABEL[i.kind]||esc(i.kind)}</span> ${driftIssue(i)}</div>`).join('')}</td>
                 <td class="muted" style="font-size:0.84em;white-space:nowrap;">${r.occurrences}&times;<div>last ${esc(r.last_seen)}</div></td>
-                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='applyDrift(${r.bill_id}, ${JSON.stringify(r.suggested)})'>use actual</button></td>
+                <td style="text-align:right;white-space:nowrap;">${Object.keys(r.suggested||{}).length?`<button class="link-btn" onclick='applyDrift(${r.bill_id}, ${JSON.stringify(r.suggested)})'>use actual</button>`:'<span class="muted" style="font-size:0.82em;">needs a look</span>'}</td>
             </tr>`).join('')+'</tbody></table></div>';
     }
     /* Writes only the fields the comparison actually disagreed on, so accepting a due-day

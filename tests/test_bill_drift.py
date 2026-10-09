@@ -152,6 +152,31 @@ with A.app.app_context():
           res['drifted'][0]['name'] == 'Electric',
           [r['name'] for r in res['drifted']])
 
+    print('\n--- a bill that matched the wrong charges proposes nothing ---')
+    # The real false positive: a card-payment bill called "Costco Visa" matched the
+    # weekly grocery run at the Costco STORE on a shared first word, and cheerfully
+    # offered to rewrite the card payment to weekly $95.59. Both the amount and the
+    # cadence disagreed, which is evidence against the match rather than two corrections.
+    card = RecurringBill(user_id=UID, name='Costco Visa', payee='Costco',
+                         category='debt', amount=101.35, frequency='monthly',
+                         due_day=7, active=True)
+    db.session.add(card)
+    db.session.commit()
+    for wk in range(1, 15):
+        post('Costco', TODAY - timedelta(days=wk * 7), 95.59, 'food')
+    db.session.commit()
+
+    row = next((r for r in A._bill_drift(UID)['drifted'] if r['name'] == 'Costco Visa'), None)
+    check('it is still surfaced', row is not None, [r['name'] for r in A._bill_drift(UID)['drifted']])
+    if row:
+        kinds = [i['kind'] for i in row['issues']]
+        check('as a single mismatch, not two corrections', kinds == ['mismatch'], kinds)
+        check('and it suggests nothing to apply', not row['suggested'], row['suggested'])
+        check('stating what was declared', 'monthly' in row['issues'][0]['configured'],
+              row['issues'][0])
+        check('against what the charges actually do',
+              'weekly' in row['issues'][0]['actual'], row['issues'][0])
+
     print('\n--- the endpoint ---')
     c = A.app.test_client()
     with c.session_transaction() as sess:
@@ -160,7 +185,7 @@ with A.app.app_context():
     r = c.get('/api/finance/bills/drift')
     check('serves 200', r.status_code == 200, r.status_code)
     j = r.get_json()
-    check('with the same findings', len(j['drifted']) == 2, j)
+    check('with the same findings', len(j['drifted']) == 3, j)
 
     print('\n--- applying the suggestion clears the finding ---')
     mortgage.due_day = 1

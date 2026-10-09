@@ -877,6 +877,7 @@ def finance_set_income():
 INCOME_SOURCE_TYPES = {'salary', 'hourly', 'self_employed', 'other'}
 INCOME_OWNERS = {'me', 'spouse', 'joint', 'other'}
 PAY_FREQUENCIES = {'weekly', 'biweekly', 'semimonthly', 'monthly'}
+WEEKEND_RULES = ('none', 'before', 'after')
 INCOME_TAX_FORMS = {'W2', '1099', 'none'}
 
 
@@ -916,6 +917,23 @@ def _apply_income_fields(x, d):
     if 'tax_form' in d:
         tf = (d.get('tax_form') or 'W2')
         x.tax_form = tf if tf in INCOME_TAX_FORMS else 'W2'
+    if 'pay_day_2' in d:
+        raw = d.get('pay_day_2')
+        if raw in (None, '', 0, '0'):
+            x.pay_day_2 = None
+        else:
+            try:
+                n = int(raw)
+            except (TypeError, ValueError):
+                raise ValueError('pay_day_2 must be a day of the month')
+            if not 1 <= n <= 31:
+                raise ValueError('pay_day_2 must be between 1 and 31')
+            x.pay_day_2 = n
+    if 'weekend_rule' in d:
+        r = (d.get('weekend_rule') or 'none').lower()
+        if r not in WEEKEND_RULES:
+            raise ValueError('weekend_rule must be one of: %s' % ', '.join(WEEKEND_RULES))
+        x.weekend_rule = r
     if 'irregular' in d:
         x.irregular = bool(d.get('irregular'))
     for f in ('annual_salary', 'hourly_rate', 'hours_per_week', 'ot_multiplier',
@@ -1010,7 +1028,14 @@ def finance_create_income():
     if not name:
         return jsonify({'error': 'name is required'}), 400
     x = IncomeSource(user_id=uid, name=name[:120])
-    _apply_income_fields(x, d)
+    # A rejected value is the caller's mistake, not a server fault. Letting the
+    # ValueError escape returns a 500 AND leaves the session dirty, so the NEXT request
+    # fails its user lookup and answers 401 -- a validation error that logs you out.
+    try:
+        _apply_income_fields(x, d)
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
     db.session.add(x)
     db.session.commit()
     return jsonify(x.to_dict()), 201
@@ -1029,7 +1054,11 @@ def finance_modify_income(iid):
         db.session.delete(x)
         db.session.commit()
         return jsonify({'success': True})
-    _apply_income_fields(x, request.get_json() or {})
+    try:
+        _apply_income_fields(x, request.get_json() or {})
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
     db.session.commit()
     return jsonify(x.to_dict(include_events=True))
 
@@ -1207,6 +1236,10 @@ SPEND_CATEGORY_RULES = [
     ('transfer', ('transfer', 'to checking', 'to savings', 'from checking', 'from savings',
                   'epayment', 'card online', 'online payment', 'payment thank you',
                   'payment-thank you',
+                  # "Payment to Chase card ending in 4807" matched none of the above and
+                  # landed in 'debt', so a card payment counted as spending AND the
+                  # purchases it settled counted again when the card was used.
+                  'card ending', 'payment to chase', 'mobile payment',
                   'autopay', 'bank transfer', 'internal transfer', 'ach withdrawal')),
     ('housing', ('rent', 'mortgage', 'hoa ', 'property mgmt', 'landlord')),
     ('utilities', ('electric', 'energy', 'water dept', 'sewer', 'utility', 'comcast', 'xfinity',
@@ -4255,6 +4288,20 @@ def _bill_drift(user_id, today=None):
             issues.append({'kind': 'cadence', 'configured': b.frequency,
                            'actual': ch['cadence'], 'delta': None})
             suggest['frequency'] = ch['cadence']
+
+        # Both the amount AND the cadence disagreeing is not two corrections -- it is
+        # evidence the charge is not this bill at all. "Costco Visa" (a card payment, once
+        # a month) matched the weekly grocery run at the Costco store because they share a
+        # first word, and offered to rewrite the bill to weekly $95.59. A suggestion that
+        # confident and that wrong is worse than no suggestion, so the pair is collapsed
+        # into one finding that proposes nothing and asks a person to look.
+        kinds = {i['kind'] for i in issues}
+        if {'amount', 'cadence'} <= kinds:
+            issues = [{'kind': 'mismatch',
+                       'configured': '%s %s' % (b.frequency, _money(configured)),
+                       'actual': '%s %s' % (ch['cadence'], _money(actual)),
+                       'merchant': ch['label'], 'delta': None}]
+            suggest = {}
 
         if issues:
             out.append({

@@ -50,6 +50,7 @@ SUITES = [
     ('payroll_per_source', 'withholding and retirement per income, not per household'),
     ('paycheck', 'FICA, Section 125 vs post-tax, take-home; pinned to a real stub'),
     ('cashflow_net', 'the ledger projects net pay, not gross'),
+    ('paydates', 'semimonthly day pairs and weekend pay-date rules'),
     ('recurring', 'recurring-charge detection arithmetic'),
     ('recurring_api', 'recurring charges: decisions, adoption, sharing'),
     ('debtplan', 'payoff simulation: avalanche vs snowball'),

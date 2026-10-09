@@ -9,6 +9,35 @@ from datetime import datetime, date, timedelta
 from sqlalchemy import JSON
 
 
+def _last_day_of_month(y, m):
+    """Day number of the last day in that month, without importing calendar."""
+    nxt = date(y + (m // 12), m % 12 + 1, 1)
+    return (nxt - timedelta(days=1)).day
+
+
+# A payday that lands on a weekend is not paid on the weekend. Payroll either pulls it
+# forward to the Friday or pushes it to the Monday, and which one is an employer's policy,
+# not something that can be inferred from the date.
+WEEKEND_RULES = ('none', 'before', 'after')
+
+
+def _roll_off_weekend(d, rule):
+    """Move a date off Saturday/Sunday per the employer's rule.
+
+    Applied to the date that is REPORTED, never to the date the schedule steps from.
+    Rolling the anchor itself would compound: pay the 25th on Friday the 23rd, step a
+    fortnight from the 23rd, and the schedule walks away from the 10th and 25th it is
+    supposed to be anchored to.
+    """
+    if rule == 'before':
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+    elif rule == 'after':
+        while d.weekday() >= 5:
+            d += timedelta(days=1)
+    return d
+
+
 def _add_one_month(d):
     """d + 1 calendar month, clamping the day to the target month's length."""
     y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
@@ -1317,6 +1346,15 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
 
     PAY_PERIODS = {'weekly': 52, 'biweekly': 26, 'semimonthly': 24, 'monthly': 12}
 
+    # Semimonthly pay is two fixed days of the month, and which two is the employer's
+    # choice: the 1st and 15th, the 15th and last, the 10th and 25th. The schedule used to
+    # assume the 1st and 15th, so anyone paid on any other pair had every future payday
+    # wrong -- and on a biweekly setting instead, the dates drifted a day further out
+    # every month. pay_day_2 is the OTHER day; the first comes from next_pay_date.
+    pay_day_2 = db.Column(db.Integer)
+    # none | before | after -- what happens when a payday falls on a weekend.
+    weekend_rule = db.Column(db.String(10), default='none')
+
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     # Household sharing. 'none' keeps a record private to its owner; 'view' lets household
@@ -1450,20 +1488,39 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
         periods = self.PAY_PERIODS.get(self.pay_frequency, 26)
         return round(self.gross_annual() / periods, 2)
 
+    def semimonthly_days(self):
+        """The two days of the month this source pays on, low first, or None."""
+        if not self.next_pay_date or not self.pay_day_2:
+            return None
+        a, b = int(self.next_pay_date.day), int(self.pay_day_2)
+        return (min(a, b), max(a, b)) if a != b else None
+
     def upcoming_paydates(self, n=6):
         # Irregular income has no schedule — nothing to project.
         if self.irregular or not self.next_pay_date:
             return []
         out, d, freq = [], self.next_pay_date, self.pay_frequency
+        rule = self.weekend_rule or 'none'
+        pair = self.semimonthly_days()
         for _ in range(n):
-            out.append(d)
+            # The reported date is rolled off the weekend; `d` keeps the nominal schedule.
+            out.append(_roll_off_weekend(d, rule))
             if freq == 'weekly':
                 d = d + timedelta(days=7)
             elif freq == 'biweekly':
                 d = d + timedelta(days=14)
             elif freq == 'semimonthly':
-                # Anchor to the 1st and 15th; step to the next such date.
-                d = date(d.year, d.month, 15) if d.day < 15 else _add_one_month(date(d.year, d.month, 1))
+                if pair:
+                    lo, hi = pair
+                    if d.day < hi:
+                        d = date(d.year, d.month, min(hi, _last_day_of_month(d.year, d.month)))
+                    else:
+                        nxt = _add_one_month(date(d.year, d.month, 1))
+                        d = date(nxt.year, nxt.month,
+                                 min(lo, _last_day_of_month(nxt.year, nxt.month)))
+                else:
+                    # No second day declared: the old 1st-and-15th assumption.
+                    d = date(d.year, d.month, 15) if d.day < 15 else _add_one_month(date(d.year, d.month, 1))
             else:  # monthly
                 d = _add_one_month(d)
         return out
@@ -1504,6 +1561,7 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
             'gross_annual': self.gross_annual(), 'paycheck_estimate': self.paycheck_estimate(),
             'net_monthly': self.net_monthly(), 'tax_setaside_monthly': self.tax_setaside_monthly(),
             'ytd_received': self.ytd_received(), 'trailing_12mo_received': self.trailing_12mo_received(),
+            'pay_day_2': self.pay_day_2, 'weekend_rule': self.weekend_rule or 'none',
             'upcoming_paydates': [pd.isoformat() for pd in self.upcoming_paydates(4)],
         }
         if include_events:
