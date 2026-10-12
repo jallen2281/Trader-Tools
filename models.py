@@ -2096,6 +2096,11 @@ class PlaidDeposit(db.Model):
     __tablename__ = 'plaid_deposits'
 
     KINDS = ('income', 'card_payment', 'transfer_in', 'refund', 'unknown')
+    # external_id is NOT NULL and unique per user because it is Plaid's own id and is what
+    # stops a re-sync double-counting. A hand-entered row has no such id, so it gets a
+    # generated one under this prefix -- which also makes "did a person type this?" a
+    # prefix test rather than a join.
+    MANUAL_DEPOSIT_PREFIX = 'manual:'
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
@@ -2111,6 +2116,14 @@ class PlaidDeposit(db.Model):
     # Set when the user attributes a deposit to a declared income source, which is what
     # turns an estimate into a measured figure.
     income_source_id = db.Column(db.Integer, db.ForeignKey('income_sources.id'))
+    # Which book this income belongs to, when it is not simply the book of the income
+    # source. Income used to take its book ENTIRELY from its source, so a deposit with no
+    # source had no book and every one of them piled up as unassigned -- and there was no
+    # way to say otherwise, because this column did not exist.
+    entity_id = db.Column(db.Integer, db.ForeignKey('entities.id'), index=True)
+    # plaid | manual. Hand-entered income (a farm sale, a commission cheque) has no Plaid
+    # transaction behind it and must not be deleted by a re-sync.
+    source = db.Column(db.String(10), default='plaid')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     __table_args__ = (
@@ -2127,6 +2140,7 @@ class PlaidDeposit(db.Model):
             'amount': float(self.amount or 0), 'kind': self.kind,
             'pfc_primary': self.pfc_primary, 'pfc_detailed': self.pfc_detailed,
             'income_source_id': self.income_source_id,
+            'entity_id': self.entity_id, 'source': self.source or 'plaid',
         }
 
 

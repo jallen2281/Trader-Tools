@@ -27,6 +27,7 @@ import json
 import re
 import csv
 import hashlib
+import uuid
 import traceback
 import pandas as pd
 import os
@@ -2458,6 +2459,10 @@ def _ledger_rows(uid, start, end):
     debts = {d.id: d.name for d in Debt.query.filter(_visible(Debt, uid)).all()}
     books = {e.id: e.name for e in _visible_entities(uid).all()}
     sources = {x.id: x for x in IncomeSource.query.filter(_visible(IncomeSource, uid)).all()}
+    # Anything the user has not filed lands in their default book rather than in a pile
+    # called "unassigned". Reported as `book_default` so the UI can show it as an
+    # assumption rather than a decision.
+    fallback = _default_book_id(uid)
 
     rows = []
     for t in SpendTransaction.query.filter(
@@ -2481,7 +2486,9 @@ def _ledger_rows(uid, start, end):
             'direction': 'transfer' if cat in NON_SPEND_CATEGORIES else ('in' if amt < 0 else 'out'),
             'category': cat, 'category_label': category_label(cat),
             'account_key': key, 'account_name': name,
-            'book_id': t.entity_id, 'book': books.get(t.entity_id),
+            'book_id': t.entity_id or fallback,
+            'book': books.get(t.entity_id or fallback),
+            'book_default': t.entity_id is None and fallback is not None,
             'source': t.source, 'pending': bool(t.pending),
             'spread_months': t.spread_months if (t.spread_months or 1) > 1 else None,
             'txn': t.to_dict(),
@@ -2500,9 +2507,16 @@ def _ledger_rows(uid, start, end):
             'income_source_id': d.income_source_id,
             'account_key': d.plaid_account_id or 'none',
             'account_name': plaid_names.get(d.plaid_account_id, 'Connected account'),
-            'book_id': src.entity_id if src else None,
-            'book': books.get(src.entity_id) if src else None,
-            'source': 'plaid', 'pending': False, 'spread_months': None,
+            # A deposit's own book wins, then the book of the income source behind it,
+            # then the default. Before any of this existed income took its book solely
+            # from the source, so an unattributed deposit had no book at all.
+            'book_id': _deposit_book(d, src, fallback),
+            'book': books.get(_deposit_book(d, src, fallback)),
+            'book_default': (d.entity_id is None and not (src and src.entity_id)
+                             and fallback is not None),
+            'entity_id': d.entity_id,
+            'source': d.source or 'plaid', 'pending': False, 'spread_months': None,
+            'deposit': d.to_dict(),
         })
     rows.sort(key=lambda r: (r['posted_at'], r['kind'], r['id']), reverse=True)
     return rows
@@ -2566,6 +2580,280 @@ def finance_ledger():
         'accounts': sorted(({'key': k, 'name': v} for k, v in accounts.items()), key=lambda x: x['name']),
         'books': [{'id': e.id, 'name': e.name} for e in _visible_entities(uid).all()],
     })
+
+
+def _default_book_id(user_id):
+    """The book to file anything the user has not filed themselves, or None."""
+    u = User.query.get(user_id)
+    pref = (getattr(u, 'preferences', None) or {}) if u else {}
+    try:
+        bid = int(pref.get('default_entity_id') or 0)
+    except (TypeError, ValueError):
+        return None
+    if not bid:
+        return None
+    return bid if Entity.query.filter(Entity.id == bid, _visible(Entity, user_id)).first() else None
+
+
+def _set_default_book_id(user_id, bid):
+    u = User.query.get(user_id)
+    if not u:
+        raise ValueError('user not found')
+    if bid in (None, '', 0, '0'):
+        bid = None
+    else:
+        bid = int(bid)
+        if not Entity.query.filter(Entity.id == bid, _visible(Entity, user_id)).first():
+            raise ValueError('book not found')
+    # A JSON column is only marked dirty if the object identity changes, so rebuild it.
+    pref = dict(getattr(u, 'preferences', None) or {})
+    if bid is None:
+        pref.pop('default_entity_id', None)
+    else:
+        pref['default_entity_id'] = bid
+    u.preferences = pref
+    return bid
+
+
+def _income_payer_key(dep):
+    """What identifies the payer on a deposit."""
+    return recurring_detector.merchant_key(dep.merchant or dep.description or '')
+
+
+def _attribute_deposits(user_id):
+    """Link deposits to the income source that produced them. Returns how many were set.
+
+    Matching on NAME alone does not work here and it is worth saying why: a payroll line
+    reads "GENESEE CHRISTIA PAYROLL PPD" while the source the household calls it is
+    "Happy elephant - salary", and the hosting income arrives as "NEXCESS" against a
+    source named "Liquid web - hourly". There is no string distance that bridges those,
+    and guessing would attach income to the wrong book, which is worse than leaving it
+    unfiled.
+
+    So it LEARNS. Attribute one deposit from a payer by hand and every other deposit from
+    that payer -- past and future -- follows. Name matching is kept as a second pass for
+    the easy cases where the payer really is named after the source.
+    """
+    learned = {}
+    for d in PlaidDeposit.query.filter(PlaidDeposit.user_id == user_id,
+                                       PlaidDeposit.income_source_id.isnot(None)).all():
+        k = _income_payer_key(d)
+        if k:
+            learned.setdefault(k, d.income_source_id)
+
+    by_name = {}
+    for src in IncomeSource.query.filter(_visible(IncomeSource, user_id)).all():
+        k = recurring_detector.merchant_key(src.name)
+        if k:
+            by_name.setdefault(k, src.id)
+
+    n = 0
+    for d in PlaidDeposit.query.filter(PlaidDeposit.user_id == user_id,
+                                       PlaidDeposit.income_source_id.is_(None),
+                                       PlaidDeposit.kind == 'income').all():
+        k = _income_payer_key(d)
+        if not k:
+            continue
+        sid = learned.get(k)
+        if not sid:
+            # Same first-token rule the bill matcher uses, and only when it is unambiguous.
+            first = k.split()[0]
+            hits = {v for bk, v in by_name.items() if bk == k or bk.split()[0] == first}
+            sid = hits.pop() if len(hits) == 1 else None
+        if sid:
+            d.income_source_id = sid
+            n += 1
+    return n
+
+
+@app.route('/api/finance/default-book', methods=['GET', 'PUT'])
+@require_api_auth
+def finance_default_book():
+    """The book that anything unfiled belongs to."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    if request.method == 'PUT':
+        try:
+            _set_default_book_id(uid, (request.get_json() or {}).get('entity_id'))
+        except ValueError as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
+        db.session.commit()
+    return jsonify({'entity_id': _default_book_id(uid)})
+
+
+@app.route('/api/finance/deposits/attribute-all', methods=['POST'])
+@require_api_auth
+def finance_attribute_all_deposits():
+    """Apply what the user has already taught us to every unattributed deposit."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    n = _attribute_deposits(uid)
+    db.session.commit()
+    return jsonify({'linked': n})
+
+
+def _deposit_book(dep, src, fallback):
+    return dep.entity_id or (src.entity_id if src else None) or fallback
+
+
+def _apply_deposit_fields(x, d, uid):
+    """Validate and apply the editable parts of a deposit. Raises ValueError."""
+    if 'posted_at' in d:
+        parsed = _parse_csv_date((d.get('posted_at') or '').strip())
+        if not parsed:
+            raise ValueError('posted_at must be a date')
+        x.posted_at = parsed
+    if 'description' in d:
+        x.description = (d.get('description') or '').strip()[:200] or None
+    if 'merchant' in d:
+        x.merchant = (d.get('merchant') or '').strip()[:160] or None
+    if 'amount' in d:
+        try:
+            amt = round(float(d.get('amount') or 0), 2)
+        except (TypeError, ValueError):
+            raise ValueError('amount must be a number')
+        if amt <= 0:
+            raise ValueError('amount must be greater than zero')
+        x.amount = amt
+    if 'kind' in d:
+        k = (d.get('kind') or 'income').lower()
+        if k not in PlaidDeposit.KINDS:
+            raise ValueError('kind must be one of: %s' % ', '.join(PlaidDeposit.KINDS))
+        x.kind = k
+    if 'income_source_id' in d:
+        sid = d.get('income_source_id')
+        if sid in (None, '', 0, '0'):
+            x.income_source_id = None
+        else:
+            try:
+                sid = int(sid)
+            except (TypeError, ValueError):
+                raise ValueError('income_source_id must be a number')
+            if not IncomeSource.query.filter(IncomeSource.id == sid,
+                                             _visible(IncomeSource, uid)).first():
+                raise ValueError('income source not found')
+            x.income_source_id = sid
+    if 'entity_id' in d:
+        bid = d.get('entity_id')
+        if bid in (None, '', 0, '0'):
+            x.entity_id = None
+        else:
+            try:
+                bid = int(bid)
+            except (TypeError, ValueError):
+                raise ValueError('entity_id must be a number')
+            if not Entity.query.filter(Entity.id == bid, _visible(Entity, uid)).first():
+                raise ValueError('book not found')
+            x.entity_id = bid
+
+
+@app.route('/api/finance/deposits', methods=['POST'])
+@require_api_auth
+def finance_create_deposit():
+    """Record income by hand -- a farm sale, a commission, a cheque.
+
+    Everything in this table used to arrive from Plaid, so income that never touches a
+    connected account (cash for eggs, a settlement cheque) could not be recorded at all,
+    and the farm and realty books had no income side.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json() or {}
+    x = PlaidDeposit(
+        user_id=uid, source='manual', kind='income',
+        external_id='%s%s' % (PlaidDeposit.MANUAL_DEPOSIT_PREFIX, uuid.uuid4().hex),
+        posted_at=date.today(), amount=0)
+    try:
+        _apply_deposit_fields(x, d, uid)
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
+    if not float(x.amount or 0):
+        return jsonify({'error': 'amount is required'}), 400
+    db.session.add(x)
+    db.session.commit()
+    return jsonify(x.to_dict()), 201
+
+
+@app.route('/api/finance/deposits/<int:did>', methods=['PUT', 'DELETE'])
+@require_api_auth
+def finance_modify_deposit(did):
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    x = PlaidDeposit.query.filter_by(id=did, user_id=uid).first()
+    if not x:
+        return jsonify({'error': 'Not found'}), 404
+    if request.method == 'DELETE':
+        # A synced row would simply come back on the next sync, and deleting it would
+        # look like it worked until then. Only hand-entered income can be removed.
+        if not (x.source == 'manual'
+                or (x.external_id or '').startswith(PlaidDeposit.MANUAL_DEPOSIT_PREFIX)):
+            return jsonify({'error': 'This came from the bank feed and cannot be deleted. '
+                                     'Re-file it instead.'}), 400
+        db.session.delete(x)
+        db.session.commit()
+        return jsonify({'success': True})
+    try:
+        _apply_deposit_fields(x, request.get_json() or {}, uid)
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
+    db.session.commit()
+    return jsonify(x.to_dict())
+
+
+@app.route('/api/finance/debts/<int:did>/payment', methods=['POST'])
+@require_api_auth
+def finance_debt_payment(did):
+    """Record a payment against a debt the app tracks by hand.
+
+    A synced card gets its balance from the bank. A hand-tracked debt -- a tuition plan,
+    a family loan -- does not, so nothing moved its balance and it sat at its opening
+    figure forever. This writes BOTH halves: the balance comes down, and the money leaving
+    the account is recorded as a transfer so it never counts as spending.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    debt = _get_editable(Debt, did, uid)
+    if not debt:
+        return jsonify({'error': 'Not found'}), 404
+    d = request.get_json() or {}
+    try:
+        amount = round(float(d.get('amount') or 0), 2)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'amount must be a number'}), 400
+    if amount <= 0:
+        return jsonify({'error': 'amount must be greater than zero'}), 400
+    when = _parse_csv_date((d.get('posted_at') or '').strip()) or date.today()
+
+    txn = None
+    raw_from = (d.get('from_account_id') or '')
+    if raw_from:
+        try:
+            acct_id = int(raw_from)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'from_account_id must be a number'}), 400
+        if not FinanceAccount.query.filter(FinanceAccount.id == acct_id,
+                                           _visible(FinanceAccount, uid)).first():
+            return jsonify({'error': 'account not found'}), 404
+        txn = SpendTransaction(
+            user_id=uid, posted_at=when, amount=amount, category='transfer',
+            description='Payment to %s' % debt.name, merchant=debt.name,
+            account_id=acct_id, to_debt_id=debt.id, source='manual')
+        db.session.add(txn)
+
+    before = float(debt.balance or 0)
+    debt.balance = round(max(0.0, before - amount), 2)
+    db.session.commit()
+    return jsonify({'success': True, 'balance_before': round(before, 2),
+                    'balance': float(debt.balance), 'paid': amount,
+                    'transaction_id': txn.id if txn is not None else None}), 201
 
 
 @app.route('/api/finance/deposits', methods=['GET'])
@@ -3263,6 +3551,13 @@ def _plaid_sync_item(item, client=None, backfill=False):
         _pair_transfers(item.user_id, since=None if backfill else date.today() - timedelta(days=45))
     except Exception as e:
         logger.warning('plaid: pairing transfers failed for item %s: %s', item.id, e)
+    # File new income against the source it came from, using what the user has already
+    # taught us about each payer. Without this a paycheck arrives every fortnight with no
+    # income source and therefore no book, and the whole income side reads as unassigned.
+    try:
+        _attribute_deposits(item.user_id)
+    except Exception as e:
+        logger.warning('plaid: attributing deposits failed for item %s: %s', item.id, e)
     item.cursor = cursor
     item.last_synced_at = datetime.utcnow()
     item.status = 'active'

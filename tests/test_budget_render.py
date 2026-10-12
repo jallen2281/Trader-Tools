@@ -47,6 +47,9 @@ def render(rows):
         "const fmt=n=>'$'+Math.round(n).toLocaleString();\n"
         "const fmt2=n=>'$'+Number(n).toFixed(2);\n"
         "const esc=x=>String(x);\n"
+        # Matches the page: JSON goes into single-quoted onclick attributes, so the
+        # apostrophe has to be escaped or a name like "Tricia's" breaks the button.
+        "const attrJson=(o)=>esc(JSON.stringify(o)).replace(/'/g,'&#39;');\n"
         "const jsq=v=>String(v);\n"
         "let _html='';\n"
         "const document={getElementById:()=>({set innerHTML(v){_html=v;},"

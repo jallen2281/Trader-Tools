@@ -44,6 +44,10 @@ def render(payload):
         "const fmt=n=>'$'+Math.round(n).toLocaleString();\n"
         "const fmt2=n=>'$'+Number(n).toFixed(2);\n"
         "const esc=x=>String(x);\n"
+        # The page embeds JSON into single-quoted onclick attributes, so the harness needs
+        # the same escaping helper the real page uses -- without it the extracted render
+        # code throws on the first row that carries a record.
+        "const attrJson=(o)=>esc(JSON.stringify(o)).replace(/'/g,'&#39;');\n"
         "const els={};\n"
         "function el(id){ if(!els[id]) els[id]={_h:'',_t:'',style:{display:''},\n"
         "  set innerHTML(v){this._h=v;}, get innerHTML(){return this._h;},\n"

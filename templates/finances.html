@@ -148,7 +148,14 @@
                 <select id="ledAcct" class="fin-in" style="padding:4px 8px;max-width:220px;" onchange="loadLedger()"><option value="">All accounts</option></select>
                 <select id="ledBook" class="fin-in" style="padding:4px 8px;" onchange="loadLedger()"><option value="">All books</option></select>
                 <input id="ledQ" class="fin-in" style="padding:4px 8px;width:150px;" placeholder="Search" oninput="ledgerSearch()">
+                <button class="btn2 primary" style="padding:4px 10px;" onclick="openDeposit(null)">+ Income</button>
             </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:0.84em;">
+            <span class="muted">Anything not filed belongs to</span>
+            <select id="defBook" class="fin-in" style="padding:3px 8px;" onchange="saveDefaultBook()"><option value="">nothing &mdash; leave unassigned</option></select>
+            <span id="defBookMsg" class="muted"></span>
+            <button class="link-btn" onclick="attributeAll()" title="Apply what you have already taught the app about each payer">file income by payer</button>
         </div>
         <div id="ledgerTotals"></div>
         <div id="ledgerBody"><p class="muted">Loading&hellip;</p></div>
@@ -265,6 +272,10 @@
     const BUDGET_CATS = ['housing','utilities','transportation','insurance','food','debt','subscriptions','healthcare','childcare','savings','entertainment','personal','taxes','other'];
     const BUDGET_KINDS = ['expense','savings','income'];
     let OUTLOOK = null, BILLS = null;
+    /* JSON safe to embed in a single-quoted HTML attribute. Escaping the apostrophe
+       is the whole point: without it a name like "Tricia's" ends the attribute and
+       the button silently stops working. */
+    const attrJson = (o) => esc(JSON.stringify(o)).replace(/'/g,'&#39;');
 
     async function loadOutlook() {
         try {
@@ -306,7 +317,7 @@
                 <td style="text-align:right;" class="${debtAprCls(d.apr)}">${d.apr}%</td>
                 <td style="text-align:right;">${fmt2(d.min_payment)}</td>
                 <td style="text-align:right;" class="neg">${fmt(d.monthly_interest*12)}</td>
-                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openDebt(${JSON.stringify(d)})'>edit</button> <button class="link-btn danger" onclick="delDebt(${d.id})">✕</button></td>
+                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openDebtPayment(${attrJson(d)})'>pay</button> <button class="link-btn" onclick='openDebt(${attrJson(d)})'>edit</button> <button class="link-btn danger" onclick="delDebt(${d.id})">✕</button></td>
             </tr>`).join('')+'</tbody></table></div>';
     }
     function renderAssets() {
@@ -314,7 +325,7 @@
         const man = OUTLOOK.accounts || [], inv = OUTLOOK.investment_accounts || [];
         let html = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th>Type</th><th style="text-align:right;">Balance</th><th></th></tr></thead><tbody>';
         inv.forEach(a=>{ html += `<tr><td>${esc(a.name)} <span class="badge b-inv">investments</span></td><td class="muted">tracked</td><td style="text-align:right;">${fmt(a.value)}</td><td></td></tr>`; });
-        man.forEach(a=>{ html += `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.type)}</td><td style="text-align:right;">${fmt(a.balance)}</td><td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openAccount(${JSON.stringify(a)})'>edit</button> <button class="link-btn danger" onclick="delAccount(${a.id})">✕</button></td></tr>`; });
+        man.forEach(a=>{ html += `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.type)}</td><td style="text-align:right;">${fmt(a.balance)}</td><td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openAccount(${attrJson(a)})'>edit</button> <button class="link-btn danger" onclick="delAccount(${a.id})">✕</button></td></tr>`; });
         if (!inv.length && !man.length) html += '<tr><td colspan="4" class="muted" style="padding:12px;text-align:center;">No accounts yet. Your investment accounts fold in automatically once tracked.</td></tr>';
         html += '</tbody></table></div>';
         el.innerHTML = html;
@@ -335,7 +346,7 @@
                     let typeCell, basisCell;
                     if(r.irregular){
                         typeCell = `commission${taxBadge}`;
-                        basisCell = `<button class="link-btn" onclick='openIncomeEvents(${JSON.stringify(r)})'>log / view $</button><div class="muted" style="font-size:0.78em;">YTD ${fmt(r.ytd_received)} · 12mo ${fmt(r.trailing_12mo_received)}</div>`;
+                        basisCell = `<button class="link-btn" onclick='openIncomeEvents(${attrJson(r)})'>log / view $</button><div class="muted" style="font-size:0.78em;">YTD ${fmt(r.ytd_received)} · 12mo ${fmt(r.trailing_12mo_received)}</div>`;
                     } else if(r.type==='hourly'){
                         typeCell = `hourly${taxBadge} · ${fmt2(r.hourly_rate)}/hr × ${r.hours_per_week}h${r.hours_per_week>r.ot_threshold_hours?` <span class="badge b-inv">OT ${r.ot_multiplier}×</span>`:''}`;
                         basisCell = `${fmt2(r.paycheck_estimate)}<div class="muted" style="font-size:0.78em;">${esc(r.pay_frequency)}</div>`;
@@ -350,7 +361,7 @@
                     <td style="text-align:right;">${basisCell}</td>
                     <td style="text-align:right;">${fmt(r.gross_monthly)}${setaside}</td>
                     <td style="text-align:right;">${fmt(r.gross_annual)}</td>
-                    <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openIncome(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delIncome(${r.id})">✕</button></td>
+                    <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openIncome(${attrJson(r)})'>edit</button> <button class="link-btn danger" onclick="delIncome(${r.id})">✕</button></td>
                 </tr>`;}).join('')+'</tbody></table></div>';
         }
         const pd=OUTLOOK.upcoming_paydates||[], pdEl=document.getElementById('paydatesBody');
@@ -861,9 +872,11 @@
                     <td style="white-space:nowrap;">${esc(r.posted_at)}</td>
                     <td><strong>${esc(r.description || '')}</strong>${badges}${r.merchant && r.merchant !== r.description ? `<div class="muted" style="font-size:0.8em;">${esc(r.merchant)}</div>` : ''}</td>
                     <td style="font-size:0.88em;">${esc(r.account_name || '')}</td>
-                    <td style="font-size:0.88em;">${r.book ? esc(r.book) : '<span class="muted">no book</span>'}<div class="muted" style="font-size:0.85em;">${esc(r.category_label || r.category || '')}</div></td>
+                    <td style="font-size:0.88em;">${r.book ? `${esc(r.book)}${r.book_default?' <span class="muted" title="from your default book, not filed explicitly">(default)</span>':''}` : '<span class="muted">no book</span>'}<div class="muted" style="font-size:0.85em;">${esc(r.category_label || r.category || '')}</div></td>
                     <td style="text-align:right;white-space:nowrap;" class="${amtCls}">${sign}${fmt2(Math.abs(r.amount))}</td>
-                    <td style="text-align:right;">${r.kind === 'spend' ? `<button class="link-btn" onclick='openTxn(${attrJson(r.txn)})'>edit</button>` : ''}</td>
+                    <td style="text-align:right;">${r.kind === 'spend'
+                        ? `<button class="link-btn" onclick='openTxn(${attrJson(r.txn)})'>edit</button>`
+                        : `<button class="link-btn" onclick='openDeposit(${attrJson(r.deposit)})'>edit</button>`}</td>
                 </tr>`;
             }).join('') + '</tbody></table></div>';
     }
@@ -899,7 +912,7 @@
                 <td>${b.upcoming_due_dates&&b.upcoming_due_dates[0]?b.upcoming_due_dates[0]:'<span class="muted">—</span>'}<div class="muted" style="font-size:0.78em;">${esc(b.frequency)}</div></td>
                 <td style="text-align:right;">${fmt2(b.amount)}</td>
                 <td style="text-align:right;">${fmt(b.monthly_amount)}</td>
-                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openBill(${JSON.stringify(b)})'>edit</button> <button class="link-btn danger" onclick="delBill(${b.id})">✕</button></td>
+                <td style="text-align:right;white-space:nowrap;"><button class="link-btn" onclick='openBill(${attrJson(b)})'>edit</button> <button class="link-btn danger" onclick="delBill(${b.id})">✕</button></td>
             </tr>`).join('')+'</tbody></table></div>';
     }
     /* ---- debt payoff plan ---- */
@@ -1166,7 +1179,7 @@
                   <div style="position:absolute;top:0;left:0;bottom:0;width:${actPct}%;background:${barColor};"></div>
                 </div>
                 <div class="muted" style="font-size:0.76em;margin-top:3px;">spent ${fmt2(act)}${r.spread_monthly?` (incl. ${fmt2(r.spread_monthly)} spread from bulk buys)`:''} &middot; bills ${fmt2(com)}/mo</div>
-                <div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick='openBudget(${JSON.stringify(r)})'>edit</button> <button class="link-btn danger" onclick="delBudget(${r.id},'${jsq(r.category)}')">remove limit</button></div>
+                <div style="text-align:right;margin-top:2px;"><button class="link-btn" onclick='openBudget(${attrJson(r)})'>edit</button> <button class="link-btn danger" onclick="delBudget(${r.id},'${jsq(r.category)}')">remove limit</button></div>
             </div>`;
         };
         /* No bar here on purpose. With no limit there is nothing to be a percentage OF, and
@@ -1317,7 +1330,7 @@
                 <td><strong>${esc(r.name)}</strong><div class="muted" style="font-size:0.8em;">${esc(r.merchant||r.payee||'')}</div></td>
                 <td>${r.issues.map(i=>`<div><span class="badge b-inv">${DRIFT_LABEL[i.kind]||esc(i.kind)}</span> ${driftIssue(i)}</div>`).join('')}</td>
                 <td class="muted" style="font-size:0.84em;white-space:nowrap;">${r.occurrences}&times;<div>last ${esc(r.last_seen)}</div></td>
-                <td style="text-align:right;white-space:nowrap;">${Object.keys(r.suggested||{}).length?`<button class="link-btn" onclick='applyDrift(${r.bill_id}, ${JSON.stringify(r.suggested)})'>use actual</button>`:'<span class="muted" style="font-size:0.82em;">needs a look</span>'}</td>
+                <td style="text-align:right;white-space:nowrap;">${Object.keys(r.suggested||{}).length?`<button class="link-btn" onclick='applyDrift(${r.bill_id}, ${attrJson(r.suggested)})'>use actual</button>`:'<span class="muted" style="font-size:0.82em;">needs a look</span>'}</td>
             </tr>`).join('')+'</tbody></table></div>';
     }
     /* Writes only the fields the comparison actually disagreed on, so accepting a due-day
@@ -1342,6 +1355,7 @@
         const e=b||{category:'housing',monthly_limit:0,kind:'expense'};
         showModal(`<h2 style="margin:0 0 8px;">${b&&b.id?'Edit':'Set'} Budget</h2>
             <label class="fld">Category</label><select id="buCat" class="fin-in" style="width:100%;" ${b&&b.id?'disabled':''}></select>
+            ${b&&b.id?'<p class="muted" style="font-size:0.78em;margin:4px 0 0;">A budget belongs to its category. To move the limit somewhere else, delete this one and set a new one.</p>':''}
             <div style="display:flex;gap:10px;">
               <div style="flex:1;"><label class="fld">Monthly limit $</label><input id="buLimit" type="number" step="10" class="fin-in" style="width:100%;" value="${e.monthly_limit||0}"></div>
               <div style="flex:1;"><label class="fld">Kind</label><select id="buKind" class="fin-in" style="width:100%;">${BUDGET_KINDS.map(k=>`<option ${e.kind===k?'selected':''}>${k}</option>`).join('')}</select></div>
@@ -1349,10 +1363,24 @@
             ${shareEntityFields(e)}
             <div style="display:flex;gap:10px;margin-top:16px;"><button class="btn2 primary" onclick="saveBudget()">Save</button><button class="btn2" onclick="closeModal()">Cancel</button><span id="buMsg" class="muted" style="align-self:center;font-size:0.85em;"></span></div>`);
         wireCategoryToBooks('buCat');
+        // Select the category being edited. Without this the (disabled) dropdown showed
+        // whichever option happened to be first, and Save posted THAT -- so editing the
+        // food budget could quietly rewrite the housing one.
+        const _c = document.getElementById('buCat');
+        if (_c && e.category) {
+            _c.value = e.category;
+            if (_c.value !== e.category) {     // category not in the list for this book
+                _c.insertAdjacentHTML('afterbegin',
+                    `<option value="${esc(e.category)}" selected>${esc(e.category)}</option>`);
+                _c.value = e.category;
+            }
+        }
     }
     async function saveBudget() {
         const g=i=>document.getElementById(i);
-        const body={category:g('buCat').value,monthly_limit:parseFloat(g('buLimit').value)||0,kind:g('buKind').value};
+        const cat = (MODAL_REC && MODAL_REC.id && MODAL_REC.category) || g('buCat').value;
+        if(!cat){ g('buMsg').textContent='Pick a category first'; return; }
+        const body={category:cat,monthly_limit:parseFloat(g('buLimit').value)||0,kind:g('buKind').value};
         try{ const r=await fetch('/api/finance/budgets',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)});
             if(!r.ok) throw new Error((await r.json()).error||'fail');
             // body is still unread on the success path, so this is the only read
@@ -1360,6 +1388,113 @@
             await applyShareEntity('budget', saved.id);
             closeModal(); loadBudgeting();
         }catch(e){ g('buMsg').textContent=e.message; }
+    }
+    /* ---------- income entered or re-filed by hand ---------- */
+    function openDeposit(d) {
+        const e = d || {posted_at: new Date().toISOString().slice(0,10), kind: 'income'};
+        const manual = (e.source === 'manual');
+        const isNew = !e.id;
+        showModal(`<h2 style="margin:0 0 8px;">${isNew?'Record income':'Income'}</h2>
+            ${(!isNew && !manual)?'<p class="muted" style="font-size:0.8em;margin:0 0 10px;">From the bank feed. You can re-file it, but the amount and date come from the bank.</p>':''}
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Date</label><input id="dpDate" type="date" class="fin-in" style="width:100%;" value="${esc(e.posted_at||'')}" ${(!isNew&&!manual)?'disabled':''}></div>
+              <div style="flex:1;"><label class="fld">Amount $</label><input id="dpAmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.amount||''}" ${(!isNew&&!manual)?'disabled':''}></div>
+            </div>
+            <label class="fld">Description</label><input id="dpDesc" class="fin-in" style="width:100%;" value="${esc(e.description||'')}" placeholder="Egg sales, commission, cash job">
+            <label class="fld">Paid by</label><input id="dpWho" class="fin-in" style="width:100%;" value="${esc(e.merchant||'')}" placeholder="who it came from">
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Income source <span class="muted">(optional)</span></label><select id="dpSrc" class="fin-in" style="width:100%;"></select></div>
+              <div style="flex:1;"><label class="fld">Book</label><select id="dpBook" class="fin-in" style="width:100%;"></select></div>
+            </div>
+            <p class="muted" style="font-size:0.78em;margin:6px 0 0;line-height:1.45;">
+              Naming the income source files this and every other deposit from the same
+              payer automatically, now and in future.
+            </p>
+            <div style="display:flex;gap:10px;margin-top:16px;">
+              <button class="btn2 primary" onclick="saveDeposit(${e.id||0})">Save</button>
+              <button class="btn2" onclick="closeModal()">Cancel</button>
+              ${manual?`<button class="btn2 danger" onclick="delDeposit(${e.id})">Delete</button>`:''}
+              <span id="dpMsg" class="muted" style="align-self:center;font-size:0.85em;"></span>
+            </div>`);
+        const srcSel = document.getElementById('dpSrc');
+        srcSel.innerHTML = '<option value="">&mdash; none &mdash;</option>' +
+            ((OUTLOOK&&OUTLOOK.income_sources)||[]).map(x=>`<option value="${x.id}" ${String(e.income_source_id||'')===String(x.id)?'selected':''}>${esc(x.name)}</option>`).join('');
+        const bkSel = document.getElementById('dpBook');
+        bkSel.innerHTML = '<option value="">&mdash; use the source or the default &mdash;</option>' +
+            (ENTITIES||[]).map(x=>`<option value="${x.id}" ${String(e.entity_id||'')===String(x.id)?'selected':''}>${esc(x.name)}</option>`).join('');
+    }
+    async function saveDeposit(id) {
+        const g=i=>document.getElementById(i);
+        const body={description:g('dpDesc').value.trim(), merchant:g('dpWho').value.trim(),
+            income_source_id:g('dpSrc').value||null, entity_id:g('dpBook').value||null};
+        if(!g('dpDate').disabled){ body.posted_at=g('dpDate').value; body.amount=parseFloat(g('dpAmt').value)||0; }
+        const url = id ? `/api/finance/deposits/${id}` : '/api/finance/deposits';
+        const r = await fetch(url,{method:id?'PUT':'POST',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(!r.ok){ g('dpMsg').textContent=((await r.json().catch(()=>({}))).error)||'Could not save'; return; }
+        closeModal(); loadLedger(); loadOutlook();
+    }
+    async function delDeposit(id) {
+        if(!confirm('Delete this income entry?')) return;
+        const r = await fetch(`/api/finance/deposits/${id}`,{method:'DELETE',credentials:'same-origin'});
+        if(!r.ok){ document.getElementById('dpMsg').textContent='Could not delete'; return; }
+        closeModal(); loadLedger(); loadOutlook();
+    }
+    async function attributeAll() {
+        const r = await fetch('/api/finance/deposits/attribute-all',{method:'POST',credentials:'same-origin'});
+        const j = await r.json().catch(()=>({}));
+        document.getElementById('defBookMsg').textContent =
+            r.ok ? `filed ${j.linked||0}` : 'could not file';
+        loadLedger();
+    }
+    async function saveDefaultBook() {
+        const v = document.getElementById('defBook').value || null;
+        const r = await fetch('/api/finance/default-book',{method:'PUT',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id:v})});
+        document.getElementById('defBookMsg').textContent = r.ok ? 'saved' : 'could not save';
+        if(r.ok) loadLedger();
+    }
+    async function loadDefaultBook() {
+        const sel = document.getElementById('defBook');
+        if(!sel) return;
+        const j = await fetch('/api/finance/default-book',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>({}));
+        sel.innerHTML = '<option value="">nothing &mdash; leave unassigned</option>' +
+            (ENTITIES||[]).map(x=>`<option value="${x.id}" ${String(j.entity_id||'')===String(x.id)?'selected':''}>${esc(x.name)}</option>`).join('');
+    }
+
+    /* ---------- a payment against a debt the bank does not report ---------- */
+    function openDebtPayment(d) {
+        showModal(`<h2 style="margin:0 0 4px;">Record a payment</h2>
+            <p class="muted" style="font-size:0.85em;margin:0 0 12px;">${esc(d.name)} &mdash; balance ${fmt2(d.balance)}</p>
+            <div style="display:flex;gap:10px;">
+              <div style="flex:1;"><label class="fld">Amount $</label><input id="dpyAmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${d.min_payment||''}"></div>
+              <div style="flex:1;"><label class="fld">Date</label><input id="dpyDate" type="date" class="fin-in" style="width:100%;" value="${new Date().toISOString().slice(0,10)}"></div>
+            </div>
+            <label class="fld">Paid from <span class="muted">(optional &mdash; records the money leaving)</span></label>
+            <select id="dpyFrom" class="fin-in" style="width:100%;"></select>
+            <p class="muted" style="font-size:0.78em;margin:6px 0 0;line-height:1.45;">
+              The balance comes down either way. Naming an account also records the money
+              leaving it, as a transfer &mdash; so it never counts as spending.
+            </p>
+            <div style="display:flex;gap:10px;margin-top:16px;">
+              <button class="btn2 primary" onclick="saveDebtPayment(${d.id})">Record</button>
+              <button class="btn2" onclick="closeModal()">Cancel</button>
+              <span id="dpyMsg" class="muted" style="align-self:center;font-size:0.85em;"></span>
+            </div>`);
+        const sel = document.getElementById('dpyFrom');
+        const cash = (OUTLOOK && OUTLOOK.accounts || []).filter(a=>['checking','savings','cash'].includes(a.type));
+        sel.innerHTML = '<option value="">&mdash; balance only &mdash;</option>' +
+            cash.map(a=>`<option value="${a.id}">${esc(a.name)} (${fmt2(a.balance)})</option>`).join('');
+    }
+    async function saveDebtPayment(id) {
+        const g=i=>document.getElementById(i);
+        const amt = parseFloat(g('dpyAmt').value)||0;
+        if(amt <= 0){ g('dpyMsg').textContent='Enter an amount'; return; }
+        const r = await fetch(`/api/finance/debts/${id}/payment`,{method:'POST',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({amount:amt, posted_at:g('dpyDate').value, from_account_id:g('dpyFrom').value||null})});
+        if(!r.ok){ g('dpyMsg').textContent=((await r.json().catch(()=>({}))).error)||'Could not record'; return; }
+        closeModal(); loadOutlook(); loadLedger();
     }
     async function delBudget(id, category){
         if(!confirm(`Remove the spending limit on ${category||'this category'}?\n\nThe category itself stays visible while bills or transactions land in it — only the limit goes.`)) return;
@@ -1370,7 +1505,6 @@
     /* ---- spending: the ledger that turns Budget into limit-vs-actual ---- */
     /* JSON in a single-quoted onclick: esc() handles the HTML, then the apostrophes in
        merchant names (MCDONALD'S) become entities so they can't close the attribute. */
-    const attrJson = (o) => esc(JSON.stringify(o)).replace(/'/g,'&#39;');
 
     /* Which account or card a transaction drew from. Imported rows carry the Plaid account
        they came from and follow whatever that account is linked to, so this is populated
@@ -1808,6 +1942,9 @@
             ]);
             ENTITIES = list.entities || [];
             renderEntities(rep);
+            // The default-book picker lists the books, so it can only be filled once
+            // ENTITIES is populated.
+            loadDefaultBook();
             if (!MILEAGE) loadMileage();
         } catch(e) { box.innerHTML = '<p class="muted" style="padding:12px;">Could not load books.</p>'; }
         try {
