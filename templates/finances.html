@@ -715,7 +715,8 @@
             <div style="flex:1;display:flex;align-items:flex-end;gap:6px;padding-bottom:2px;"><label style="display:flex;align-items:center;gap:6px;font-size:0.85em;"><input type="checkbox" id="dSecured" ${e.secured?'checked':''}> secured (lien)</label></div></div>
             <div style="display:flex;gap:10px;"><div style="flex:1;"><label class="fld">Balance $</label><input id="dBal" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.balance||0}"></div>
             <div style="flex:1;"><label class="fld">APR %</label><input id="dApr" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.apr||0}"></div>
-            <div style="flex:1;"><label class="fld">Min pmt/mo $</label><input id="dPmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.min_payment||0}"></div></div>
+            <div style="flex:1;"><label class="fld">Min pmt/mo $</label><input id="dPmt" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.min_payment||0}"></div>
+              <div style="flex:1;"><label class="fld">Escrow/PMI per mo $ <span class="muted">(if any)</span></label><input id="dEscrow" type="number" step="0.01" class="fin-in" style="width:100%;" value="${e.escrow_monthly||0}"></div></div>
             <div id="dLimitBox"><label class="fld">Credit limit $ <span class="muted">(cards only &mdash; drives utilization, about a third of a credit score)</span></label><input id="dLimit" type="number" step="100" class="fin-in" style="width:100%;" value="${e.credit_limit==null?'':e.credit_limit}" placeholder="leave blank if not known"></div>
             <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
               <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
@@ -793,7 +794,7 @@
     }
     async function saveDebt(id) {
         const body = {name:document.getElementById('dName').value.trim(),lender:document.getElementById('dLender').value.trim(),type:document.getElementById('dType').value,
-            balance:parseFloat(document.getElementById('dBal').value)||0,apr:parseFloat(document.getElementById('dApr').value)||0,min_payment:parseFloat(document.getElementById('dPmt').value)||0,secured:document.getElementById('dSecured').checked,
+            balance:parseFloat(document.getElementById('dBal').value)||0,apr:parseFloat(document.getElementById('dApr').value)||0,min_payment:parseFloat(document.getElementById('dPmt').value)||0,escrow_monthly:parseFloat(document.getElementById('dEscrow').value)||0,secured:document.getElementById('dSecured').checked,
             credit_limit:(document.getElementById('dType').value!=='credit_card'||document.getElementById('dLimit').value===''?null:parseFloat(document.getElementById('dLimit').value)),
             fee_lines:collectFeeLines()};
         if(!body.name){ document.getElementById('dMsg').textContent='Name required'; return; }

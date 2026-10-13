@@ -1026,6 +1026,11 @@ class Debt(db.Model):
     # from a balance alone. NULL means "not recorded" and is treated as unknown rather than
     # as zero — see credit.utilization, where the difference is the whole point.
     credit_limit = db.Column(db.Numeric(15, 2, asdecimal=False))
+    # The part of a payment that is neither principal nor interest: escrowed taxes and
+    # insurance, and PMI. Without it, payment minus interest is taken as principal --
+    # which on a mortgage carrying $66 of PMI overstates the paydown by that much every
+    # month, and quietly flatters the largest number on the balance sheet.
+    escrow_monthly = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
     # Charges that are not interest. A tuition payment plan is the case that forced this:
     # 0% APR, but an enrolment fee each semester and a service charge on every instalment.
     # With only an APR field such a debt looks free, when it can easily cost more than a

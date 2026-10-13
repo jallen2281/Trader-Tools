@@ -185,6 +185,82 @@ with A.app.app_context():
     check('overpaying floors the balance at zero rather than going negative',
           r.get_json()['balance'] == 0.0, r.get_json())
 
+    print('\n--- a card is never paid down from the payment side alone ---')
+    # An installment loan only goes down, so payment minus interest is the new balance.
+    # A card goes up too, and when the card itself is not connected the only side visible
+    # is the payment leaving the bank -- the purchases land on the card. Applying half of
+    # a two-sided account walks the balance confidently wrong.
+    from models import RecurringBill
+    card = Debt(user_id=UID, name='PayPal mastercard', type='credit_card',
+                balance=2333.50, apr=18.49)
+    loan = Debt(user_id=UID, name='Roof Loan', type='home_improvement',
+                balance=56000.00, apr=11.9)
+    db.session.add_all([card, loan])
+    db.session.commit()
+    db.session.add_all([
+        RecurringBill(user_id=UID, name='Paypal Mastercard', payee='Syncrony Paypal',
+                      category='debt', amount=29.00, frequency='monthly',
+                      linked_debt_id=card.id, active=True),
+        RecurringBill(user_id=UID, name='Roof Loan', payee='Watercress',
+                      category='debt', amount=750.00, frequency='monthly',
+                      linked_debt_id=loan.id, active=True),
+    ])
+    db.session.add_all([
+        SpendTransaction(user_id=UID, posted_at=TODAY - timedelta(days=3),
+                         description='PAYPAL', merchant='PAYPAL', category='debt',
+                         amount=29.00, source='plaid', external_id='plaid:pp1'),
+        SpendTransaction(user_id=UID, posted_at=TODAY - timedelta(days=2),
+                         description='Watercress Financial', merchant='Watercress Financial',
+                         category='debt', amount=750.00, source='plaid',
+                         external_id='plaid:wc1'),
+    ])
+    db.session.commit()
+
+    A._apply_debt_payments(UID)
+    db.session.commit()
+    db.session.refresh(card)
+    db.session.refresh(loan)
+    check('the credit card is untouched', float(card.balance) == 2333.50, card.balance)
+    check('the installment loan moves', float(loan.balance) < 56000.00, loan.balance)
+    # 11.9% on 56,000 is 555.33 of interest, leaving 194.67 of principal -- not 750.
+    check('by principal only, not the whole payment',
+          abs(float(loan.balance) - (56000.00 - 194.67)) < 0.02, loan.balance)
+
+    print('\n--- escrow and PMI are not principal ---')
+    # A mortgage payment carries escrowed tax, insurance and PMI. Treating the whole
+    # non-interest part as principal flatters the biggest number on the balance sheet --
+    # by $66 every month on the loan this came from, compounding for the life of it.
+    mort = Debt(user_id=UID, name='1st Mortgage', type='mortgage', balance=342000.00,
+                apr=6.0, escrow_monthly=66.00)
+    db.session.add(mort)
+    db.session.commit()
+    db.session.add(RecurringBill(user_id=UID, name='Mortgage', payee='UWM',
+                                 category='housing', amount=3103.88, frequency='monthly',
+                                 linked_debt_id=mort.id, active=True))
+    db.session.add(SpendTransaction(user_id=UID, posted_at=TODAY - timedelta(days=1),
+                                    description='UWM', merchant='UWM', category='housing',
+                                    amount=3103.88, source='plaid',
+                                    external_id='plaid:uwm1'))
+    db.session.commit()
+    interest, principal = A._split_payment(mort, 3103.88)
+    check('interest is one month at the note rate', abs(interest - 1710.00) < 0.01, interest)
+    # 3103.88 - 1710.00 interest - 66.00 escrow = 1327.88
+    check('escrow comes out before principal', abs(principal - 1327.88) < 0.01, principal)
+    check('which is exactly 66 less than ignoring it would give',
+          abs((3103.88 - 1710.00) - principal - 66.00) < 0.01, principal)
+    A._apply_debt_payments(UID)
+    db.session.commit()
+    db.session.refresh(mort)
+    check('and the balance moves by principal only',
+          abs(float(mort.balance) - (342000.00 - 1327.88)) < 0.02, mort.balance)
+
+    print('\n--- and a payment is never applied twice ---')
+    before = float(loan.balance)
+    A._apply_debt_payments(UID)
+    db.session.commit()
+    db.session.refresh(loan)
+    check('a second pass changes nothing', float(loan.balance) == before, (before, loan.balance))
+
 print('\n' + ('=' * 60))
 if fails:
     print('FAILED (%d):' % len(fails))

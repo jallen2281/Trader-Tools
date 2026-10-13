@@ -845,7 +845,7 @@ def finance_modify_debt(did):
     for f in ('lender', 'notes'):
         if f in d:
             setattr(x, f, d.get(f) or None)
-    for f in ('balance', 'apr', 'min_payment'):
+    for f in ('balance', 'apr', 'min_payment', 'escrow_monthly'):
         if f in d:
             setattr(x, f, float(d.get(f) or 0))
     if 'secured' in d:
@@ -2887,6 +2887,11 @@ def finance_modify_deposit(did):
     return jsonify(x.to_dict())
 
 
+# Balances that move in both directions. Only the payment side reaches this app when the
+# account itself is not connected, so these are never adjusted from a transaction.
+REVOLVING_DEBT_TYPES = {'credit_card', 'line_of_credit', 'heloc'}
+
+
 def _debt_is_bank_reported(user_id, debt_id):
     """True when a connected account supplies this debt's balance."""
     return PlaidAccount.query.filter_by(user_id=user_id, linked_debt_id=debt_id).first() is not None
@@ -2908,7 +2913,8 @@ def _split_payment(debt, amount):
     bal = float(debt.balance or 0)
     rate = float(debt.apr or 0) / 100.0 / 12.0
     interest = round(bal * rate, 2) if rate > 0 else 0.0
-    principal = round(max(0.0, amount - interest), 2)
+    escrow = round(float(getattr(debt, 'escrow_monthly', 0) or 0), 2)
+    principal = round(max(0.0, amount - interest - escrow), 2)
     return interest, min(principal, bal)
 
 
@@ -2933,6 +2939,14 @@ def _apply_debt_payments(user_id, since=None):
     by_key = {}
     for b in bills:
         if _debt_is_bank_reported(user_id, b.linked_debt_id):
+            continue
+        # Revolving credit is excluded, and not as a precaution. An installment loan only
+        # ever goes down, so payment minus interest IS the new balance. A card goes up
+        # too, and the only side visible here is the payment leaving the bank -- the
+        # purchases land on the card itself. Applying one side of a two-sided account
+        # walks the balance steadily, confidently wrong.
+        d = Debt.query.filter_by(id=b.linked_debt_id, user_id=user_id).first()
+        if not d or (d.type or '') in REVOLVING_DEBT_TYPES:
             continue
         for cand in (b.payee, b.name):
             k = recurring_detector.merchant_key(cand)
