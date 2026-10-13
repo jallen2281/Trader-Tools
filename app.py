@@ -1248,8 +1248,12 @@ SPEND_CATEGORY_RULES = [
     ('transportation', ('shell', 'exxon', 'chevron', 'sunoco', 'wawa', 'speedway', 'uber', 'lyft',
                         'parking', 'toll', 'e-zpass', 'dmv', 'autozone', 'jiffy lube')),
     ('insurance', ('insurance', 'geico', 'allstate', 'progressive', 'state farm')),
+    # 'costco' and 'walmart' are deliberately absent: both sell fuel under the same
+    # merchant name, and this rule only runs when Plaid has no category of its own -- so
+    # forcing 'food' here is how a tank of petrol ends up in the grocery budget. Left
+    # uncategorised they fall to 'other' and can be filed in bulk, which is honest.
     ('food', ('grocer', 'wegmans', 'kroger', 'safeway', 'aldi', 'trader joe', 'whole foods',
-              'costco', 'walmart', 'target', 'restaurant', 'pizza', 'coffee', 'starbucks',
+              'restaurant', 'pizza', 'coffee', 'starbucks',
               'doordash', 'grubhub', 'ubereats', 'chipotle', 'mcdonald')),
     ('subscriptions', ('netflix', 'spotify', 'hulu', 'disney+', 'patreon', 'adobe', 'github',
                        'openai', 'anthropic', 'subscription', 'icloud', 'dropbox')),
@@ -1412,6 +1416,8 @@ def _apply_spend_fields(x, d):
     if 'category' in d:
         c = (d.get('category') or 'other').lower()
         x.category = c if c in BUDGET_CATEGORIES else 'other'
+        # A person said so. The sync must not quietly undo it on the next update.
+        x.category_locked = True
     if 'amount' in d:
         try:
             x.amount = round(float(d.get('amount') or 0), 2)
@@ -1478,6 +1484,8 @@ def _apply_bill_fields(x, d):
     if 'category' in d:
         c = (d.get('category') or 'other').lower()
         x.category = c if c in BUDGET_CATEGORIES else 'other'
+        # A person said so. The sync must not quietly undo it on the next update.
+        x.category_locked = True
     if 'frequency' in d:
         f = (d.get('frequency') or 'monthly').lower()
         # Refused rather than coerced. Falling back to 'monthly' silently changes what the
@@ -2522,6 +2530,72 @@ def _ledger_rows(uid, start, end):
     return rows
 
 
+@app.route('/api/finance/transactions/bulk', methods=['POST'])
+@require_api_auth
+def finance_bulk_file():
+    """Set the book and/or the category on many rows at once.
+
+    Filing was one row at a time through a modal, which is fine for a correction and
+    useless for a backlog: every transaction since the last tidy-up arrives unfiled, so
+    the pile grows by a month every month and nobody is going to open sixty modals.
+
+    Book and category are independent -- send either, or both. Sending neither is a
+    mistake rather than a no-op, because a request that quietly does nothing looks
+    exactly like one that worked.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json() or {}
+    spend_ids = [int(i) for i in (d.get('spend_ids') or []) if str(i).isdigit()]
+    deposit_ids = [int(i) for i in (d.get('deposit_ids') or []) if str(i).isdigit()]
+    if not spend_ids and not deposit_ids:
+        return jsonify({'error': 'No rows selected'}), 400
+
+    set_book = 'entity_id' in d
+    set_cat = 'category' in d
+    if not set_book and not set_cat:
+        return jsonify({'error': 'Nothing to change -- send a book, a category, or both'}), 400
+
+    bid = None
+    if set_book:
+        raw = d.get('entity_id')
+        if raw not in (None, '', 0, '0'):
+            try:
+                bid = int(raw)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'entity_id must be a number'}), 400
+            if not Entity.query.filter(Entity.id == bid, _visible(Entity, uid)).first():
+                return jsonify({'error': 'book not found'}), 404
+
+    cat = None
+    if set_cat:
+        cat = (d.get('category') or '').strip().lower()
+        if cat and cat not in BUDGET_CATEGORIES:
+            return jsonify({'error': 'unknown category: %s' % cat}), 400
+
+    changed = 0
+    if spend_ids:
+        for t in SpendTransaction.query.filter(_visible(SpendTransaction, uid),
+                                               SpendTransaction.id.in_(spend_ids)).all():
+            if set_book:
+                t.entity_id = bid
+            if set_cat and cat:
+                t.category = cat
+                t.category_locked = True
+            changed += 1
+    if deposit_ids:
+        for dep in PlaidDeposit.query.filter(PlaidDeposit.user_id == uid,
+                                             PlaidDeposit.id.in_(deposit_ids)).all():
+            # A deposit's "category" is its kind, which the bank decides. Only the book
+            # is the user's to set here.
+            if set_book:
+                dep.entity_id = bid
+                changed += 1
+    db.session.commit()
+    return jsonify({'changed': changed})
+
+
 @app.route('/api/finance/ledger', methods=['GET'])
 @require_api_auth
 def finance_ledger():
@@ -2545,8 +2619,14 @@ def finance_ledger():
     if acct:
         rows = [r for r in rows if r['account_key'] == acct]
     book = request.args.get('book')
-    if book:
-        rows = [r for r in rows if (str(r['book_id']) if r['book_id'] else 'none') == book]
+    if book == 'none':
+        # Rows nobody has filed. Once a default book existed, book_id stopped ever being
+        # empty, so this filter silently matched nothing and $6,310 of genuinely unfiled
+        # spending became impossible to find -- the default made the problem invisible
+        # rather than solving it. book_default is the honest test: filed by assumption.
+        rows = [r for r in rows if r.get('book_default') or not r['book_id']]
+    elif book:
+        rows = [r for r in rows if str(r['book_id'] or '') == book]
     term = (request.args.get('q') or '').strip().lower()
     if term:
         rows = [r for r in rows if term in ('%s %s %s' % (r['description'] or '', r['merchant'] or '',
@@ -2807,6 +2887,106 @@ def finance_modify_deposit(did):
     return jsonify(x.to_dict())
 
 
+def _debt_is_bank_reported(user_id, debt_id):
+    """True when a connected account supplies this debt's balance."""
+    return PlaidAccount.query.filter_by(user_id=user_id, linked_debt_id=debt_id).first() is not None
+
+
+def _split_payment(debt, amount):
+    """Split a payment into (interest, principal) for the CURRENT balance.
+
+    The whole payment is not principal, and treating it as though it were is not a rounding
+    error. A $750 payment against a roof loan at 11.9% on $56,000 is $555.33 of interest
+    and $194.67 of principal -- take the full $750 off and the loan appears to clear in
+    six years instead of twenty-four.
+
+    A 0% plan has no interest, so the whole payment reduces it, which is what a tuition
+    plan should do. A payment smaller than the month's interest reduces nothing rather
+    than growing the balance: negative amortisation is real, but inferring it from a bank
+    feed is a guess, and quietly inflating a debt is the worse failure.
+    """
+    bal = float(debt.balance or 0)
+    rate = float(debt.apr or 0) / 100.0 / 12.0
+    interest = round(bal * rate, 2) if rate > 0 else 0.0
+    principal = round(max(0.0, amount - interest), 2)
+    return interest, min(principal, bal)
+
+
+def _apply_debt_payments(user_id, since=None):
+    """Move the balance of a debt the bank does not report, when a payment for it posts.
+
+    A synced card gets its balance from the bank on every sync. A hand-tracked debt has no
+    feed, so nothing ever moved it: a tuition plan sat at its opening figure for months
+    while the payment left the account every one of them, and the payoff plan, the
+    net-worth figure and the interest forecast were all built on a number that never
+    changed.
+
+    Only debts with no connected account are touched. Applying a payment to a synced card
+    would fight the bank's own figure and lose.
+    """
+    bills = [b for b in RecurringBill.query.filter(
+        _visible(RecurringBill, user_id), RecurringBill.active.is_(True)).all()
+        if b.linked_debt_id]
+    if not bills:
+        return 0
+
+    by_key = {}
+    for b in bills:
+        if _debt_is_bank_reported(user_id, b.linked_debt_id):
+            continue
+        for cand in (b.payee, b.name):
+            k = recurring_detector.merchant_key(cand)
+            if k:
+                by_key.setdefault(k, b.linked_debt_id)
+    if not by_key:
+        return 0
+
+    q = SpendTransaction.query.filter(
+        _visible(SpendTransaction, user_id),
+        SpendTransaction.debt_applied_at.is_(None),
+        SpendTransaction.amount > 0)
+    if since:
+        q = q.filter(SpendTransaction.posted_at >= since)
+
+    debts, applied = {}, 0
+    # Oldest first: each payment's interest is computed on the balance the one before it
+    # left behind, so order changes the answer.
+    for t in sorted(q.all(), key=lambda x: (x.posted_at, x.id)):
+        k = recurring_detector.merchant_key(t.merchant or t.description or '')
+        if not k:
+            continue
+        did = by_key.get(k)
+        if not did:
+            first = k.split()[0] if k.split() else ''
+            hits = {v for bk, v in by_key.items() if bk.split() and bk.split()[0] == first}
+            did = hits.pop() if len(hits) == 1 else None
+        if not did:
+            continue
+        debt = debts.get(did) or Debt.query.filter_by(id=did, user_id=user_id).first()
+        if not debt:
+            continue
+        debts[did] = debt
+        interest, principal = _split_payment(debt, round(float(t.amount), 2))
+        debt.balance = round(max(0.0, float(debt.balance or 0) - principal), 2)
+        t.debt_applied_at = datetime.utcnow()
+        if not t.to_debt_id and not t.debt_id:
+            t.to_debt_id = did
+        applied += 1
+    return applied
+
+
+@app.route('/api/finance/debts/apply-payments', methods=['POST'])
+@require_api_auth
+def finance_apply_debt_payments():
+    """Catch a hand-tracked debt up with the payments already in the ledger."""
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    n = _apply_debt_payments(uid)
+    db.session.commit()
+    return jsonify({'applied': n})
+
+
 @app.route('/api/finance/debts/<int:did>/payment', methods=['POST'])
 @require_api_auth
 def finance_debt_payment(did):
@@ -2849,10 +3029,16 @@ def finance_debt_payment(did):
         db.session.add(txn)
 
     before = float(debt.balance or 0)
-    debt.balance = round(max(0.0, before - amount), 2)
+    interest, principal = _split_payment(debt, amount)
+    debt.balance = round(max(0.0, before - principal), 2)
+    if txn is not None:
+        # Marked as already applied, or the automatic pass would find this row later and
+        # pay the same money down a second time.
+        txn.debt_applied_at = datetime.utcnow()
     db.session.commit()
     return jsonify({'success': True, 'balance_before': round(before, 2),
                     'balance': float(debt.balance), 'paid': amount,
+                    'interest': interest, 'principal': principal,
                     'transaction_id': txn.id if txn is not None else None}), 201
 
 
@@ -3520,7 +3706,11 @@ def _plaid_sync_item(item, client=None, backfill=False):
             row.posted_at = posted
             row.description = (txn.get('name') or 'Transaction')[:200]
             row.merchant = (txn.get('merchant_name') or None)
-            row.category = cat
+            # A category the user chose outranks anything Plaid or the rules infer. The
+            # backfill path already refuses to touch existing rows; this is the ordinary
+            # update path, which did not, so a hand-fix lasted until the next `modified`.
+            if not row.category_locked:
+                row.category = cat
             row.amount = round(float(txn.get('amount') or 0), 2)
             row.pending = bool(txn.get('pending'))
             # Which of the institution's accounts this came from. Plaid sends it on every
@@ -3558,6 +3748,14 @@ def _plaid_sync_item(item, client=None, backfill=False):
         _attribute_deposits(item.user_id)
     except Exception as e:
         logger.warning('plaid: attributing deposits failed for item %s: %s', item.id, e)
+    # Hand-tracked debts have no feed of their own, so a payment only moves their balance
+    # if something does this. Bounded to recent rows on an incremental sync; a backfill
+    # walks the lot.
+    try:
+        _apply_debt_payments(item.user_id,
+                             since=None if backfill else date.today() - timedelta(days=90))
+    except Exception as e:
+        logger.warning('plaid: applying debt payments failed for item %s: %s', item.id, e)
     item.cursor = cursor
     item.last_synced_at = datetime.utcnow()
     item.status = 'active'

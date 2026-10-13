@@ -65,6 +65,7 @@ SUITES = [
     ('one_time_bills', 'a single planned payment lands once and not in the monthly floor'),
     ('ledger', 'every dollar in and out, by account, in one view'),
     ('income_books', 'income gets a book, manual income, payments on hand-tracked debt'),
+    ('bulk_filing', 'unfiled rows stay findable and can be filed in bulk'),
     ('attr_escaping', 'JSON in a single-quoted attribute survives an apostrophe'),
     ('cashflow_horizon', 'the projection reaches the horizon and counts everyday spending'),
     ('bill_drift', 'a bill that no longer matches what posts gets flagged'),

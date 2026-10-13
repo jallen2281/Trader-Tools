@@ -1813,6 +1813,15 @@ class SpendTransaction(db.Model):
     # a row that was paired and then put back to spending is never paired again -- and what
     # stops one deposit being claimed by two outflows.
     paired_deposit_id = db.Column(db.Integer, db.ForeignKey('plaid_deposits.id'), index=True)
+    # When this payment was taken off the balance of a hand-tracked debt. The marker is
+    # what makes it idempotent: a re-sync re-reads the same transaction, and without it
+    # every sync would pay the loan down again.
+    debt_applied_at = db.Column(db.DateTime)
+    # Set the moment a person chooses the category themselves. The sync overwrites
+    # category on every `modified` transaction Plaid sends -- and it sends one whenever a
+    # charge goes from pending to posted or the merchant name gets enriched -- so without
+    # this a hand-correction survives only until the next routine update, silently.
+    category_locked = db.Column(db.Boolean, default=False)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 

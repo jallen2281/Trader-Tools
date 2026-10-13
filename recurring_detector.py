@@ -90,6 +90,39 @@ def _median(values):
     return float(v[n // 2]) if n % 2 else (float(v[n // 2 - 1]) + float(v[n // 2])) / 2.0
 
 
+def _merge_lengthened(groups):
+    """Fold a merchant key into a longer one it is a prefix of.
+
+    Banks revise their descriptors. A loan payment arrived as "Watercress Fin" for months
+    and then as "Watercress Financial", which is the same payee and two different keys --
+    so the old group stopped dead and the new one never reached the occurrence count to be
+    recognised. The bill silently disappeared from the recurring list.
+
+    A plain string prefix, not a word-boundary one: the change here was "Fin" becoming
+    "Financial", which splits inside a word and a token-wise rule would miss it entirely.
+
+    The shorter key must have at least TWO words, and that guard is doing real work. A
+    single word that happens to prefix another is usually a different merchant: "COSTCO"
+    prefixes "COSTCO VISA", and folding the weekly grocery run into the monthly card
+    payment would be a worse bug than the one being fixed.
+    """
+    keys = sorted(groups, key=len)
+    merged, moved = {}, {}
+    for k in keys:
+        target = None
+        if len(k.split()) >= 2:
+            for other in keys:
+                if other != k and len(other) > len(k) and other.startswith(k):
+                    target = moved.get(other, other)
+                    break
+        if target:
+            moved[k] = target
+            merged.setdefault(target, []).extend(groups[k])
+        else:
+            merged.setdefault(k, []).extend(groups[k])
+    return merged
+
+
 def detect(transactions, today=None):
     """Find recurring charges.
 
@@ -110,6 +143,8 @@ def detect(transactions, today=None):
         groups[key].append({'date': when, 'amount': amount,
                             'label': (t.get('merchant') or t.get('description') or key),
                             'category': t.get('category') or 'other'})
+
+    groups = _merge_lengthened(groups)
 
     found = []
     for key, rows in groups.items():
