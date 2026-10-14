@@ -146,6 +146,29 @@ with A.app.app_context():
           cli().post('/api/finance/transactions/bulk',
                      json={'spend_ids': [solo.id], 'entity_id': 9999}).status_code == 404)
 
+    print('\n--- a card payment outranks Plaid; a transfer to a person does not ---')
+    # Plaid classifies a credit-card payment as LOAN_PAYMENTS, which this app maps to
+    # 'debt' -- spending. So the payment counted AND the purchases it settled counted
+    # again when the card was used. These wordings have to beat Plaid's own category.
+    for name in ('PAYMENT TO CHASE CARD ENDING IN 4807', 'AMEX EPAYMENT',
+                 'Payment Thank You-Mobile', 'CITI AUTOPAY', 'MOBILE PAYMENT - THANK YOU'):
+        check('card payment recognised: %s' % name[:28], A._looks_like_card_payment(name), name)
+
+    # The general transfer words must NOT get that precedence. "Online Transfer to
+    # CHK ...08" was repaying a family member on the household this came from -- real
+    # spending wearing a transfer's clothes. Promoting it would hide it.
+    for name in ('Online Transfer to CHK ...08', 'Zelle Payment to Jeff Allen',
+                 'To Savings - 3808', 'Kroger', 'Costco Gas'):
+        check('not treated as a card payment: %s' % name[:28],
+              not A._looks_like_card_payment(name), name)
+
+    # and the ordinary rules still behave
+    check('a card payment still reads as a transfer by name',
+          A._guess_spend_category('AMEX EPAYMENT') == 'transfer')
+    check('a payment to a person does not read as spending-free',
+          A._guess_spend_category('Zelle Payment to Jeff Allen') != 'transfer',
+          A._guess_spend_category('Zelle Payment to Jeff Allen'))
+
     print('\n--- a category a person chose survives the next sync ---')
     # Plaid re-sends a transaction in `modified` whenever it goes from pending to posted
     # or the merchant name gets enriched, and the ordinary sync path rewrote the category

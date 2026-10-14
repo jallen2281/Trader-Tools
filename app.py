@@ -1229,6 +1229,27 @@ BUDGET_CATEGORIES = set(HOUSEHOLD_CATEGORIES) | set(FARM_CATEGORIES) | set(BUSIN
 # Merchant/description keyword -> budget category, first match wins. Deliberately dumb and
 # deterministic: auto-categorizing a 400-row import must not cost an AI call (see the Phase 0
 # cost controls), and a wrong guess is one dropdown away from fixed.
+# Wordings that mean "a payment toward a card", and nothing else.
+#
+# Kept apart from the general transfer rule because the two need opposite treatment at
+# sync time. Plaid classifies a card payment as LOAN_PAYMENTS, which maps to 'debt' --
+# spending -- and the purchases that payment settles were already counted when the card
+# was used. So these have to beat Plaid's own category.
+#
+# The general transfer words cannot: 'transfer' matches "Online Transfer to CHK ...08",
+# which on one real household was repaying a family member. That is spending wearing a
+# transfer's clothes, and letting it outrank Plaid would hide it. These phrases do not
+# appear on genuine spending.
+CARD_PAYMENT_WORDS = ('epayment', 'card ending', 'payment thank you', 'payment-thank you',
+                      'autopay', 'card online', 'online payment', 'mobile payment',
+                      'payment to chase')
+
+
+def _looks_like_card_payment(text):
+    t = (text or '').lower()
+    return any(w in t for w in CARD_PAYMENT_WORDS)
+
+
 SPEND_CATEGORY_RULES = [
     # Money moving, not money spent -- see NON_SPEND_CATEGORIES. Deliberately ahead of the
     # card rules: 'AMEX EPAYMENT' is a payment TOWARD a card, and the purchases it settles
@@ -3691,10 +3712,17 @@ def _plaid_sync_item(item, client=None, backfill=False):
                 skipped += 1
                 continue
             ext = 'plaid:%s' % txn.get('transaction_id')
-            cat = pc.category_for(txn)
-            if not cat:
-                cat = _guess_spend_category('%s %s' % (txn.get('merchant_name') or '',
-                                                       txn.get('name') or ''))
+            text = '%s %s' % (txn.get('merchant_name') or '', txn.get('name') or '')
+            # A card payment is decided here, ahead of Plaid. Plaid calls it a
+            # LOAN_PAYMENT, which this app maps to 'debt' -- so the payment counted as
+            # spending AND the purchases it settled counted again when the card was used.
+            # Only the card-payment wordings get this precedence; the general transfer
+            # words stay in the ordinary rule order, where they cannot promote a payment
+            # to a person into an internal transfer.
+            if _looks_like_card_payment(text):
+                cat = 'transfer'
+            else:
+                cat = pc.category_for(txn) or _guess_spend_category(text)
             posted = _parse_csv_date(txn.get('date'))
             if not posted:
                 skipped += 1
