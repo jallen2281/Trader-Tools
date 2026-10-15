@@ -4641,12 +4641,27 @@ def _finance_cashflow(user_id, days=60, starting_balance=None, include_variable=
                 events.append({'date': pd.isoformat(), 'label': src.name,
                                'amount': round(amt, 2), 'type': 'income',
                                'gross': est['gross'], 'basis': est.get('basis')})
+    card_charged = 0.0
     for b in RecurringBill.query.filter(_visible(RecurringBill, user_id),
                                         RecurringBill.active.is_(True)).all():
         n = _occurrences_for(days, RecurringBill.FREQ_PER_YEAR.get(b.frequency, 12))
         for dd in b.upcoming_due_dates(n):
-            if today <= dd <= horizon:
-                events.append({'date': dd.isoformat(), 'label': b.name, 'amount': -round(float(b.amount or 0), 2), 'type': 'bill'})
+            if not (today <= dd <= horizon):
+                continue
+            amount = round(float(b.amount or 0), 2)
+            if b.paid_by_debt_id:
+                # Charged to a card, so no cash leaves the bank on this date -- the card's
+                # balance goes up instead, and the money leaves later through that card's
+                # own payment, which is modelled as its own bill. Counting both drained
+                # the projection twice for the same money: roughly $612 a month on the
+                # household this was found on, which made February look worse than it is.
+                #
+                # Reported rather than silently dropped. If a card-charged bill has no
+                # corresponding payment bill, this total is where that shows up.
+                card_charged += amount
+                continue
+            events.append({'date': dd.isoformat(), 'label': b.name,
+                           'amount': -amount, 'type': 'bill'})
 
     burn, burn_detail = (_variable_daily_burn(user_id) if include_variable else (0.0, {}))
     if burn > 0:
@@ -4681,6 +4696,9 @@ def _finance_cashflow(user_id, days=60, starting_balance=None, include_variable=
         'total_in': round(sum(e['amount'] for e in events if e['amount'] > 0), 2),
         'total_out': round(sum(-e['amount'] for e in events if e['amount'] < 0), 2),
         'variable_daily': burn, 'variable': burn_detail,
+        # Bills charged to a card over this window. Not in the running balance -- see the
+        # bill loop -- but surfaced so the figure is explicable rather than missing.
+        'card_charged': round(card_charged, 2),
         'events': events,
     }
 

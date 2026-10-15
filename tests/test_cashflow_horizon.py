@@ -187,6 +187,38 @@ with A.app.app_context():
     check('the burn figures are reported', with_var['variable_daily'] == burn,
           with_var.get('variable_daily'))
 
+    print('\n--- a bill charged to a card is not a cash outflow ---')
+    # It raises the card's balance; the cash leaves later through that card's own payment,
+    # which is modelled as its own bill. Counting both drained the projection twice for
+    # the same money -- about $612 a month on the household this was found on.
+    from models import Debt
+    card = Debt(user_id=UID, name='Amex', type='credit_card', balance=5000.00, apr=24.49)
+    db.session.add(card)
+    db.session.commit()
+    db.session.add_all([
+        # the purchases that go ON the card
+        RecurringBill(user_id=UID, name='Tuition plan', category='other', amount=515.00,
+                      frequency='monthly', next_due_date=TODAY + timedelta(days=3),
+                      paid_by_debt_id=card.id, active=True),
+        # and the payment that settles it, which IS cash leaving
+        RecurringBill(user_id=UID, name='Amex payment', category='debt', amount=1062.62,
+                      frequency='monthly', next_due_date=TODAY + timedelta(days=6),
+                      linked_debt_id=card.id, active=True),
+    ])
+    db.session.commit()
+
+    cf = A._finance_cashflow(UID, days=40, starting_balance=10000.0,
+                             include_variable=False)
+    labels = [e['label'] for e in cf['events']]
+    check('the card-charged bill is not an outflow', 'Tuition plan' not in labels, labels)
+    check('the card PAYMENT still is', 'Amex payment' in labels, labels)
+    check('and the charged amount is reported, not dropped',
+          cf['card_charged'] >= 515.00, cf.get('card_charged'))
+    # The regression: both appearing would take 515 + 1062.62 out for one 515 purchase.
+    out = round(sum(-e['amount'] for e in cf['events'] if e['amount'] < 0), 2)
+    paid_twice = any(e['label'] == 'Tuition plan' for e in cf['events'])
+    check('so the same money leaves the bank once', not paid_twice, out)
+
     print('\n--- the endpoint honours ?variable=0 ---')
     c = A.app.test_client()
     with c.session_transaction() as sess:
