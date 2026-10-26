@@ -226,16 +226,20 @@ check('and the stored frequency survives the rejected edit',
       _kept['frequency'] == 'monthly', _kept['frequency'])
 
 print('\n--- bills can be semiannual, for property tax and auto insurance ---')
+# Deliberately a date in the future. A past due date is rolled forward to the next real
+# occurrence now, so a hardcoded one would silently turn this cadence check into a test of
+# today's date -- which is how it broke the first time.
+_y = A.date.today().year + 1
 r = c.post('/api/finance/bills', json={'name': 'Property tax', 'category': 'taxes',
                                        'amount': 2400, 'frequency': 'semiannual',
-                                       'next_due_date': '2026-07-15'})
+                                       'next_due_date': '%d-07-15' % _y})
 check('semiannual is accepted',
       r.status_code == 201 and r.get_json()['frequency'] == 'semiannual', r.get_json())
 check('$2,400 twice a year is $400/mo in the budget floor',
       r.get_json()['monthly_amount'] == 400.0, r.get_json()['monthly_amount'])
 due = r.get_json()['upcoming_due_dates']
 check('due dates step six months, keeping the calendar month',
-      due[0] == '2026-07-15' and due[1] == '2027-01-15' and due[2] == '2027-07-15', due)
+      due == ['%d-07-15' % _y, '%d-01-15' % (_y + 1), '%d-07-15' % (_y + 1)], due)
 # The two lists drifting apart is how a frequency gets accepted and then priced as monthly.
 check('every frequency the model can price is also accepted by the API',
       set(A.BILL_FREQUENCIES) == set(A.RecurringBill.FREQ_PER_YEAR),

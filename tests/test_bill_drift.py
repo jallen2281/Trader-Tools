@@ -42,14 +42,24 @@ TODAY = date.today()
 
 
 def months_back(n, day):
-    """The given day-of-month for each of the last n whole months, oldest first."""
+    """The given day-of-month for each of the last n occurrences, oldest first.
+
+    Includes the CURRENT month when that day has already passed, because that is what a
+    real ledger looks like: on the 26th, a bill due on the 1st has already posted this
+    month. Skipping it made the newest charge for a day-1 bill always last month's, and
+    once that was more than 1.5 cadences old the detector rightly called the charge
+    stopped and the drift check passed over it -- so this suite passed early in the month
+    and failed late, for reasons that had nothing to do with drift.
+    """
+    day = min(day, 28)
+    start = 0 if day <= TODAY.day else 1
     out = []
-    for k in range(n, 0, -1):
+    for k in range(n - 1 + start, start - 1, -1):
         mm, yy = TODAY.month - k, TODAY.year
         while mm <= 0:
             mm += 12
             yy -= 1
-        out.append(date(yy, mm, min(day, 28)))
+        out.append(date(yy, mm, day))
     return out
 
 

@@ -63,6 +63,7 @@ SUITES = [
     ('tax_deductions', 'Schedule A, Schedule 1-A and the farm books in the return'),
     ('spread_purchases', 'bulk buys counted across the months they cover'),
     ('one_time_bills', 'a single planned payment lands once and not in the monthly floor'),
+    ('bill_advance', 'due dates keep up with the calendar, and the due day does not erode'),
     ('ledger', 'every dollar in and out, by account, in one view'),
     ('income_books', 'income gets a book, manual income, payments on hand-tracked debt'),
     ('bulk_filing', 'unfiled rows stay findable and can be filed in bulk'),

@@ -46,6 +46,22 @@ def _add_one_month(d):
     last_day = (date(nm_y, nm_m, 1) - timedelta(days=1)).day
     return date(y, m, min(d.day, last_day))
 
+
+def _month_add(y, m, n):
+    """(year, month) advanced by n whole months."""
+    t = (y * 12 + m - 1) + n
+    return t // 12, t % 12 + 1
+
+
+def _on_day(y, m, day):
+    """date(y, m, day), with the day clamped to that month's length.
+
+    Clamping belongs here, applied once per month from the day the bill is really due,
+    rather than to the result of the previous step -- see RecurringBill._step, where
+    carrying a clamped day forward walked a bill's due date earlier for good.
+    """
+    return date(y, m, min(int(day), _last_day_of_month(y, m)))
+
 db = SQLAlchemy()
 
 class User(UserMixin, db.Model):
@@ -1658,48 +1674,88 @@ class RecurringBill(db.Model):
             return 'account:%d' % self.from_account_id
         return None
 
-    def _anchor(self):
-        """Next due date to project from: explicit next_due_date, else this/next month's due_day."""
-        if self.next_due_date:
-            return self.next_due_date
-        if self.due_day:
-            today = date.today()
-            day = min(int(self.due_day), 28)
-            d = date(today.year, today.month, day)
-            return d if d >= today else _add_one_month(d)
-        return None
+    # Cadences that advance by whole calendar months, and how many months one step is.
+    MONTH_STEPS = {'monthly': 1, 'quarterly': 3, 'semiannual': 6, 'annual': 12}
 
-    def upcoming_due_dates(self, n=6):
-        d = self._anchor()
+    def _due_day(self):
+        """The day of the month the bill is really due, where that is meaningful.
+
+        due_day wins over the anchor's own day, because the anchor can be a clamped
+        rendering of it: trusting the anchor is precisely how a bill due on the 31st
+        becomes one due on the 30th and never recovers.
+        """
+        if self.due_day:
+            return min(int(self.due_day), 31)
+        return self.next_due_date.day if self.next_due_date else None
+
+    def _step(self, d, day=None):
+        """One cadence step on from `d`.
+
+        `day` is the day of the month the bill is really due, passed separately from `d`
+        so that clamping cannot accumulate. Stepping a bill due on the 31st through a
+        30-day month yields the 30th, and the old code took THAT as the base for the next
+        step -- so one short month moved the bill a day earlier permanently, and February
+        moved it three. The day is re-derived from `day` on every step instead.
+        """
+        freq = self.frequency
+        if freq == 'weekly':
+            return d + timedelta(days=7)
+        if freq == 'biweekly':
+            return d + timedelta(days=14)
+        if freq == 'semimonthly':
+            # Twice a month, on the 1st and the 15th.
+            return (date(d.year, d.month, 15) if d.day < 15
+                    else _add_one_month(date(d.year, d.month, 1)))
+        y, m = _month_add(d.year, d.month, self.MONTH_STEPS.get(freq, 1))
+        return _on_day(y, m, day or d.day)
+
+    def _anchor(self, today=None):
+        """The next due date to project from.
+
+        A stored next_due_date that has already passed is rolled forward by the bill's own
+        cadence until it is no longer behind. Nothing advances that field when a bill is
+        simply paid on time, so it falls steadily behind -- every one of the sixteen bills
+        on the household this was found on was stale, the worst by 56 days.
+
+        That mattered for more than presentation. The projection asks for a bounded number
+        of occurrences (`_occurrences_for`), and a date far enough in the past spends all
+        of them before reaching today -- so the bill drops out of the forecast altogether
+        rather than merely displaying an old date.
+
+        A one-off is never rolled. A past one-off is finished, not overdue, and advancing
+        it would resurrect a payoff that has already happened.
+        """
+        today = today or date.today()
+        d = self.next_due_date
+        if d is None:
+            if not self.due_day:
+                return None
+            d = _on_day(today.year, today.month, min(int(self.due_day), 31))
+            return d if d >= today else self._step(d, self._due_day())
+        if self.frequency == 'one_time' or d >= today:
+            return d
+        day = self._due_day() or d.day
+        # Bounded. A weekly bill a decade stale is ~520 steps; a nonsense date far in the
+        # past must not spin forever.
+        for _ in range(1200):
+            d = self._step(d, day)
+            if d >= today:
+                break
+        return d
+
+    def upcoming_due_dates(self, n=6, today=None):
+        d = self._anchor(today=today)
         if not d:
             return []
         # A one-off happens once. Stepping it like a cadence would put a $2,800 card payoff
         # in every month of the projection and make the running balance fiction.
         if self.frequency == 'one_time':
             return [d]
-        out, freq = [], self.frequency
+        day = self._due_day() or d.day
+        out = []
         for _ in range(n):
             out.append(d)
-            if freq == 'weekly':
-                d = d + timedelta(days=7)
-            elif freq == 'biweekly':
-                d = d + timedelta(days=14)
-            elif freq == 'semimonthly':
-                d = date(d.year, d.month, 15) if d.day < 15 else _add_one_month(date(d.year, d.month, 1))
-            elif freq == 'quarterly':
-                d = _add_one_month(_add_one_month(_add_one_month(d)))
-            elif freq == 'semiannual':
-                # Twice a year: property tax, auto insurance, water rates. Stepped by
-                # months rather than 182 days so a July bill stays in July.
-                for _i in range(6):
-                    d = _add_one_month(d)
-            elif freq == 'annual':
-                try:
-                    d = date(d.year + 1, d.month, d.day)
-                except ValueError:
-                    d = date(d.year + 1, d.month, 28)
-            else:  # monthly
-                d = _add_one_month(d)
+            d = self._step(d, day)
         return out
 
     def to_dict(self):

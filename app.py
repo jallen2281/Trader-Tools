@@ -3022,6 +3022,20 @@ def finance_apply_debt_payments():
     return jsonify({'applied': n})
 
 
+@app.route('/api/finance/bills/advance', methods=['POST'])
+@require_api_auth
+def finance_advance_bills():
+    """Roll bills whose stored due date has passed on to their next occurrence.
+
+    Runs on every Plaid sync too; this is for catching up without waiting for one.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    moved = _advance_stale_bills(uid)
+    return jsonify({'advanced': len(moved), 'bills': moved})
+
+
 @app.route('/api/finance/debts/<int:did>/payment', methods=['POST'])
 @require_api_auth
 def finance_debt_payment(did):
@@ -3798,6 +3812,13 @@ def _plaid_sync_item(item, client=None, backfill=False):
                              since=None if backfill else date.today() - timedelta(days=90))
     except Exception as e:
         logger.warning('plaid: applying debt payments failed for item %s: %s', item.id, e)
+    # Roll any bill whose stored due date has passed on to its next occurrence. Nothing
+    # else does it -- paying a bill on time leaves the field untouched -- so without this
+    # the bills list drifts weeks behind the calendar it is meant to describe.
+    try:
+        _advance_stale_bills(item.user_id)
+    except Exception as e:
+        logger.warning('plaid: advancing stale bills failed for item %s: %s', item.id, e)
     item.cursor = cursor
     item.last_synced_at = datetime.utcnow()
     item.status = 'active'
@@ -4616,6 +4637,36 @@ def _variable_daily_burn(user_id, today=None):
         'excluded_oneoffs': round(excluded, 2),
         'excluded_count': excluded_n,
     }
+
+
+def _advance_stale_bills(user_id=None, today=None):
+    """Bring every bill's stored next_due_date up to its next real occurrence.
+
+    The projection has always rolled a stale date forward in memory, so the forecast stayed
+    roughly right while the stored field quietly fell behind -- by up to 56 days here, on
+    all sixteen bills at once. That field is what the bills list displays and sorts by, so
+    "due soon" had stopped meaning anything.
+
+    One-offs are skipped: a past one-off is finished, not overdue. Returns what moved, so a
+    caller can report it rather than guess.
+    """
+    today = today or date.today()
+    q = RecurringBill.query.filter(RecurringBill.active.is_(True),
+                                   RecurringBill.frequency != 'one_time',
+                                   RecurringBill.next_due_date.isnot(None),
+                                   RecurringBill.next_due_date < today)
+    if user_id is not None:
+        q = q.filter(RecurringBill.user_id == user_id)
+    moved = []
+    for b in q.all():
+        nxt = b._anchor(today=today)
+        if nxt and nxt != b.next_due_date:
+            moved.append({'id': b.id, 'name': b.name,
+                          'from': b.next_due_date.isoformat(), 'to': nxt.isoformat()})
+            b.next_due_date = nxt
+    if moved:
+        db.session.commit()
+    return moved
 
 
 def _finance_cashflow(user_id, days=60, starting_balance=None, include_variable=False):
