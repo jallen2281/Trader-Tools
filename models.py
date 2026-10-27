@@ -1677,16 +1677,30 @@ class RecurringBill(db.Model):
     # Cadences that advance by whole calendar months, and how many months one step is.
     MONTH_STEPS = {'monthly': 1, 'quarterly': 3, 'semiannual': 6, 'annual': 12}
 
-    def _due_day(self):
-        """The day of the month the bill is really due, where that is meaningful.
+    def _intended_day(self, d):
+        """The day of the month this bill is really due, taking `d` as its anchor.
 
-        due_day wins over the anchor's own day, because the anchor can be a clamped
-        rendering of it: trusting the anchor is precisely how a bill due on the 31st
-        becomes one due on the 30th and never recovers.
+        Normally `d`'s own day. The anchor is the date the bill is actually scheduled for
+        and the more specific of the two, so it wins; due_day is consulted only to undo a
+        CLAMP. If the anchor sits on the last day of its month and due_day falls later,
+        the stored date is a short month's rendering of a later day, and stepping from it
+        would hold the bill at the earlier day for good.
+
+        due_day is deliberately NOT preferred outright. The two disagree on real data -- an
+        Amex anchored to the 28th carrying a stale due_day of 2 -- and letting due_day win
+        drew the first occurrence from the anchor and every later one from a different day,
+        putting two payments five days apart in the projection. It also rewrote correct
+        stored dates: a bill on the 17th with a stale due_day of 16 was moved to the 16th.
+
+        Computed once from the anchor and then carried, never recomputed mid-sequence: a
+        bill due on the 31st passes through a clamped 28th, and re-deriving the day there
+        would read 28 as the intention and never return to 31.
         """
         if self.due_day:
-            return min(int(self.due_day), 31)
-        return self.next_due_date.day if self.next_due_date else None
+            dd = min(int(self.due_day), 31)
+            if dd > d.day and d.day == _last_day_of_month(d.year, d.month):
+                return dd
+        return d.day
 
     def _step(self, d, day=None):
         """One cadence step on from `d`.
@@ -1730,11 +1744,12 @@ class RecurringBill(db.Model):
         if d is None:
             if not self.due_day:
                 return None
-            d = _on_day(today.year, today.month, min(int(self.due_day), 31))
-            return d if d >= today else self._step(d, self._due_day())
+            day = min(int(self.due_day), 31)
+            d = _on_day(today.year, today.month, day)
+            return d if d >= today else self._step(d, day)
         if self.frequency == 'one_time' or d >= today:
             return d
-        day = self._due_day() or d.day
+        day = self._intended_day(d)
         # Bounded. A weekly bill a decade stale is ~520 steps; a nonsense date far in the
         # past must not spin forever.
         for _ in range(1200):
@@ -1751,7 +1766,7 @@ class RecurringBill(db.Model):
         # in every month of the projection and make the running balance fiction.
         if self.frequency == 'one_time':
             return [d]
-        day = self._due_day() or d.day
+        day = self._intended_day(d)
         out = []
         for _ in range(n):
             out.append(d)

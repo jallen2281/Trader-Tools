@@ -80,11 +80,35 @@ with A.app.app_context():
     check('may returns to the 31st', seen[4] == date(2027, 5, 31), seen)
     check('a year on it is still month end', seen[-1] == date(2027, 6, 30), seen)
 
-    # The explicit due_day is authoritative even when the anchor was stored clamped.
+    # due_day undoes a clamp: the anchor is on the last day of a short month and due_day
+    # falls later, so the stored date is that month's rendering of a later day.
     eroded = bill(name='Stored clamped', frequency='monthly', due_day=31,
                   next_due_date=date(2027, 2, 28))
     seen = eroded.upcoming_due_dates(3, today=date(2027, 2, 1))
     check('due_day 31 recovers a clamped anchor', seen[1] == date(2027, 3, 31), seen)
+
+    print('\n--- but a stale due_day does NOT override the anchor ---')
+    # Both regressions from preferring due_day outright. The Amex really is due on the
+    # 28th and carries a stale due_day of 2: taking the first date from the anchor and the
+    # rest from due_day put two payments five days apart.
+    amex = bill(name='Amex', frequency='monthly', amount=1062.62, due_day=2,
+                next_due_date=date(2027, 1, 28))
+    seen = amex.upcoming_due_dates(3, today=date(2027, 1, 1))
+    check('the anchor day is kept', seen[0] == date(2027, 1, 28), seen)
+    check('AND THE NEXT ONE IS A MONTH ON, not five days',
+          seen[1] == date(2027, 2, 28), seen)
+    check('the spacing stays monthly', seen[2] == date(2027, 3, 28), seen)
+    check('no two occurrences land in the same week',
+          all((seen[i + 1] - seen[i]).days >= 27 for i in range(len(seen) - 1)), seen)
+
+    # And it must not rewrite a correct stored date when rolling forward: a bill really on
+    # the 17th with a stale due_day of 16 was being moved to the 16th.
+    asu = bill(name='ASU', frequency='monthly', amount=515.00, due_day=16,
+               next_due_date=TODAY - timedelta(days=9))
+    rolled = asu._anchor()
+    check('rolling forward keeps the stored day, not the stale due_day',
+          rolled.day == (TODAY - timedelta(days=9)).day,
+          (rolled, TODAY - timedelta(days=9), asu.due_day))
 
     print('\n--- a past due date rolls forward to the next real one ---')
     stale = bill(name='Electric', frequency='monthly',
