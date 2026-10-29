@@ -609,7 +609,7 @@
     /* irregular-income payments log (commission checks) */
     function openIncomeEvents(src) {
         const evs=src.events||[];
-        const rows = evs.length ? evs.map(e=>`<tr><td>${e.date}</td><td>${esc(e.description||'')}</td><td style="text-align:right;">${fmt2(e.gross_amount)}</td><td style="text-align:right;"><button class="link-btn danger" onclick="delIncomeEvent(${src.id},${e.id})">✕</button></td></tr>`).join('')
+        const rows = evs.length ? evs.map(e=>`<tr><td>${e.date}</td><td>${esc(e.description||'')}${(e.deposit_ids||[]).length?` <span class="muted" style="font-size:0.82em;" title="matched to the deposit that settled it, so the books count this money once">· banked ${fmt2(e.settled_amount)}</span>`:''}</td><td style="text-align:right;">${fmt2(e.gross_amount)}</td><td style="text-align:right;"><button class="link-btn danger" onclick="delIncomeEvent(${src.id},${e.id})">✕</button></td></tr>`).join('')
             : '<tr><td colspan="4" class="muted" style="padding:8px;text-align:center;">No payments logged yet.</td></tr>';
         const today=new Date().toISOString().slice(0,10);
         showModal(`<h2 style="margin:0 0 4px;">${esc(src.name)} — payments</h2>
@@ -1479,12 +1479,16 @@
             <label class="fld">Description</label><input id="dpDesc" class="fin-in" style="width:100%;" value="${esc(e.description||'')}" placeholder="Egg sales, commission, cash job">
             <label class="fld">Paid by</label><input id="dpWho" class="fin-in" style="width:100%;" value="${esc(e.merchant||'')}" placeholder="who it came from">
             <div style="display:flex;gap:10px;">
-              <div style="flex:1;"><label class="fld">Income source <span class="muted">(optional)</span></label><select id="dpSrc" class="fin-in" style="width:100%;"></select></div>
+              <div style="flex:1;"><label class="fld">Income source <span class="muted">(optional)</span></label><select id="dpSrc" class="fin-in" style="width:100%;" onchange="dpSyncEvents()"></select></div>
               <div style="flex:1;"><label class="fld">Book</label><select id="dpBook" class="fin-in" style="width:100%;"></select></div>
             </div>
+            <label class="fld">Settles a logged payment <span class="muted">(optional)</span></label>
+            <select id="dpEvent" class="fin-in" style="width:100%;"></select>
             <p class="muted" style="font-size:0.78em;margin:6px 0 0;line-height:1.45;">
               Naming the income source files this and every other deposit from the same
-              payer automatically, now and in future.
+              payer automatically, now and in future. Tie it to a logged payment when this
+              is the cheque for income you already recorded by hand &mdash; the books then
+              keep both records but count the money once.
             </p>
             <div style="display:flex;gap:10px;margin-top:16px;">
               <button class="btn2 primary" onclick="saveDeposit(${e.id||0})">Save</button>
@@ -1498,11 +1502,34 @@
         const bkSel = document.getElementById('dpBook');
         bkSel.innerHTML = '<option value="">&mdash; use the source or the default &mdash;</option>' +
             (ENTITIES||[]).map(x=>`<option value="${x.id}" ${String(e.entity_id||'')===String(x.id)?'selected':''}>${esc(x.name)}</option>`).join('');
+        dpSyncEvents(e.income_event_id);
+    }
+    /* The same money gets recorded twice: logged by hand the day a commission is earned,
+       then again as the cheque that clears days later. Only payments belonging to the
+       chosen source are offered, because a tie across sources is meaningless -- and one
+       already tied to another deposit is shown but not selectable, so two cheques cannot
+       both claim the same payment. */
+    function dpSyncEvents(selected) {
+        const sel = document.getElementById('dpEvent');
+        if (!sel) return;
+        const sid = document.getElementById('dpSrc').value;
+        const src = ((OUTLOOK&&OUTLOOK.income_sources)||[]).find(s=>String(s.id)===String(sid));
+        const evs = (src && src.events) || [];
+        const want = String(selected||'');
+        sel.innerHTML = '<option value="">&mdash; not a logged payment &mdash;</option>' +
+            evs.map(e=>{
+                const taken = (e.deposit_ids||[]).length && String(e.id)!==want;
+                return `<option value="${e.id}"${String(e.id)===want?' selected':''}${taken?' disabled':''}>`
+                     + `${e.date} · ${fmt2(e.gross_amount)}${e.description?' · '+esc(e.description):''}`
+                     + `${taken?' (already tied)':''}</option>`;
+            }).join('');
+        sel.disabled = !evs.length;
     }
     async function saveDeposit(id) {
         const g=i=>document.getElementById(i);
         const body={description:g('dpDesc').value.trim(), merchant:g('dpWho').value.trim(),
-            income_source_id:g('dpSrc').value||null, entity_id:g('dpBook').value||null};
+            income_source_id:g('dpSrc').value||null, entity_id:g('dpBook').value||null,
+            income_event_id:(g('dpEvent')&&g('dpEvent').value)||null};
         if(!g('dpDate').disabled){ body.posted_at=g('dpDate').value; body.amount=parseFloat(g('dpAmt').value)||0; }
         const url = id ? `/api/finance/deposits/${id}` : '/api/finance/deposits';
         const r = await fetch(url,{method:id?'PUT':'POST',credentials:'same-origin',

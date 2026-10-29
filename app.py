@@ -2534,6 +2534,12 @@ def _ledger_rows(uid, start, end):
             'direction': 'transfer' if d.kind in ('transfer_in', 'card_payment') else 'in',
             'category': d.kind, 'category_label': src.name if src else _DEPOSIT_KIND_LABELS.get(d.kind, d.kind),
             'income_source_id': d.income_source_id,
+            # A tied deposit is the cheque for income already logged by hand. It is real
+            # money arriving, so it still shows as `in` on the bank side -- the flag is
+            # what lets the UI label it as settling that payment instead of looking like a
+            # second copy of it.
+            'income_event_id': d.income_event_id,
+            'settles_logged_income': d.income_event_id is not None,
             'account_key': d.plaid_account_id or 'none',
             'account_name': plaid_names.get(d.plaid_account_id, 'Connected account'),
             # A deposit's own book wins, then the book of the income source behind it,
@@ -2837,6 +2843,29 @@ def _apply_deposit_fields(x, d, uid):
                                              _visible(IncomeSource, uid)).first():
                 raise ValueError('income source not found')
             x.income_source_id = sid
+    if 'income_event_id' in d:
+        eid = d.get('income_event_id')
+        if eid in (None, '', 0, '0'):
+            x.income_event_id = None
+        else:
+            try:
+                eid = int(eid)
+            except (TypeError, ValueError):
+                raise ValueError('income_event_id must be a number')
+            # IncomeEvent carries no share_level -- it is reached through its source -- so
+            # ownership is checked directly rather than through _visible.
+            ev = IncomeEvent.query.filter(IncomeEvent.id == eid,
+                                          IncomeEvent.user_id == uid).first()
+            if not ev:
+                raise ValueError('income event not found')
+            # Tying means "this deposit is that logged payment arriving", so the two must
+            # belong to the same source. A deposit with no source yet adopts the event's
+            # instead of being refused: attributing it is the point of the tie.
+            if x.income_source_id is None:
+                x.income_source_id = ev.income_source_id
+            elif x.income_source_id != ev.income_source_id:
+                raise ValueError('that income event belongs to a different income source')
+            x.income_event_id = eid
     if 'entity_id' in d:
         bid = d.get('entity_id')
         if bid in (None, '', 0, '0'):

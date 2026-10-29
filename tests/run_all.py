@@ -66,6 +66,7 @@ SUITES = [
     ('bill_advance', 'due dates keep up with the calendar, and the due day does not erode'),
     ('ledger', 'every dollar in and out, by account, in one view'),
     ('income_books', 'income gets a book, manual income, payments on hand-tracked debt'),
+    ('books_income_side', 'a book counts the income that arrived, not just what was typed in'),
     ('bulk_filing', 'unfiled rows stay findable and can be filed in bulk'),
     ('attr_escaping', 'JSON in a single-quoted attribute survives an apostrophe'),
     ('cashflow_horizon', 'the projection reaches the horizon and counts everyday spending'),

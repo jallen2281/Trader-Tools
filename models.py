@@ -1453,15 +1453,50 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
     events = db.relationship('IncomeEvent', backref='source', lazy=True,
                              cascade='all, delete-orphan', order_by='IncomeEvent.date.desc()')
 
+    def _deposits_received_since(self, cutoff):
+        """Money attributed to this source that reached a connected account on/after cutoff.
+
+        Irregular income can be recorded two ways and only one of them was ever counted:
+        logged by hand as an IncomeEvent, or attributed to this source from a bank deposit.
+        The farm records egg money the second way, so Chicken Tales reported 19 tagged
+        expenses against an income side of exactly zero -- every set of books that takes its
+        income from deposits read as a pure loss.
+
+        Only `income` kinds count. A transfer_in or a card_payment is the household moving
+        its own money between its own accounts, so counting those would turn a $3,500 Chase
+        -> SoFi transfer into farm revenue.
+
+        A deposit tied to an IncomeEvent is skipped, because that event is already counted
+        and the two are one piece of money -- see PlaidDeposit.income_event_id. The event is
+        the side that counts, so money can never go missing by tying; on a year boundary
+        that means a cheque earned in December and banked in January is recognised in
+        December, which is the date the household actually recorded.
+        """
+        # An unsaved source has no id, and `income_source_id == None` compiles to IS NULL --
+        # which would sum every unattributed deposit in the household into this one source.
+        if not self.id:
+            return 0.0
+        rows = PlaidDeposit.query.filter(
+            PlaidDeposit.income_source_id == self.id,
+            PlaidDeposit.kind == 'income',
+            PlaidDeposit.income_event_id.is_(None),
+            PlaidDeposit.posted_at >= cutoff).all()
+        return sum(float(d.amount or 0) for d in rows)
+
+    def _events_received_since(self, cutoff):
+        return sum(float(e.gross_amount or 0)
+                   for e in (self.events or []) if e.date and e.date >= cutoff)
+
     def trailing_12mo_received(self):
-        """Sum of logged income events over the last 365 days (irregular income)."""
+        """Everything this source actually paid out over the last 365 days: logged income
+        events plus the deposits attributed to it."""
         cutoff = date.today() - timedelta(days=365)
-        return round(sum(float(e.gross_amount or 0) for e in (self.events or []) if e.date and e.date >= cutoff), 2)
+        return round(self._events_received_since(cutoff) + self._deposits_received_since(cutoff), 2)
 
     def ytd_received(self):
-        """Sum of logged income events since Jan 1 of the current year."""
+        """The same, counted from Jan 1 of the current year."""
         jan1 = date(date.today().year, 1, 1)
-        return round(sum(float(e.gross_amount or 0) for e in (self.events or []) if e.date and e.date >= jan1), 2)
+        return round(self._events_received_since(jan1) + self._deposits_received_since(jan1), 2)
 
     def weekly_gross(self):
         """Hourly weekly gross incl. overtime; others → their equivalent weekly slice."""
@@ -1604,11 +1639,26 @@ class IncomeEvent(db.Model):
     description = db.Column(db.String(200))   # e.g. "123 Main St closing"
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # The bank deposit(s) that settled this payment, if the money also arrived in a
+    # connected account. No delete cascade on purpose: an event is a hand-written note and
+    # a deposit is a bank record, so removing the note must not remove the record -- on
+    # delete SQLAlchemy simply clears the link.
+    deposits = db.relationship('PlaidDeposit', backref='income_event', lazy=True,
+                               foreign_keys='PlaidDeposit.income_event_id')
+
+    def settled_amount(self):
+        """What of this payment has been matched to an actual deposit."""
+        return round(sum(float(d.amount or 0) for d in (self.deposits or [])), 2)
+
     def to_dict(self):
         return {
             'id': self.id, 'income_source_id': self.income_source_id,
             'date': self.date.isoformat() if self.date else None,
             'gross_amount': float(self.gross_amount or 0), 'description': self.description,
+            # So the UI can show a logged commission as reconciled against the cheque that
+            # cleared, rather than as a second, unexplained copy of the same money.
+            'deposit_ids': sorted(d.id for d in (self.deposits or []) if d.id),
+            'settled_amount': self.settled_amount(),
         }
 
 
@@ -2201,6 +2251,20 @@ class PlaidDeposit(db.Model):
     # Set when the user attributes a deposit to a declared income source, which is what
     # turns an estimate into a measured figure.
     income_source_id = db.Column(db.Integer, db.ForeignKey('income_sources.id'))
+    # The IncomeEvent this deposit settles, when the same money was recorded twice.
+    #
+    # A commission is earned on one date and its cheque clears on another, so the household
+    # records it both ways: "Hume blvd, $1,690.40" logged the day it was earned, and a
+    # "Mobile Check Deposit" of $1,690.40 five days later. Both are worth keeping -- one is
+    # when it was earned and for what, the other is when it landed and in which account --
+    # but they are ONE piece of money, and nothing said so. The only thing stopping the
+    # books counting it twice was the deposit being mislabelled `transfer_in`, which is a
+    # lie about a commission cheque and would have come undone the moment anyone fixed it.
+    #
+    # Tying them records the relationship and makes the de-duplication explicit: a tied
+    # deposit is not counted again, because its event already is. See
+    # IncomeSource._deposits_received_since.
+    income_event_id = db.Column(db.Integer, db.ForeignKey('income_events.id'), index=True)
     # Which book this income belongs to, when it is not simply the book of the income
     # source. Income used to take its book ENTIRELY from its source, so a deposit with no
     # source had no book and every one of them piled up as unassigned -- and there was no
@@ -2225,6 +2289,7 @@ class PlaidDeposit(db.Model):
             'amount': float(self.amount or 0), 'kind': self.kind,
             'pfc_primary': self.pfc_primary, 'pfc_detailed': self.pfc_detailed,
             'income_source_id': self.income_source_id,
+            'income_event_id': self.income_event_id,
             'entity_id': self.entity_id, 'source': self.source or 'plaid',
         }
 
