@@ -162,6 +162,57 @@ with A.app.app_context():
     check('while the full-year actual is still reported raw',
           near(v['actual'], 4000), v['actual'])
 
+    print('\n--- a bank deposit is take-home, and is not judged against gross pay ---')
+    # The failure this guards: $153,605 of projected salary against $42,269 of deposits read
+    # as 29.5% behind in production, and the gap was the withholding wedge almost exactly.
+    # The cash-flow ledger was fixed for the same error in the same direction.
+    banked = salary('Direct deposit job', 52000, home, freq='biweekly')
+    # Every payday from the first one to the cutoff, so the window is genuinely covered: 11
+    # of them, Jun 12 to Oct 30 inclusive. Stopping at 10 leaves a real missing paycheque,
+    # which the comparison correctly reports as $1,500 light -- it is a fixture detail, not
+    # a tolerance to widen.
+    for wk in range(0, 11):
+        # $1,500 landing against $2,000 gross: a 25% wedge, the shape of a real paycheck.
+        deposit(banked, date(2026, 6, 12) + timedelta(days=14 * wk), 1500.00, entity=home)
+    gross_only = A._income_view([banked], 2026, today=date(2026, 10, 30))
+    check('measured against GROSS the pace line invents a shortfall',
+          gross_only['variance'] < -3000, gross_only['variance'])
+    check('and names the basis it used', gross_only['expected_basis'] == 'net',
+          gross_only['expected_basis'])
+    # What the app really passes: take-home per source, as the cash-flow ledger derives it.
+    nets = {banked.id: {'net_annual': 39000.00}}
+    v = A._income_view([banked], 2026, today=date(2026, 10, 30), nets=nets)
+    check('measured against TAKE-HOME it is close to on pace',
+          abs(v['variance']) < 600, (v['variance'], v['expected_to_date'], v['actual_to_date']))
+    check('the take-home projection is reported for the caption',
+          near(v['planned_net_projected'], 39000.00), v['planned_net_projected'])
+    check('while the gross projection is still reported as the projection',
+          near(v['projected'], 52000.00), v['projected'])
+    check('the shortfall shrank by roughly the whole wedge',
+          v['variance'] - gross_only['variance'] > 3000,
+          (gross_only['variance'], v['variance']))
+
+    print('\n--- a hand-logged payment is gross, and IS judged against gross ---')
+    logged = salary('Logged-by-hand job', 24000, realty, freq='monthly')
+    for mo in range(1, 11):
+        event(logged, date(2026, mo, 28), 2000.00)
+    v = A._income_view([logged], 2026, today=date(2026, 10, 30),
+                       nets={logged.id: {'net_annual': 18000.00}})
+    check('an event-backed source is compared on the gross basis',
+          v['expected_basis'] == 'gross', v['expected_basis'])
+    check('so a gross salary logged in full is on pace, not 25% ahead',
+          abs(v['variance']) < 600, (v['variance'], v['expected_to_date'], v['actual_to_date']))
+
+    print('\n--- a source recorded both ways is blended, not forced to one basis ---')
+    both = salary('Both kinds', 24000, realty, freq='monthly')
+    event(both, date(2026, 3, 28), 2000.00)
+    deposit(both, date(2026, 4, 28), 1500.00, entity=realty)
+    v = A._income_view([both], 2026, today=date(2026, 10, 30),
+                       nets={both.id: {'net_annual': 18000.00}})
+    check('the basis is reported as blended', v['expected_basis'] == 'mixed', v['expected_basis'])
+    check('and the expectation falls between the two',
+          v['expected_to_date'] > 0, v['expected_to_date'])
+
     print('\n--- a projection annualized from its own receipts is measured, not forecast ---')
     eggs = irregular('Chicken Tales LLC', farm, form='none')
     deposit(eggs, RECENT, 6.00, entity=farm)
@@ -263,6 +314,31 @@ with A.app.app_context():
           near(rep['income'], 25.50 + 1111), rep['income'])
     check('and its actual side excludes the private source too',
           near(rep['income_actual'], 25.50), rep['income_actual'])
+
+    print('\n--- deriving take-home must not recurse through the tax estimate ---')
+    # _entity_report asks for the take-home map; building it runs the tax estimate; the tax
+    # estimate calls _business_books. If _business_books ever asked for the map too, that
+    # closes into infinite recursion -- so it is pinned here rather than left to a
+    # RecursionError in production.
+    try:
+        rep = A._entity_report(ME, home.id, CUR)
+        ok, why = True, ''
+    except RecursionError as exc:
+        ok, why = False, exc
+    check('a book with salaried income reports without recursing', ok, why)
+    check('and the tax estimate still returns',
+          bool(A._income_tax_estimate(ME, CUR)), 'no estimate')
+    nets = A._net_paycheck_estimates(ME)
+    check('the take-home map covers the salaried sources',
+          all(s.id in nets for s in (wages, newjob, banked)),
+          sorted(nets.keys()))
+    check('and take-home is below gross for a W2 job',
+          nets[wages.id]['net_annual'] < 60000, nets.get(wages.id))
+    check('a book given the map agrees with a book that built its own',
+          A._entity_report(ME, home.id, CUR, nets=nets)['income_pace']['expected_to_date']
+          == rep['income_pace']['expected_to_date'],
+          (A._entity_report(ME, home.id, CUR, nets=nets)['income_pace']['expected_to_date'],
+           rep['income_pace']['expected_to_date']))
 
     print('\n--- the partner sees their own, and the filer sees theirs ---')
     pbooks = A._business_books(PARTNER, CUR, A._tax_profile(PARTNER))

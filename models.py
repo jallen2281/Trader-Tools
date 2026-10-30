@@ -1503,6 +1503,22 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
         """The same, counted from Jan 1 of the current year."""
         return self.received_between(date(date.today().year, 1, 1))
 
+    def received_split_between(self, start, end=None):
+        """What arrived in a window, split by the kind of record it came from: (events,
+        deposits).
+
+        The two are not the same kind of money and must never be set against the same
+        projection. An IncomeEvent records GROSS -- the commission as it was earned -- while
+        a bank deposit is NET, whatever survived withholding and retirement and landed in
+        the account. Measuring net deposits against a gross salary reports the entire tax
+        and deduction wedge, about a quarter of pay, as an income shortfall: $153k of
+        projected salary against $42k of deposits reads as 29.5% behind when nothing is
+        wrong at all. The cash-flow ledger learned this the hard way; see
+        _net_paycheck_estimates.
+        """
+        return (round(self._events_received_between(start, end), 2),
+                round(self._deposits_received_between(start, end), 2))
+
     def received_in_year(self, yr):
         """What actually arrived inside one calendar year.
 

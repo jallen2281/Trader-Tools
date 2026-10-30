@@ -2169,7 +2169,15 @@
             }
             const v = p.variance || 0, sign = v > 0 ? '+' : '';
             const pct = p.variance_pct != null ? ` (${sign}${p.variance_pct}%)` : '';
-            return sub(`${proj} &middot; <span class="${v < 0 ? 'neg' : 'pos'}">${sign}${fmt(v)}${pct} vs pace</span>`
+            /* Naming the basis is not decoration. Where the records are bank deposits both
+               sides of this are take-home, and a reader who assumes gross pay would read
+               the withholding wedge as a shortfall — which is the bug this replaced. */
+            const basis = p.expected_basis === 'net' ? ' take-home'
+                        : (p.expected_basis === 'mixed' ? ' blended' : '');
+            return sub(`${proj} &middot; <span class="${v < 0 ? 'neg' : 'pos'}">${sign}${fmt(v)}${pct} vs${basis} pace</span>`
+                + (p.expected_basis === 'net' && p.planned_net_projected
+                    ? `<br>${fmt(p.actual_to_date)} banked of ${fmt(p.expected_to_date)} expected by now, on ${fmt(p.planned_net_projected)} projected take-home`
+                    : '')
                 + (p.partial_history ? `<br>from ${esc(p.measured_from)}, where the records start` : ''));
         };
         const line = (r, muted) => {
@@ -2208,7 +2216,10 @@
             '<strong>vs pace</strong> sets the money that arrived against the projection over <em>the same span the records cover</em> &mdash; ' +
             'not against the whole year, which would report every set of books as behind it every January. ' +
             'Where a projection is annualized from its own receipts it reads <em>measured, not forecast</em>: ' +
-            'that figure is the actuals, so there is no forecast there to be ahead or behind of.</p>';
+            'that figure is the actuals, so there is no forecast there to be ahead or behind of. ' +
+            'A bank deposit is take-home, not gross pay, so where the records come from the bank the pace line ' +
+            'compares take-home against <em>projected</em> take-home &mdash; otherwise a quarter of every paycheck, ' +
+            'the part that goes to tax and retirement before it ever lands, would show up as income you never earned.</p>';
     }
     function openEntity(e) {
         const x = e || {kind:'farm', name:''};

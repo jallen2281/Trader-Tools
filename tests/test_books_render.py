@@ -89,7 +89,8 @@ def pace(**kw):
          'expected_to_date': 0.0, 'actual_to_date': 0.0, 'variance': 0.0,
          'variance_pct': None, 'comparable': False, 'measured_from': None,
          'partial_history': False, 'sources_unmeasured': [], 'days_elapsed': 303,
-         'days_in_year': 365, 'fraction_elapsed': 0.8301}
+         'days_in_year': 365, 'fraction_elapsed': 0.8301,
+         'expected_basis': 'gross', 'planned_net_projected': 0.0}
     p.update(kw)
     return p
 
@@ -125,11 +126,18 @@ html, text = render({'year': 2026, 'entities': [
     book('Personal finance', eid=2, income=153605.16, actual=118400.00,
          expenses=128300.88, annualized=154559.00,
          measured=0.0, planned_projected=153605.16, comparable=True,
-         expected_to_date=127496.00, actual_to_date=118400.00,
-         variance=-9096.00, variance_pct=-7.1)]})
+         expected_to_date=49200.00, actual_to_date=42269.63,
+         variance=-6930.37, variance_pct=-14.1,
+         expected_basis='net', planned_net_projected=112000.00)]})
 check('the projection is shown as a projection', 'proj $153,605' in text, text)
-check('the shortfall is shown against pace', '-$9,096' in text and 'vs pace' in text, text)
-check('with its percentage', '(-7.1%)' in text, text)
+check('the shortfall is shown against pace', '-$6,930' in text, text)
+check('with its percentage', '(-14.1%)' in text, text)
+check('and the basis is named, so take-home is not read as gross pay',
+      'vs take-home pace' in text, text)
+check('the take-home projection is spelled out',
+      '$112,000 projected take-home' in text, text)
+check('with what was banked against what was due by now',
+      '$42,270 banked of $49,200 expected by now' in text, text)
 check('and drawn as negative', 'neg' in html, html[:400])
 check('the actual income leads the cell', '$118,400' in text, text)
 check('expenses carry where they land at this rate',
@@ -140,17 +148,19 @@ html, text = render({'year': 2026, 'entities': [
     book('Side gig', eid=3, income=20000.00, actual=18000.00, expenses=1000.00,
          annualized=1204.00, measured=0.0, planned_projected=20000.00, comparable=True,
          expected_to_date=16600.00, actual_to_date=18000.00,
-         variance=1400.00, variance_pct=8.4)]})
+         variance=1400.00, variance_pct=8.4, expected_basis='gross')]})
 check('the surplus is signed', '+$1,400' in text, text)
 check('and its percentage signed too', '(+8.4%)' in text, text)
 check('and drawn as positive', 'pos' in html, html[:400])
+check('a gross-basis row is not captioned take-home', 'take-home' not in body(text), body(text))
 
 print('\n--- a young bank feed says so instead of looking like a collapse ---')
 html, text = render({'year': 2026, 'entities': [
     book('Second job', eid=4, income=48000.00, actual=4000.00, expenses=0.0,
          annualized=0.0, measured=0.0, planned_projected=48000.00, comparable=True,
          expected_to_date=5917.81, actual_to_date=4000.00, variance=-1917.81,
-         variance_pct=-32.4, partial_history=True, measured_from='2026-09-16')]})
+         variance_pct=-32.4, partial_history=True, measured_from='2026-09-16',
+         expected_basis='net', planned_net_projected=36000.00)]})
 check('the span the records cover is named', '2026-09-16' in text, text)
 check('and explained', 'where the records start' in text, text)
 check('the variance is the fortnight, not the year', '-$1,918' in text, text)
@@ -178,6 +188,8 @@ check('the legend explains what pace is measured against',
       'the same span the records cover' in text, text)
 check('and why a measured figure has no verdict',
       'no forecast there to be ahead or behind of' in text, text)
+check('and that a deposit is take-home rather than gross pay',
+      'A bank deposit is take-home, not gross pay' in text, text)
 
 print('\n--- an unassigned bucket still renders, and a missing pace block is survivable ---')
 bare = book('Unassigned', eid=None, expenses=12.00)

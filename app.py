@@ -2195,7 +2195,7 @@ def _year_elapsed(yr, today=None):
     return elapsed, total, elapsed / float(total)
 
 
-def _income_view(srcs, yr, today=None):
+def _income_view(srcs, yr, today=None, nets=None):
     """Actual income and projected income for one set of books, each on its own footing.
 
     Books reported income one way and expenses the other: a full-year projection against
@@ -2220,6 +2220,14 @@ def _income_view(srcs, yr, today=None):
     household as tens of thousands behind on income it was in fact paid. A source with no
     records at all is excluded from both sides and counted in `sources_unmeasured`, so the
     gap is reported as missing data instead of being quietly averaged into the verdict.
+
+    `nets` is {source_id: {...}} from _net_paycheck_estimates, and without it this compares
+    net money against a gross projection. A bank deposit is take-home; an IncomeEvent is
+    gross. Measuring the first against a gross salary reported this household as 29.5%
+    behind on income when the gap was the withholding wedge almost exactly -- the same
+    error, in the same direction, that the cash-flow ledger was fixed for. So each source
+    is held against the projection on the basis of the records that will meet it, blended
+    when it has both kinds, and `expected_basis` says which was used.
     """
     elapsed, year_days, frac = _year_elapsed(yr, today)
     jan1, dec31 = date(yr, 1, 1), date(yr, 12, 31)
@@ -2232,8 +2240,12 @@ def _income_view(srcs, yr, today=None):
     planned = [x for x in srcs if x.projection_basis() != 'actuals']
 
     exp_to_date, act_in_window, unmeasured, earliest = 0.0, 0.0, [], None
+    net_planned, saw_gross, saw_net = 0.0, False, False
     for x in planned:
         first = x.first_received_on(jan1)
+        gross_annual = x.gross_annual()
+        net_annual = float(((nets or {}).get(x.id) or {}).get('net_annual', gross_annual))
+        net_planned += net_annual
         if not first or frac <= 0:
             unmeasured.append(x.name)
             continue
@@ -2244,8 +2256,17 @@ def _income_view(srcs, yr, today=None):
         wstart = max(jan1, first - timedelta(days=cover)) if cover else first
         earliest = wstart if earliest is None else min(earliest, wstart)
         span = (end - wstart).days + 1
-        exp_to_date += x.gross_annual() * span / float(year_days)
-        act_in_window += x.received_between(wstart, end)
+
+        # Hold the projection on the same basis as the records that will meet it: gross for
+        # hand-logged events, take-home for bank deposits, weighted by each when a source
+        # has both. Without this the comparison is net money against gross pay.
+        ev, dep = x.received_split_between(wstart, end)
+        got = round(ev + dep, 2)
+        saw_gross = saw_gross or ev > 0
+        saw_net = saw_net or dep > 0
+        basis_annual = ((gross_annual * ev + net_annual * dep) / got) if got > 0 else net_annual
+        exp_to_date += basis_annual * span / float(year_days)
+        act_in_window += got
 
     exp_to_date = round(exp_to_date, 2)
     act_in_window = round(act_in_window, 2)
@@ -2255,6 +2276,13 @@ def _income_view(srcs, yr, today=None):
         'projected': projected,
         'measured': round(sum(x.gross_annual() for x in measured), 2),
         'planned_projected': round(sum(x.gross_annual() for x in planned), 2),
+        # The same plan priced as take-home, which is what the pace line is actually built
+        # on wherever the records are bank deposits.
+        'planned_net_projected': round(net_planned, 2),
+        # 'net' | 'gross' | 'mixed' — so the UI captions the comparison rather than leaving
+        # a reader to assume a take-home figure is gross pay.
+        'expected_basis': ('mixed' if saw_gross and saw_net
+                           else ('gross' if saw_gross else 'net')),
         'expected_to_date': exp_to_date,
         'actual_to_date': act_in_window,
         'variance': variance,
@@ -2271,7 +2299,7 @@ def _income_view(srcs, yr, today=None):
     }
 
 
-def _entity_report(user_id, entity_id, year=None):
+def _entity_report(user_id, entity_id, year=None, nets=None):
     """A set of books for one entity over a calendar year.
 
     Expenses come from the spending ledger; the deductible total comes from receipts
@@ -2302,7 +2330,15 @@ def _entity_report(user_id, entity_id, year=None):
     deductible = round(sum(float(d.amount or 0) for d in docs if d.deductible), 2)
 
     srcs = scoped(IncomeSource).filter(IncomeSource.active.is_(True)).all()
-    inc = _income_view(srcs, yr)
+    # Take-home per source, so the pace comparison meets bank deposits with a take-home
+    # projection. Deliberately NOT scoped to this entity's sources: the estimator divides
+    # household income tax by each job's share of total taxable wages, so handing it one
+    # book's subset would load the household's whole tax bill onto that book and understate
+    # its take-home. Worth passing in from a caller reporting several books, which
+    # otherwise runs a full tax estimate per book to rebuild the same map.
+    if nets is None:
+        nets = _net_paycheck_estimates(user_id) if srcs else {}
+    inc = _income_view(srcs, yr, nets=nets)
     income = inc['projected']
 
     # Expenses are already actuals for the year, so the only figure missing for a
@@ -2374,9 +2410,12 @@ def finance_entity_report():
         if rep is None:
             return jsonify({'error': 'Unknown entity'}), 404
         return jsonify(rep)
-    reports = [_entity_report(uid, e.id, yr)
+    # Derived once for the whole response: every book needs the same take-home map, and
+    # building it runs a full tax estimate.
+    nets = _net_paycheck_estimates(uid)
+    reports = [_entity_report(uid, e.id, yr, nets=nets)
                for e in _visible_entities(uid).order_by(Entity.name).all()]
-    unassigned = _entity_report(uid, None, yr)
+    unassigned = _entity_report(uid, None, yr, nets=nets)
     return jsonify({'year': yr, 'entities': reports, 'unassigned': unassigned,
                     'business_entities': [r for r in reports if r['tax_form']]})
 
@@ -4621,6 +4660,7 @@ def _net_paycheck_estimates(user_id, srcs=None):
             setaside = gross_annual * float(x.est_tax_rate or 0) / 100.0
             net = max(0.0, gross_annual - setaside) / periods
             out[x.id] = {'gross': gross_check, 'net': round(net, 2),
+                         'net_annual': round(max(0.0, gross_annual - setaside), 2),
                          'basis': 'less %s%% tax set-aside' % (x.est_tax_rate or 0)}
             continue
 
@@ -4650,6 +4690,10 @@ def _net_paycheck_estimates(user_id, srcs=None):
         out[x.id] = {
             'gross': gross_check,
             'net': round(net_annual / periods, 2),
+            # The annual figure too, because a bank deposit is net pay: anything comparing
+            # what landed against what was projected has to project on the same basis or it
+            # reports the withholding wedge as a shortfall. See _income_view.
+            'net_annual': round(net_annual, 2),
             'basis': basis,
             'fica': round(fica / periods, 2),
             'income_tax': round(income_tax / periods, 2),
@@ -8006,6 +8050,11 @@ def _business_books(user_id, yr, prof):
             _visible(IncomeSource, user_id),
             IncomeSource.entity_id == e.id, IncomeSource.active.is_(True)).all()
             if x.tax_form != 'W2']
+        # No take-home map here, on purpose and twice over. This query excludes W2 income,
+        # and nothing is withheld from a 1099 cheque, so a deposit against one of these
+        # sources IS the gross amount and the gross projection is the right comparator.
+        # Asking for the map would also recurse: it runs a tax estimate, and the tax
+        # estimate is what calls this function.
         inc = _income_view(srcs, yr)
         income = inc['projected']
         expenses = round(sum(float(t.amount or 0) * (0.5 if t.category in _HALF_DEDUCTIBLE else 1.0)
