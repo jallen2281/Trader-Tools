@@ -194,9 +194,28 @@ with A.app.app_context():
     ], CUR, today=date(CUR, 12, 31))
     check('it ends on the last record, not in December',
           ev2['covered_through'] == date(CUR, 3, 1).isoformat(), ev2['covered_through'])
-    check('an empty ledger reports no span at all',
-          A._expense_view([], CUR)['days_covered'] == 0
-          and A._expense_view([], CUR)['annualized'] is None, A._expense_view([], CUR))
+    print('\n--- nothing spent, not started, and too short are three different answers ---')
+    # Collapsing them into None blanked the projected net on a book that genuinely has no
+    # expenses: Coldwell Banker, commission income against no costs, had its projection
+    # taken away by a guard meant for short ledgers.
+    empty = A._expense_view([], CUR)
+    check('an empty ledger has no span', empty['days_covered'] == 0, empty)
+    check('but zero spending annualizes to zero, which is knowledge',
+          empty['annualized'] == 0.0, empty)
+    check('and is not flagged as too thin to project', empty['thin'] is False, empty)
+    future = A._expense_view([], CUR + 4)
+    check('a year that has not started annualizes nothing at all',
+          future['annualized'] is None, future)
+    check('while a short ledger with real spending is the thin case',
+          thin['annualized'] is None and thin['thin'] is True, thin)
+    # The shape that lost the projection: income, no expense rows, current year.
+    bare = Entity(user_id=ME, name='Commission only', kind='business', tax_form='Schedule C')
+    db.session.add(bare)
+    db.session.commit()
+    br = A._entity_report(ME, bare.id, CUR)
+    check('a book with no expenses still projects a net',
+          br['expenses_annualized'] == 0.0 and br['net_projected'] is not None,
+          (br['expenses_annualized'], br['net_projected']))
 
     print('\n--- an arrival with no other half is surfaced, not silently zeroed ---')
     # Already paired above: the $9,000. It has an other half and must not be listed.

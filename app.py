@@ -2339,14 +2339,15 @@ def _expense_view(rows, yr, today=None):
     comparison have to be measured over the span that actually has records in it.
 
     Returns None for `annualized` rather than a number when the span is too short to carry
-    one, because a wrong rate is worse than an absent one. A one-off inside a short window
-    (a vehicle, a roof) is annualized as though it recurred, which is why the span travels
+    one, because a wrong rate is worse than an absent one -- but zero spending annualizes
+    to zero, which is knowledge, not an absence of it. A one-off inside a short window (a
+    vehicle, a roof) is annualized as though it recurred, which is why the span travels
     with the figure instead of leaving a reader to assume it covers the year.
     """
     today = today or date.today()
     jan1, dec31 = date(yr, 1, 1), date(yr, 12, 31)
     end = min(today, dec31)
-    _, year_days, _ = _year_elapsed(yr, today)
+    _, year_days, frac = _year_elapsed(yr, today)
     rows = list(rows)
 
     total = round(sum(float(t.amount or 0) for t in rows), 2)
@@ -2358,8 +2359,19 @@ def _expense_view(rows, yr, today=None):
     last = min(max(dates), end) if dates else None
     span = ((last - first).days + 1) if (first and last and last >= first) else 0
 
-    annualized = (round(total * year_days / float(span), 2)
-                  if span >= ANNUALIZE_MIN_DAYS and total else None)
+    # Three different answers, because "nothing was spent", "the year has not started" and
+    # "too few days to infer a rate" are three different statements and only the last one
+    # is an absence of knowledge. Collapsing them blanked the projected net on a book that
+    # genuinely has no expenses -- Coldwell Banker, $2,398.15 of commission against no
+    # costs, lost its projection to a guard meant for short ledgers.
+    if frac <= 0:
+        annualized = None
+    elif not total:
+        annualized = 0.0
+    elif span >= ANNUALIZE_MIN_DAYS:
+        annualized = round(total * year_days / float(span), 2)
+    else:
+        annualized = None
     return {
         'total': total,
         'annualized': annualized,
