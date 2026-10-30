@@ -2214,12 +2214,13 @@ def _income_view(srcs, yr, today=None, nets=None):
     its trailing 12 months) is `measured`, not projected. Comparing its actuals to its
     projection compares a number to itself and always reads as exactly on pace.
 
-    A source is measured only over the span its records cover, starting at its first one
-    rather than at Jan 1. The two W2 sources here project $153k off nine synced deposits
-    each; charging them for the months before the bank feed existed would report the
-    household as tens of thousands behind on income it was in fact paid. A source with no
-    records at all is excluded from both sides and counted in `sources_unmeasured`, so the
-    gap is reported as missing data instead of being quietly averaged into the verdict.
+    A source is measured only over the span its records cover -- at BOTH ends. The two W2
+    sources here project $153k off nine synced deposits each, so charging them from Jan 1
+    reported the household $35,846 behind on income it was in fact paid; and charging them
+    out to today, past the last payday, reported a further $4,048 against cheques landing
+    at 98.3% and 100.4% of estimate. A source with no records at all is excluded from both
+    sides and counted in `sources_unmeasured`, so the gap is reported as missing data
+    instead of being quietly averaged into the verdict.
 
     `nets` is {source_id: {...}} from _net_paycheck_estimates, and without it this compares
     net money against a gross projection. A bank deposit is take-home; an IncomeEvent is
@@ -2241,6 +2242,7 @@ def _income_view(srcs, yr, today=None, nets=None):
 
     exp_to_date, act_in_window, unmeasured, earliest = 0.0, 0.0, [], None
     net_planned, saw_gross, saw_net = 0.0, False, False
+    through, stale_periods = None, 0.0
     for x in planned:
         first = x.first_received_on(jan1)
         gross_annual = x.gross_annual()
@@ -2249,18 +2251,31 @@ def _income_view(srcs, yr, today=None, nets=None):
         if not first or frac <= 0:
             unmeasured.append(x.name)
             continue
-        # Back up to the start of the period that first payment covers, so a salary paid
-        # exactly on target does not read as ahead of pace just because the window opened
-        # on payday rather than on the 1st. Clamped at Jan 1: this measures one year.
+        # BOTH ends of the window are bounded by the records, never by the calendar.
+        #
+        # The start backs up to cover the period the first payment earned, so a salary paid
+        # exactly on target is not read as ahead merely because the window opened on payday
+        # rather than on the 1st. Clamped at Jan 1: this measures one year.
+        #
+        # The end stops at the last record, because pay arrives on paydays and the stretch
+        # since the last one has nothing due in it yet. Measuring to today instead charged
+        # this household $4,048 against salaries landing at 98.3% and 100.4% of estimate --
+        # one next payday a week out, one cheque not yet synced.
         cover = x.pay_period_days()
         wstart = max(jan1, first - timedelta(days=cover)) if cover else first
+        wend = min(end, x.last_received_on(jan1, end) or end)
+        if wend < wstart:
+            wend = wstart
         earliest = wstart if earliest is None else min(earliest, wstart)
-        span = (end - wstart).days + 1
+        through = wend if through is None else min(through, wend)
+        if cover:
+            stale_periods = max(stale_periods, (end - wend).days / float(cover))
+        span = (wend - wstart).days + 1
 
         # Hold the projection on the same basis as the records that will meet it: gross for
         # hand-logged events, take-home for bank deposits, weighted by each when a source
         # has both. Without this the comparison is net money against gross pay.
-        ev, dep = x.received_split_between(wstart, end)
+        ev, dep = x.received_split_between(wstart, wend)
         got = round(ev + dep, 2)
         saw_gross = saw_gross or ev > 0
         saw_net = saw_net or dep > 0
@@ -2291,6 +2306,13 @@ def _income_view(srcs, yr, today=None, nets=None):
         # to compare it over. The UI shows the figures and withholds the ahead/behind line.
         'comparable': bool(exp_to_date > 0),
         'measured_from': earliest.isoformat() if earliest else None,
+        # The window closes at the records, so how far behind today they end is reported
+        # rather than charged. More than about a period and a half of silence means pay
+        # stopped or the feed did -- a fact about the records, not an income variance, and
+        # the one thing closing the window at the records could otherwise hide.
+        'records_through': through.isoformat() if through else None,
+        'stale_periods': round(stale_periods, 2),
+        'records_stale': bool(stale_periods > 1.5),
         'partial_history': bool(earliest and earliest > jan1),
         'sources_unmeasured': unmeasured,
         'days_elapsed': elapsed,

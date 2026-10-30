@@ -2178,7 +2178,13 @@
                 + (p.expected_basis === 'net' && p.planned_net_projected
                     ? `<br>${fmt(p.actual_to_date)} banked of ${fmt(p.expected_to_date)} expected by now, on ${fmt(p.planned_net_projected)} projected take-home`
                     : '')
-                + (p.partial_history ? `<br>from ${esc(p.measured_from)}, where the records start` : ''));
+                + (p.measured_from && p.records_through
+                    ? `<br>measured ${esc(p.measured_from)} to ${esc(p.records_through)}${
+                        p.partial_history ? ', the span the records cover' : ''}` : '')
+                /* The window closes at the last record, so silence since then cannot show
+                   up as a shortfall. It still has to show up as something. */
+                + (p.records_stale
+                    ? `<br><span class="neg">no income recorded for about ${Math.floor(p.stale_periods)} pay period${Math.floor(p.stale_periods) === 1 ? '' : 's'}</span>` : ''));
         };
         const line = (r, muted) => {
             const e = r.entity;
@@ -2213,8 +2219,10 @@
             '</tbody></table></div>' +
             '<p class="muted" style="font-size:0.78em;padding:10px 2px 0;line-height:1.55;">' +
             'The bold figure on each line is what actually happened; the line under it is the full-year projection. ' +
-            '<strong>vs pace</strong> sets the money that arrived against the projection over <em>the same span the records cover</em> &mdash; ' +
-            'not against the whole year, which would report every set of books as behind it every January. ' +
+            '<strong>vs pace</strong> sets the money that arrived against the projection over <em>the same span the records cover</em>, ' +
+            'at both ends &mdash; not against the whole year, which would report every set of books as behind it every January, ' +
+            'and not out to today either, since the stretch since the last payday has nothing due in it yet. ' +
+            'If income stops being recorded that is called out on the row rather than shown as a shortfall. ' +
             'Where a projection is annualized from its own receipts it reads <em>measured, not forecast</em>: ' +
             'that figure is the actuals, so there is no forecast there to be ahead or behind of. ' +
             'A bank deposit is take-home, not gross pay, so where the records come from the bank the pace line ' +

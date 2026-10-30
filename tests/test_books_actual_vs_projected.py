@@ -152,15 +152,38 @@ with A.app.app_context():
     naive = round(4000 - 48000 * 303 / 365.0, 2)
     check('measured from the period the first record covers, not from Jan 1',
           v['measured_from'] == '2026-09-16', v['measured_from'])
-    check('expects only the 45 days it can see',
-          near(v['expected_to_date'], 48000 * 45 / 365.0), v['expected_to_date'])
+    # And closed at the last record (Oct 15), not at today -- the fortnight since has no
+    # payday in it, so there is nothing yet to be short of.
+    check('and closed at the last record, not at today',
+          v['records_through'] == '2026-10-15', v['records_through'])
+    check('expects only the 30 days between them',
+          near(v['expected_to_date'], 48000 * 30 / 365.0), v['expected_to_date'])
     check('counts only what arrived in them', near(v['actual_to_date'], 4000), v['actual_to_date'])
-    check('so the shortfall is a fortnight, not three quarters of a year',
-          near(v['variance'], 4000 - 48000 * 45 / 365.0) and v['variance'] > naive + 30000,
+    check('so a salary paid in full is not reported behind at all',
+          abs(v['variance']) < 100 and v['variance'] > naive + 30000,
           (v['variance'], 'naive would have been', naive))
     check('and the partial history is declared', v['partial_history'] is True, v)
+    check('a fortnight of silence is not yet called stale',
+          v['records_stale'] is False and v['stale_periods'] <= 1.5,
+          (v['records_stale'], v['stale_periods']))
     check('while the full-year actual is still reported raw',
           near(v['actual'], 4000), v['actual'])
+
+    print('\n--- but pay that stops being recorded is called out, not hidden ---')
+    # Closing the window at the records is what stops a part-period reading as a deficit.
+    # The risk it introduces is the opposite one: a stream that dries up stops moving the
+    # window instead of showing a gap, so staleness has to be reported in its own right.
+    quit_job = salary('Job that went quiet', 48000, home)
+    event(quit_job, date(2026, 2, 13), 2000.00)
+    event(quit_job, date(2026, 2, 27), 2000.00)
+    v = A._income_view([quit_job], 2026, today=date(2026, 10, 30))
+    check('the variance stays honest rather than inventing eight months of deficit',
+          abs(v['variance']) < 600, (v['variance'], v['expected_to_date']))
+    check('but the silence is measured in pay periods',
+          v['stale_periods'] > 15, v['stale_periods'])
+    check('and flagged', v['records_stale'] is True, v)
+    check('with the date the records stop', v['records_through'] == '2026-02-27',
+          v['records_through'])
 
     print('\n--- a bank deposit is take-home, and is not judged against gross pay ---')
     # The failure this guards: $153,605 of projected salary against $42,269 of deposits read

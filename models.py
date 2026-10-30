@@ -1566,6 +1566,37 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
         periods = self.PAY_PERIODS.get(self.pay_frequency)
         return int(round(365.0 / periods)) if periods else 0
 
+    def last_received_on(self, start=None, end=None):
+        """The date of the most recent actual income record in a window, or None.
+
+        The pace comparison needs both ends of its window bounded by the records, not by
+        the calendar. Pay arrives on paydays, so measuring expectation out to today charges
+        a source for the part-period since its last one: $59,000 of salary paid exactly on
+        schedule read as $1,043 behind because today was a week past the last payday, and
+        a biweekly job whose cheque had not synced yet read as $3,155 behind. Between them
+        that was the whole of a reported 8.7% shortfall on income that was paid in full.
+
+        Ending the window here does mean a stream that genuinely STOPS stops moving the
+        window rather than showing a deficit, so _income_view reports how stale the records
+        are alongside. Pay that dried up is a fact about the records, not a variance.
+        """
+        dates = [e.date for e in (self.events or []) if e.date
+                 and (start is None or e.date >= start)
+                 and (end is None or e.date <= end)]
+        if self.id:
+            q = PlaidDeposit.query.filter(
+                PlaidDeposit.income_source_id == self.id,
+                PlaidDeposit.kind == 'income',
+                PlaidDeposit.income_event_id.is_(None))
+            if start is not None:
+                q = q.filter(PlaidDeposit.posted_at >= start)
+            if end is not None:
+                q = q.filter(PlaidDeposit.posted_at <= end)
+            row = q.order_by(PlaidDeposit.posted_at.desc()).first()
+            if row and row.posted_at:
+                dates.append(row.posted_at)
+        return max(dates) if dates else None
+
     def projection_basis(self):
         """Where gross_annual() gets its number -- which decides whether holding it up
         against actuals means anything at all.

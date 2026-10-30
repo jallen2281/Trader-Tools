@@ -90,7 +90,8 @@ def pace(**kw):
          'variance_pct': None, 'comparable': False, 'measured_from': None,
          'partial_history': False, 'sources_unmeasured': [], 'days_elapsed': 303,
          'days_in_year': 365, 'fraction_elapsed': 0.8301,
-         'expected_basis': 'gross', 'planned_net_projected': 0.0}
+         'expected_basis': 'gross', 'planned_net_projected': 0.0,
+         'records_through': None, 'stale_periods': 0.0, 'records_stale': False}
     p.update(kw)
     return p
 
@@ -160,9 +161,13 @@ html, text = render({'year': 2026, 'entities': [
          annualized=0.0, measured=0.0, planned_projected=48000.00, comparable=True,
          expected_to_date=5917.81, actual_to_date=4000.00, variance=-1917.81,
          variance_pct=-32.4, partial_history=True, measured_from='2026-09-16',
+         records_through='2026-10-15', stale_periods=1.0,
          expected_basis='net', planned_net_projected=36000.00)]})
-check('the span the records cover is named', '2026-09-16' in text, text)
-check('and explained', 'where the records start' in text, text)
+check('both ends of the measured span are named',
+      'measured 2026-09-16 to 2026-10-15' in text, text)
+check('and explained', 'the span the records cover' in body(text), body(text))
+check('a single period of lag is not called stale',
+      'no income recorded' not in text, text)
 check('the variance is the fortnight, not the year', '-$1,918' in text, text)
 check('and $44,000 of phantom shortfall is nowhere on the page',
       '-$44,000' not in text and '$44,000' not in text, text)
@@ -203,6 +208,30 @@ html, text = render({'year': 2026, 'entities': [book('Chicken Tales LLC', income
 check('the unassigned row appears', 'Unassigned' in text, text)
 check('explained as untagged', 'records not assigned to any books' in text, text)
 check('and a row with no pace data does not break the render', '$12' in text, text)
+
+print('\n--- income that stops being recorded is called out on the row ---')
+# The window closes at the last record so a part-period cannot read as a deficit. The risk
+# that introduces is the opposite one, and it has to surface somewhere.
+html, text = render({'year': 2026, 'entities': [
+    book('Job that went quiet', eid=7, income=48000.00, actual=4000.00, expenses=0.0,
+         measured=0.0, planned_projected=48000.00, comparable=True,
+         expected_to_date=4100.00, actual_to_date=4000.00, variance=-100.00,
+         variance_pct=-2.4, expected_basis='gross', measured_from='2026-01-29',
+         records_through='2026-02-27', stale_periods=16.2, records_stale=True)]})
+check('the silence is stated in pay periods',
+      'no income recorded for about 16 pay periods' in text, text)
+check('and drawn as a problem', 'neg' in html, html[:600])
+check('while the variance itself stays small and honest', '-$100' in text, text)
+check('and the date the records stop is shown', '2026-02-27' in text, text)
+
+print('\n--- one stale period is worded in the singular ---')
+html, text = render({'year': 2026, 'entities': [
+    book('Barely late', eid=8, income=12000.00, actual=900.00, comparable=True,
+         planned_projected=12000.00, expected_to_date=950.00, actual_to_date=900.00,
+         variance=-50.00, measured_from='2026-01-01', records_through='2026-09-20',
+         stale_periods=1.9, records_stale=True)]})
+check('it reads "1 pay period", not "1 pay periods"',
+      'about 1 pay period<' in html, [x for x in html.split('<br>') if 'pay period' in x])
 
 print('\n' + ('=' * 60))
 if fails:
