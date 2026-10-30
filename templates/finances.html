@@ -2154,27 +2154,61 @@
             box.innerHTML = '<p class="muted" style="padding:12px;">No separate books yet. Add one for a farm, side business or rental, then tag its transactions and receipts — its expenses and deductible totals are then reported apart from household spending.</p>';
             return;
         }
+        /* The second line of the income cell. Whether a verdict belongs there at all is the
+           server's call (income_pace.comparable) — a book whose projection is annualized
+           from its own receipts has no forecast to be ahead of, and saying "on pace" there
+           would be restating the same number twice. */
+        const pace = (r) => {
+            const p = r.income_pace || {};
+            const proj = 'proj ' + fmt(r.income_projected != null ? r.income_projected : r.income);
+            const sub = s => `<div class="muted" style="font-size:0.78em;font-weight:400;">${s}</div>`;
+            if (!p.comparable) {
+                const why = (p.measured && !p.planned_projected) ? 'measured, not forecast'
+                    : ((p.sources_unmeasured || []).length ? 'no income records to measure yet' : '');
+                return sub(proj + (why ? ' &middot; ' + why : ''));
+            }
+            const v = p.variance || 0, sign = v > 0 ? '+' : '';
+            const pct = p.variance_pct != null ? ` (${sign}${p.variance_pct}%)` : '';
+            return sub(`${proj} &middot; <span class="${v < 0 ? 'neg' : 'pos'}">${sign}${fmt(v)}${pct} vs pace</span>`
+                + (p.partial_history ? `<br>from ${esc(p.measured_from)}, where the records start` : ''));
+        };
         const line = (r, muted) => {
             const e = r.entity;
             const form = e.tax_form ? `<span class="badge b-inv" style="font-size:0.72em;">${esc(e.tax_form)}</span>` : '';
+            const act = r.income_actual != null ? r.income_actual : r.income;
+            const na = r.net_actual != null ? r.net_actual : r.net;
             return `<tr${muted ? ' style="opacity:.72;"' : ''}>
                 <td><strong>${esc(e.name)}</strong> ${form}${e.id ? '' : '<div class="muted" style="font-size:0.78em;">records not assigned to any books</div>'}</td>
-                <td style="text-align:right;">${fmt(r.income)}</td>
-                <td style="text-align:right;">${fmt(r.expenses)}</td>
-                <td style="text-align:right;" class="${r.net < 0 ? 'neg' : 'pos'}">${fmt(r.net)}</td>
+                <td style="text-align:right;white-space:nowrap;"><strong>${fmt(act)}</strong>${pace(r)}</td>
+                <td style="text-align:right;white-space:nowrap;"><strong>${fmt(r.expenses)}</strong>${
+                    r.expenses_annualized != null && r.expenses_annualized !== r.expenses
+                        ? `<div class="muted" style="font-size:0.78em;font-weight:400;">${fmt(r.expenses_annualized)} at this rate</div>` : ''}</td>
+                <td style="text-align:right;white-space:nowrap;"><strong class="${na < 0 ? 'neg' : 'pos'}">${fmt(na)}</strong>${
+                    r.net_projected != null
+                        ? `<div class="muted" style="font-size:0.78em;font-weight:400;">${fmt(r.net_projected)} projected</div>` : ''}</td>
                 <td style="text-align:right;white-space:nowrap;">${r.mileage_deduction ? fmt(r.mileage_deduction) + `<div class="muted" style="font-size:0.78em;">${r.mileage_miles} mi</div>` : '<span class="muted">&mdash;</span>'}</td>
                 <td style="text-align:right;">${fmt(r.deductible_receipts)}</td>
                 <td style="text-align:right;white-space:nowrap;">${e.id
                     ? `<button class="link-btn" onclick='openEntity(${attrJson(e)})'>edit</button>` : ''}</td>
             </tr>`;
         };
+        const sub = t => `<div class="muted" style="font-weight:400;font-size:0.74em;">${t}</div>`;
         box.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr>' +
-            '<th>Books</th><th style="text-align:right;">Income</th><th style="text-align:right;">Expenses</th>' +
-            '<th style="text-align:right;">Net</th><th style="text-align:right;" title="Business miles at the IRS standard rate">Mileage</th><th style="text-align:right;" title="Receipts explicitly marked deductible — reported apart from total expenses on purpose">Deductible</th><th></th>' +
+            '<th>Books</th>' +
+            '<th style="text-align:right;" title="What actually arrived this year, with the full-year projection beneath it">Income' + sub('actual &middot; projected') + '</th>' +
+            '<th style="text-align:right;" title="What was actually spent this year, and where it lands by December at that rate">Expenses' + sub('actual &middot; annualized') + '</th>' +
+            '<th style="text-align:right;" title="Actual income less actual spending, then the same on projected figures">Net' + sub('actual &middot; projected') + '</th>' +
+            '<th style="text-align:right;" title="Business miles at the IRS standard rate">Mileage</th><th style="text-align:right;" title="Receipts explicitly marked deductible — reported apart from total expenses on purpose">Deductible</th><th></th>' +
             '</tr></thead><tbody>' + rows.map(r => line(r, false)).join('') +
             (rep.unassigned && (rep.unassigned.expenses || rep.unassigned.transactions)
                 ? line(rep.unassigned, true) : '') +
-            '</tbody></table></div>';
+            '</tbody></table></div>' +
+            '<p class="muted" style="font-size:0.78em;padding:10px 2px 0;line-height:1.55;">' +
+            'The bold figure on each line is what actually happened; the line under it is the full-year projection. ' +
+            '<strong>vs pace</strong> sets the money that arrived against the projection over <em>the same span the records cover</em> &mdash; ' +
+            'not against the whole year, which would report every set of books as behind it every January. ' +
+            'Where a projection is annualized from its own receipts it reads <em>measured, not forecast</em>: ' +
+            'that figure is the actuals, so there is no forecast there to be ahead or behind of.</p>';
     }
     function openEntity(e) {
         const x = e || {kind:'farm', name:''};

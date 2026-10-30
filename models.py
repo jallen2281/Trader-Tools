@@ -1453,8 +1453,8 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
     events = db.relationship('IncomeEvent', backref='source', lazy=True,
                              cascade='all, delete-orphan', order_by='IncomeEvent.date.desc()')
 
-    def _deposits_received_since(self, cutoff):
-        """Money attributed to this source that reached a connected account on/after cutoff.
+    def _deposits_received_between(self, start, end=None):
+        """Money attributed to this source that reached a connected account in a window.
 
         Irregular income can be recorded two ways and only one of them was ever counted:
         logged by hand as an IncomeEvent, or attributed to this source from a bank deposit.
@@ -1476,27 +1476,97 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
         # which would sum every unattributed deposit in the household into this one source.
         if not self.id:
             return 0.0
-        rows = PlaidDeposit.query.filter(
+        q = PlaidDeposit.query.filter(
             PlaidDeposit.income_source_id == self.id,
             PlaidDeposit.kind == 'income',
             PlaidDeposit.income_event_id.is_(None),
-            PlaidDeposit.posted_at >= cutoff).all()
-        return sum(float(d.amount or 0) for d in rows)
+            PlaidDeposit.posted_at >= start)
+        if end is not None:
+            q = q.filter(PlaidDeposit.posted_at <= end)
+        return sum(float(d.amount or 0) for d in q.all())
 
-    def _events_received_since(self, cutoff):
-        return sum(float(e.gross_amount or 0)
-                   for e in (self.events or []) if e.date and e.date >= cutoff)
+    def _events_received_between(self, start, end=None):
+        return sum(float(e.gross_amount or 0) for e in (self.events or [])
+                   if e.date and e.date >= start and (end is None or e.date <= end))
+
+    def received_between(self, start, end=None):
+        """Everything this source actually paid out inside a window: logged income events
+        plus the deposits attributed to it. An open `end` means "up to whenever"."""
+        return round(self._events_received_between(start, end)
+                     + self._deposits_received_between(start, end), 2)
 
     def trailing_12mo_received(self):
-        """Everything this source actually paid out over the last 365 days: logged income
-        events plus the deposits attributed to it."""
-        cutoff = date.today() - timedelta(days=365)
-        return round(self._events_received_since(cutoff) + self._deposits_received_since(cutoff), 2)
+        """Everything this source actually paid out over the last 365 days."""
+        return self.received_between(date.today() - timedelta(days=365))
 
     def ytd_received(self):
         """The same, counted from Jan 1 of the current year."""
-        jan1 = date(date.today().year, 1, 1)
-        return round(self._events_received_since(jan1) + self._deposits_received_since(jan1), 2)
+        return self.received_between(date(date.today().year, 1, 1))
+
+    def received_in_year(self, yr):
+        """What actually arrived inside one calendar year.
+
+        Distinct from ytd_received, which runs open-ended from Jan 1: a set of books can be
+        asked for a year that has already closed, and 2025's income must not pick up the
+        deposits that landed in 2026.
+        """
+        return self.received_between(date(int(yr), 1, 1), date(int(yr), 12, 31))
+
+    def first_received_on(self, start=None):
+        """The date of the earliest actual income record for this source, or None.
+
+        The pace comparison needs this. A bank feed that only reaches back two months makes
+        a year-to-date actual look like a catastrophic shortfall against a full year of
+        salary, when all it really means is that the feed is young -- the two W2 sources
+        here project $153k between them off nine synced deposits each. Comparing like with
+        like means measuring the projection over the SAME span the records actually cover,
+        so that span has to start where the records do.
+        """
+        dates = [e.date for e in (self.events or []) if e.date
+                 and (start is None or e.date >= start)]
+        if self.id:
+            q = PlaidDeposit.query.filter(
+                PlaidDeposit.income_source_id == self.id,
+                PlaidDeposit.kind == 'income',
+                PlaidDeposit.income_event_id.is_(None))
+            if start is not None:
+                q = q.filter(PlaidDeposit.posted_at >= start)
+            row = q.order_by(PlaidDeposit.posted_at.asc()).first()
+            if row and row.posted_at:
+                dates.append(row.posted_at)
+        return min(dates) if dates else None
+
+    def pay_period_days(self):
+        """The length of the stretch one payment covers, in days; 0 with no fixed cadence.
+
+        A payment is earned over the period BEFORE it lands: the first cheque of the year
+        arrives on the 15th but covers the 1st onward. The pace comparison measures a
+        projection over the span the records cover, so without this a salary paid exactly
+        on target reads as ahead of pace -- 24 cheques of a 24-cheque year, credited against
+        a window that started two weeks late.
+        """
+        if self.irregular:
+            return 0
+        periods = self.PAY_PERIODS.get(self.pay_frequency)
+        return int(round(365.0 / periods)) if periods else 0
+
+    def projection_basis(self):
+        """Where gross_annual() gets its number -- which decides whether holding it up
+        against actuals means anything at all.
+
+        'actuals'   an irregular source with money on record: the projection IS its
+                    trailing 12 months of receipts, so measuring its actuals against its
+                    projection compares a figure to itself. Any "on pace" verdict there is
+                    a tautology wearing the clothes of a finding, so these are reported as
+                    measured rather than entered into the comparison.
+        'estimate'  an irregular source with nothing received yet, running on the number
+                    the household typed in.
+        'schedule'  a salary or an hourly rate. Independent of whatever landed, so the gap
+                    between the two is real information.
+        """
+        if self.irregular:
+            return 'actuals' if self.trailing_12mo_received() > 0 else 'estimate'
+        return 'schedule'
 
     def weekly_gross(self):
         """Hourly weekly gross incl. overtime; others → their equivalent weekly slice."""
@@ -1617,6 +1687,8 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
             'gross_annual': self.gross_annual(), 'paycheck_estimate': self.paycheck_estimate(),
             'net_monthly': self.net_monthly(), 'tax_setaside_monthly': self.tax_setaside_monthly(),
             'ytd_received': self.ytd_received(), 'trailing_12mo_received': self.trailing_12mo_received(),
+            # So a figure that IS the actuals is never captioned as a forecast to beat.
+            'projection_basis': self.projection_basis(),
             'pay_day_2': self.pay_day_2, 'weekend_rule': self.weekend_rule or 'none',
             'upcoming_paydates': [pd.isoformat() for pd in self.upcoming_paydates(4)],
         }
@@ -2263,7 +2335,7 @@ class PlaidDeposit(db.Model):
     #
     # Tying them records the relationship and makes the de-duplication explicit: a tied
     # deposit is not counted again, because its event already is. See
-    # IncomeSource._deposits_received_since.
+    # IncomeSource._deposits_received_between.
     income_event_id = db.Column(db.Integer, db.ForeignKey('income_events.id'), index=True)
     # Which book this income belongs to, when it is not simply the book of the income
     # source. Income used to take its book ENTIRELY from its source, so a deposit with no

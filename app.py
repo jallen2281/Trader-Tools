@@ -2177,6 +2177,100 @@ def finance_tag_entity(kind, rid):
     return jsonify({'id': rec.id, 'kind': kind, 'entity_id': rec.entity_id})
 
 
+def _year_elapsed(yr, today=None):
+    """How much of a calendar year has run: (days elapsed, days in the year, fraction).
+
+    A closed year is 1.0, a year that has not started is 0.0, and the year in progress is
+    counted inclusive of today. The whole point of all three is that a year-to-date actual
+    may only ever be set against the same slice of a projection.
+    """
+    today = today or date.today()
+    start, end = date(yr, 1, 1), date(yr, 12, 31)
+    total = (end - start).days + 1
+    if today >= end:
+        return total, total, 1.0
+    if today < start:
+        return 0, total, 0.0
+    elapsed = (today - start).days + 1
+    return elapsed, total, elapsed / float(total)
+
+
+def _income_view(srcs, yr, today=None):
+    """Actual income and projected income for one set of books, each on its own footing.
+
+    Books reported income one way and expenses the other: a full-year projection against
+    ten months of real spending, which read as $25k ahead for no better reason than the
+    calendar. So three figures, and never a comparison between two of them that measure
+    different spans:
+
+      actual            money that genuinely arrived inside the year
+      projected         the full-year figure the rest of the app plans from
+      expected_to_date  that projection cut down to the span the records actually cover
+
+    Two things are deliberately kept OUT of the variance, because including them would
+    manufacture a shortfall that does not exist:
+
+    A source whose projection comes from its own receipts (an irregular one, annualizing
+    its trailing 12 months) is `measured`, not projected. Comparing its actuals to its
+    projection compares a number to itself and always reads as exactly on pace.
+
+    A source is measured only over the span its records cover, starting at its first one
+    rather than at Jan 1. The two W2 sources here project $153k off nine synced deposits
+    each; charging them for the months before the bank feed existed would report the
+    household as tens of thousands behind on income it was in fact paid. A source with no
+    records at all is excluded from both sides and counted in `sources_unmeasured`, so the
+    gap is reported as missing data instead of being quietly averaged into the verdict.
+    """
+    elapsed, year_days, frac = _year_elapsed(yr, today)
+    jan1, dec31 = date(yr, 1, 1), date(yr, 12, 31)
+    end = min(today or date.today(), dec31)
+    srcs = list(srcs)
+
+    actual = round(sum(x.received_in_year(yr) for x in srcs), 2)
+    projected = round(sum(x.gross_annual() for x in srcs), 2)
+    measured = [x for x in srcs if x.projection_basis() == 'actuals']
+    planned = [x for x in srcs if x.projection_basis() != 'actuals']
+
+    exp_to_date, act_in_window, unmeasured, earliest = 0.0, 0.0, [], None
+    for x in planned:
+        first = x.first_received_on(jan1)
+        if not first or frac <= 0:
+            unmeasured.append(x.name)
+            continue
+        # Back up to the start of the period that first payment covers, so a salary paid
+        # exactly on target does not read as ahead of pace just because the window opened
+        # on payday rather than on the 1st. Clamped at Jan 1: this measures one year.
+        cover = x.pay_period_days()
+        wstart = max(jan1, first - timedelta(days=cover)) if cover else first
+        earliest = wstart if earliest is None else min(earliest, wstart)
+        span = (end - wstart).days + 1
+        exp_to_date += x.gross_annual() * span / float(year_days)
+        act_in_window += x.received_between(wstart, end)
+
+    exp_to_date = round(exp_to_date, 2)
+    act_in_window = round(act_in_window, 2)
+    variance = round(act_in_window - exp_to_date, 2)
+    return {
+        'actual': actual,
+        'projected': projected,
+        'measured': round(sum(x.gross_annual() for x in measured), 2),
+        'planned_projected': round(sum(x.gross_annual() for x in planned), 2),
+        'expected_to_date': exp_to_date,
+        'actual_to_date': act_in_window,
+        'variance': variance,
+        'variance_pct': round(variance / exp_to_date * 100.0, 1) if exp_to_date > 0 else None,
+        # False means "do not draw a verdict from this" — nothing to compare, or no records
+        # to compare it over. The UI shows the figures and withholds the ahead/behind line.
+        'comparable': bool(exp_to_date > 0),
+        'measured_from': earliest.isoformat() if earliest else None,
+        'partial_history': bool(earliest and earliest > jan1),
+        'sources_unmeasured': unmeasured,
+        'days_elapsed': elapsed,
+        'days_in_year': year_days,
+        'fraction_elapsed': round(frac, 4),
+    }
+
+
 def _entity_report(user_id, entity_id, year=None):
     """A set of books for one entity over a calendar year.
 
@@ -2208,7 +2302,15 @@ def _entity_report(user_id, entity_id, year=None):
     deductible = round(sum(float(d.amount or 0) for d in docs if d.deductible), 2)
 
     srcs = scoped(IncomeSource).filter(IncomeSource.active.is_(True)).all()
-    income = round(sum(x.gross_annual() for x in srcs), 2)
+    inc = _income_view(srcs, yr)
+    income = inc['projected']
+
+    # Expenses are already actuals for the year, so the only figure missing for a
+    # like-for-like full-year view is where they land by December at this rate. Annualizing
+    # ten months is reasonable; annualizing three weeks is not, which is why days_elapsed
+    # travels with it rather than leaving the caller to guess how solid it is.
+    _, _, frac = _year_elapsed(yr)
+    expenses_annualized = round(expenses / frac, 2) if frac > 0 else None
 
     accounts = scoped(FinanceAccount).all()
     debts = scoped(Debt).all()
@@ -2218,9 +2320,22 @@ def _entity_report(user_id, entity_id, year=None):
         'entity': ent.to_dict() if ent else {'id': None, 'name': 'Unassigned',
                                              'kind': 'unassigned', 'tax_form': None},
         'year': yr,
+        # `income` and `net` keep their old meaning (the projection, and it less actual
+        # expenses) because the tax estimate and the saved reports are built on them.
+        # Everything a reader should compare like with like is alongside, named for what it
+        # measures rather than left to be inferred.
         'income': income,
+        'income_projected': income,
+        'income_actual': inc['actual'],
+        'income_pace': inc,
         'expenses': expenses,
+        'expenses_annualized': expenses_annualized,
         'net': round(income - expenses, 2),
+        # Actual against actual: both sides the same span, which is the comparison the
+        # books could not make before.
+        'net_actual': round(inc['actual'] - expenses, 2),
+        'net_projected': (round(income - expenses_annualized, 2)
+                          if expenses_annualized is not None else None),
         'deductible_receipts': deductible,
         'mileage_miles': miles,
         'mileage_deduction': mileage,
@@ -7882,9 +7997,17 @@ def _business_books(user_id, yr, prof):
     start, end = date(yr, 1, 1), date(yr, 12, 31)
     rows = []
     for e in ents:
-        income = round(sum(x.gross_annual() for x in IncomeSource.query.filter(
+        # _visible, to match the expense side directly below. Without it this query read
+        # every income source tagged to the entity whoever owned it, while expenses
+        # respected share_level -- so a household-shared farm could pull a partner's
+        # private income into this filer's books and tax estimate but never their spending.
+        # Inert while a household has one member, which is why it went unnoticed.
+        srcs = [x for x in IncomeSource.query.filter(
+            _visible(IncomeSource, user_id),
             IncomeSource.entity_id == e.id, IncomeSource.active.is_(True)).all()
-            if x.tax_form != 'W2'), 2)
+            if x.tax_form != 'W2']
+        inc = _income_view(srcs, yr)
+        income = inc['projected']
         expenses = round(sum(float(t.amount or 0) * (0.5 if t.category in _HALF_DEDUCTIBLE else 1.0)
                              for t in SpendTransaction.query.filter(
             _visible(SpendTransaction, user_id), SpendTransaction.entity_id == e.id,
@@ -7894,6 +8017,8 @@ def _business_books(user_id, yr, prof):
         rows.append({'id': e.id, 'name': e.name,
                      'tax_form': e.tax_form or ENTITY_TAX_FORMS.get(e.kind),
                      'income': income, 'expenses': expenses,
+                     'income_actual': inc['actual'], 'income_pace': inc,
+                     'net_actual': round(inc['actual'] - expenses - mileage, 2),
                      'mileage_miles': miles, 'mileage_deduction': mileage,
                      'net': round(income - expenses - mileage, 2)})
     carve = float(prof.business_mortgage_interest_annual or 0)
