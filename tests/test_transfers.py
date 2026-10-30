@@ -129,6 +129,26 @@ for desc, want in (('AMEX EPAYMENT', 'transfer'),
     got = A._guess_spend_category(desc)
     check('%-32r -> %s' % (desc, want), got == want, got)
 
+print('\n--- "every spend total" has to include the books page ---')
+# This file has claimed since it was written that transfers are excluded from every spend
+# total. _entity_report was written later and summed the rows raw, so the claim was false
+# for the one page that reports a net -- 44% of a real household book was movement. The
+# assertion belongs here, where the claim is made.
+with app.app_context():
+    ent = A.Entity(user_id=1, name='Books', kind='personal')
+    db.session.add(ent)
+    db.session.commit()
+    for desc, amt, cat in (('To Savings - 3808', 4000.00, 'transfer'),
+                           ('KROGER', 120.00, 'food')):
+        db.session.add(A.SpendTransaction(
+            user_id=1, entity_id=ent.id, posted_at=A.date.today(), description=desc,
+            amount=amt, category=cat))
+    db.session.commit()
+    rep = A._entity_report(1, ent.id, A.date.today().year)
+    check('the books count the spending only', rep['expenses'] == 120.00, rep['expenses'])
+    check('and report the movement apart from it', rep['transfers_out'] == 4000.00,
+          rep['transfers_out'])
+
 print('\n--- clearing a destination ---')
 r = mk(description='undo me', amount=10, category='transfer',
        paid_from='account:11', transfer_to='account:10')

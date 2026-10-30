@@ -291,10 +291,33 @@ with A.app.app_context():
           near(rep['net_actual'], 25.50 - 200.00), rep['net_actual'])
     check('the old mixed net is left alone',
           near(rep['net'], rep['income'] - rep['expenses']), (rep['net'], rep['income']))
+    # One row dated 20 days ago is a one-day ledger. Annualizing it would multiply a single
+    # purchase by 365 and present the result as a spending rate, so no rate is offered --
+    # see ANNUALIZE_MIN_DAYS and tests/test_books_transfers.py. The span is reported
+    # instead, which is the honest answer to "where does this land by December".
+    check('a ledger too short to carry a rate does not get one',
+          rep['expenses_annualized'] is None and rep['expense_span']['thin'] is True,
+          (rep['expenses'], rep['expenses_annualized'], rep['expense_span']))
+    check('and the span it does cover is reported in its place',
+          rep['expense_span']['covered_from'] == RECENT.isoformat(), rep['expense_span'])
+    # A ledger with real reach does get the full-year view, measured over its own span.
+    db.session.add_all([
+        SpendTransaction(user_id=ME, posted_at=JAN1, description='January rent',
+                         amount=1200.00, category='housing', entity_id=home.id),
+        SpendTransaction(user_id=ME, posted_at=RECENT, description='Groceries',
+                         amount=300.00, category='food', entity_id=home.id),
+    ])
+    db.session.commit()
+    hrep = A._entity_report(ME, home.id, CUR)
     check('expenses are annualized for a like-for-like full-year view',
-          rep['expenses_annualized'] is not None
-          and rep['expenses_annualized'] >= rep['expenses'],
-          (rep['expenses'], rep['expenses_annualized']))
+          hrep['expenses_annualized'] is not None
+          and hrep['expenses_annualized'] >= hrep['expenses'],
+          (hrep['expenses'], hrep['expenses_annualized']))
+    check('over the days the records cover, not the days of the year',
+          near(hrep['expenses_annualized'],
+               1500.00 * hrep['expense_span']['days_in_year']
+               / hrep['expense_span']['days_covered'], 1.0),
+          (hrep['expenses_annualized'], hrep['expense_span']))
     check('and the pace detail travels with the row', 'comparable' in (rep['income_pace'] or {}),
           rep.get('income_pace'))
     fut = A._entity_report(ME, farm.id, CUR + 4)

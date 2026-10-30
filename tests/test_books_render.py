@@ -96,11 +96,19 @@ def pace(**kw):
     return p
 
 
+def span(total=0.0, days=303, frm='2026-01-01', through='2026-10-30', thin=False):
+    return {'total': total, 'annualized': None, 'covered_from': frm,
+            'covered_through': through, 'days_covered': days, 'days_in_year': 365,
+            'partial_history': frm != '2026-01-01', 'thin': thin}
+
+
 def book(name, form=None, eid=1, income=0.0, actual=0.0, expenses=0.0, annualized=None,
-         deductible=0.0, miles=0, mileage=0.0, **kw):
+         deductible=0.0, miles=0, mileage=0.0, moved=0.0, moved_count=0, sp=None, **kw):
     return {'entity': {'id': eid, 'name': name, 'kind': 'farm', 'tax_form': form},
             'year': 2026, 'income': income, 'income_projected': income,
             'income_actual': actual, 'income_pace': pace(actual=actual, projected=income, **kw),
+            'transfers_out': moved, 'transfer_count': moved_count,
+            'expense_span': sp if sp is not None else span(expenses),
             'expenses': expenses, 'expenses_annualized': annualized,
             'net': round(income - expenses, 2), 'net_actual': round(actual - expenses, 2),
             'net_projected': (round(income - annualized, 2) if annualized is not None else None),
@@ -223,6 +231,88 @@ check('the silence is stated in pay periods',
 check('and drawn as a problem', 'neg' in html, html[:600])
 check('while the variance itself stays small and honest', '-$100' in text, text)
 check('and the date the records stop is shown', '2026-02-27' in text, text)
+
+print('\n--- money moved between accounts is named on the row, never folded into spending ---')
+# The real numbers: $128,300.88 of "expenses" of which $56,657.30 was internal movement.
+# If the expense cell shows only the smaller figure with nothing to explain it, the books
+# look like they lost $56k; if it shows the larger one, the household looks broke.
+html, text = render({'year': 2026, 'entities': [
+    book('Personal finance', eid=2, income=153605.16, actual=42269.63,
+         expenses=71643.58, annualized=188139.00, moved=56657.30, moved_count=63,
+         sp=span(71643.58, days=139, frm='2026-06-12', through='2026-10-28'),
+         measured=0.0, planned_projected=153605.16, comparable=True,
+         expected_to_date=42467.19, actual_to_date=42269.63, variance=-197.56,
+         variance_pct=-0.5, expected_basis='net', planned_net_projected=118724.58)]})
+check('the expense figure is the spending', '$71,644' in text, text)
+check('the movement is stated beside it',
+      '$56,657 moved between accounts, not spent' in text, text)
+check('the full $128,301 is nowhere, because nobody spent it',
+      '$128,301' not in text and '$128,300' not in text, text)
+check('the annualized rate carries the span it was measured over',
+      '$188,139 at this rate, on 139 days of records' in text, text)
+check('the pace verdict still reads as on-pace', '-$198' in text and '(-0.5%)' in text, text)
+
+print('\n--- a ledger too short to carry a rate says so instead of inventing one ---')
+html, text = render({'year': 2026, 'entities': [
+    book('New books', eid=9, income=0.0, actual=0.0, expenses=940.00, annualized=None,
+         sp=span(940.00, days=11, frm='2026-10-19', through='2026-10-29', thin=True))]})
+check('the actual spend is shown', '$940' in text, text)
+check('and the reason there is no projection',
+      '11 days of records' in text and 'too few to project a year' in text, text)
+check('no rate is asserted', 'at this rate' not in body(text), body(text))
+
+print('\n--- arrivals nobody has classified are surfaced under the table ---')
+# The mirror of the transfer bug: an inbound with no other half counts toward neither
+# income nor spending, so a deficit on this page may be money that did arrive.
+html, text = render({'year': 2026, 'entities': [
+    book('Personal finance', eid=2, income=100.0, actual=50.0, expenses=10.0)],
+    'unpaired_arrivals': {
+        'count': 2, 'total': 6063.62, 'truncated': False,
+        'arrivals': [
+            {'posted_at': '2026-09-17', 'description': 'Deposit from Brokerage - 5930',
+             'amount': 2852.16, 'account_name': 'SoFi Checking 0852', 'kind': 'transfer_in'},
+            {'posted_at': '2026-07-20', 'description': 'Mobile Check Deposit',
+             'amount': 3211.46, 'account_name': 'SoFi Savings 3808', 'kind': 'transfer_in'},
+        ]}})
+check('the total is called out', '$6,064 arrived that counts as neither income nor spending' in text, text)
+check('with the count', '2 deposits classified as a transfer in' in text, text)
+check('each arrival is listed with its date', '2026-09-17' in text, text)
+check('its description', 'Deposit from Brokerage - 5930' in text, text)
+check('the account it landed in', 'SoFi Checking 0852' in text, text)
+check('and its amount', '$2,852' in text and '$3,211' in text, text)
+check('it says what resolves it', 'Tying it to an income source resolves it' in text, text)
+check('and it is drawn as something to act on', '#f59e0b' in html, html[-900:])
+
+print('\n--- no unclassified arrivals, no callout ---')
+html, text = render({'year': 2026, 'entities': [
+    book('Personal finance', eid=2, income=100.0, actual=50.0, expenses=10.0)],
+    'unpaired_arrivals': {'count': 0, 'total': 0.0, 'arrivals': [], 'truncated': False}})
+check('nothing is said when there is nothing waiting',
+      'counts as neither income nor spending' not in text, text)
+check('and an older response with no such key still renders',
+      'Personal finance' in render({'year': 2026, 'entities': [
+          book('Personal finance', eid=2, expenses=10.0)]})[1])
+
+print('\n--- a truncated queue still reports the whole of it ---')
+html, text = render({'year': 2026, 'entities': [book('Personal finance', eid=2)],
+                     'unpaired_arrivals': {
+                         'count': 57, 'total': 41200.00, 'truncated': True,
+                         'arrivals': [{'posted_at': '2026-10-01', 'description': 'Zelle',
+                                       'amount': 500.00, 'account_name': 'Checking'}]}})
+check('the count is the real count, not the length of the list',
+      '57 deposits' in text, text)
+check('and the shortfall in the listing is admitted', 'showing 1 of 57' in text, text)
+
+print('\n--- the legend explains both expense-side rules ---')
+html, text = render({'year': 2026, 'entities': [
+    book('Chicken Tales LLC', form='Schedule F', income=49.50, actual=49.50,
+         expenses=2315.35, annualized=2788.42, measured=49.50, comparable=False)]})
+check('that moving money is not spending it',
+      'money moved between your own accounts is not spending' in text, text)
+check('that the rate is measured over the records',
+      'reaches back only as far as the bank feed does' in text, text)
+check('and that a one-off inside a short span inflates it',
+      'projected as though it recurred' in text, text)
 
 print('\n--- one stale period is worded in the singular ---')
 html, text = render({'year': 2026, 'entities': [

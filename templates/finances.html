@@ -2186,6 +2186,25 @@
                 + (p.records_stale
                     ? `<br><span class="neg">no income recorded for about ${Math.floor(p.stale_periods)} pay period${Math.floor(p.stale_periods) === 1 ? '' : 's'}</span>` : ''));
         };
+        /* The second line of the expense cell. "at this rate" means nothing without the
+           span it was measured over — the ledger reaches back as far as the bank feed
+           does, not to January — and a transfer total has to stay visible or the expense
+           figure looks like it simply lost the money. */
+        const spend = (r) => {
+            const sp = r.expense_span || {};
+            const bits = [];
+            if (r.expenses_annualized != null && r.expenses_annualized !== r.expenses) {
+                bits.push(`${fmt(r.expenses_annualized)} at this rate`
+                    + (sp.days_covered ? `, on ${sp.days_covered} days of records` : ''));
+            } else if (sp.thin) {
+                bits.push(`${sp.days_covered} days of records &mdash; too few to project a year`);
+            }
+            if (r.transfers_out) {
+                bits.push(`${fmt(r.transfers_out)} moved between accounts, not spent`);
+            }
+            return bits.length
+                ? `<div class="muted" style="font-size:0.78em;font-weight:400;">${bits.join('<br>')}</div>` : '';
+        };
         const line = (r, muted) => {
             const e = r.entity;
             const form = e.tax_form ? `<span class="badge b-inv" style="font-size:0.72em;">${esc(e.tax_form)}</span>` : '';
@@ -2194,9 +2213,7 @@
             return `<tr${muted ? ' style="opacity:.72;"' : ''}>
                 <td><strong>${esc(e.name)}</strong> ${form}${e.id ? '' : '<div class="muted" style="font-size:0.78em;">records not assigned to any books</div>'}</td>
                 <td style="text-align:right;white-space:nowrap;"><strong>${fmt(act)}</strong>${pace(r)}</td>
-                <td style="text-align:right;white-space:nowrap;"><strong>${fmt(r.expenses)}</strong>${
-                    r.expenses_annualized != null && r.expenses_annualized !== r.expenses
-                        ? `<div class="muted" style="font-size:0.78em;font-weight:400;">${fmt(r.expenses_annualized)} at this rate</div>` : ''}</td>
+                <td style="text-align:right;white-space:nowrap;"><strong>${fmt(r.expenses)}</strong>${spend(r)}</td>
                 <td style="text-align:right;white-space:nowrap;"><strong class="${na < 0 ? 'neg' : 'pos'}">${fmt(na)}</strong>${
                     r.net_projected != null
                         ? `<div class="muted" style="font-size:0.78em;font-weight:400;">${fmt(r.net_projected)} projected</div>` : ''}</td>
@@ -2207,6 +2224,31 @@
             </tr>`;
         };
         const sub = t => `<div class="muted" style="font-weight:400;font-size:0.74em;">${t}</div>`;
+        /* Arrivals nobody has classified. Shown here, under the net they distort, because
+           money the books are treating as though it never arrived is missing from the
+           income side of these very books — and a reader looking at a deficit is the
+           reader who needs to know it might not be one. */
+        const ua = rep.unpaired_arrivals || {};
+        const review = !ua.count ? '' :
+            `<div style="margin:12px 2px 0;padding:10px 12px;border-radius:9px;background:rgba(245,158,11,.09);border-left:3px solid #f59e0b;">
+                <div style="font-size:0.9em;line-height:1.5;"><strong>${fmt(ua.total)} arrived that counts as neither income nor spending</strong></div>
+                <div class="muted" style="font-size:0.8em;margin:4px 0 8px;line-height:1.55;">
+                  ${ua.count} deposit${ua.count === 1 ? '' : 's'} classified as a transfer in, with no matching outflow
+                  on any other connected account &mdash; so there is no other half, and ${ua.count === 1 ? 'it is' : 'they are'} not
+                  money moving between your own accounts. It came from outside: pay, a brokerage drawdown, a
+                  reimbursement, a gift. Nothing in the data says which, so it is left here to be named rather than
+                  guessed at &mdash; but while it sits unnamed it is counted nowhere.
+                  Tying it to an income source resolves it.
+                </div>
+                <table class="fin-table" style="font-size:0.82em;"><tbody>${
+                    (ua.arrivals || []).map(a => `<tr>
+                        <td style="white-space:nowrap;">${esc(a.posted_at || '')}</td>
+                        <td>${esc(a.description || 'Deposit')}</td>
+                        <td class="muted">${esc(a.account_name || '')}</td>
+                        <td style="text-align:right;white-space:nowrap;"><strong>${fmt(a.amount)}</strong></td>
+                    </tr>`).join('')}</tbody></table>${
+                    ua.truncated ? `<div class="muted" style="font-size:0.78em;padding-top:6px;">showing ${(ua.arrivals || []).length} of ${ua.count}</div>` : ''}
+            </div>`;
         box.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr>' +
             '<th>Books</th>' +
             '<th style="text-align:right;" title="What actually arrived this year, with the full-year projection beneath it">Income' + sub('actual &middot; projected') + '</th>' +
@@ -2216,7 +2258,7 @@
             '</tr></thead><tbody>' + rows.map(r => line(r, false)).join('') +
             (rep.unassigned && (rep.unassigned.expenses || rep.unassigned.transactions)
                 ? line(rep.unassigned, true) : '') +
-            '</tbody></table></div>' +
+            '</tbody></table></div>' + review +
             '<p class="muted" style="font-size:0.78em;padding:10px 2px 0;line-height:1.55;">' +
             'The bold figure on each line is what actually happened; the line under it is the full-year projection. ' +
             '<strong>vs pace</strong> sets the money that arrived against the projection over <em>the same span the records cover</em>, ' +
@@ -2227,7 +2269,13 @@
             'that figure is the actuals, so there is no forecast there to be ahead or behind of. ' +
             'A bank deposit is take-home, not gross pay, so where the records come from the bank the pace line ' +
             'compares take-home against <em>projected</em> take-home &mdash; otherwise a quarter of every paycheck, ' +
-            'the part that goes to tax and retirement before it ever lands, would show up as income you never earned.</p>';
+            'the part that goes to tax and retirement before it ever lands, would show up as income you never earned. ' +
+            'On the expense side, <strong>money moved between your own accounts is not spending</strong> and is totalled ' +
+            'separately: counting a cheque from checking to savings as an expense charges you for it on the way out ' +
+            'and credits you nothing on the way in. <strong>At this rate</strong> is measured over the days the ledger ' +
+            'actually covers, which reaches back only as far as the bank feed does &mdash; not over the year so far, ' +
+            'which would divide four months of records by ten months of calendar. One large one-off inside a short ' +
+            'span is still projected as though it recurred, so read it with the number of days beside it.</p>';
     }
     function openEntity(e) {
         const x = e || {kind:'farm', name:''};

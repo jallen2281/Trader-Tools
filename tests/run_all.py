@@ -68,6 +68,7 @@ SUITES = [
     ('income_books', 'income gets a book, manual income, payments on hand-tracked debt'),
     ('books_income_side', 'a book counts the income that arrived, not just what was typed in'),
     ('books_actual_vs_projected', 'actual against actual, projected against projected, never mixed'),
+    ('books_transfers', 'moved money is not spent money, and an arrival with no other half is surfaced'),
     ('books_render', 'what the Books table renders for each kind of income (runs under node)'),
     ('bulk_filing', 'unfiled rows stay findable and can be filed in bulk'),
     ('attr_escaping', 'JSON in a single-quoted attribute survives an apostrophe'),

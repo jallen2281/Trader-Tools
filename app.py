@@ -2321,6 +2321,59 @@ def _income_view(srcs, yr, today=None, nets=None):
     }
 
 
+# A span this short says more about when the feed was connected than about a spending rate.
+# Six weeks is roughly where one rent payment and one full billing cycle are inside the
+# window, below which "at this rate" is arithmetic rather than information.
+ANNUALIZE_MIN_DAYS = 45
+
+
+def _expense_view(rows, yr, today=None):
+    """What was actually spent, and where that lands by December at the same rate.
+
+    The rate is taken over the span the records cover, not over the calendar. Dividing by
+    the fraction of the YEAR elapsed assumes the ledger starts on 1 January; a bank feed
+    that only reaches back four months does not. On real data the elapsed-year denominator
+    (0.83) was applied to a ledger covering 0.38 of the year, understating the full-year
+    rate by half -- the same error, at the same end of the same window, that made the
+    income pace view report a salary paid in full as thousands short. Both sides of a
+    comparison have to be measured over the span that actually has records in it.
+
+    Returns None for `annualized` rather than a number when the span is too short to carry
+    one, because a wrong rate is worse than an absent one. A one-off inside a short window
+    (a vehicle, a roof) is annualized as though it recurred, which is why the span travels
+    with the figure instead of leaving a reader to assume it covers the year.
+    """
+    today = today or date.today()
+    jan1, dec31 = date(yr, 1, 1), date(yr, 12, 31)
+    end = min(today, dec31)
+    _, year_days, _ = _year_elapsed(yr, today)
+    rows = list(rows)
+
+    total = round(sum(float(t.amount or 0) for t in rows), 2)
+    dates = [t.posted_at for t in rows if t.posted_at]
+    first = min(dates) if dates else None
+    # The window closes at the last record for the same reason the income one does: the
+    # stretch since the final transaction has nothing in it yet, and charging the rate for
+    # it would read as a spending slowdown that has not happened.
+    last = min(max(dates), end) if dates else None
+    span = ((last - first).days + 1) if (first and last and last >= first) else 0
+
+    annualized = (round(total * year_days / float(span), 2)
+                  if span >= ANNUALIZE_MIN_DAYS and total else None)
+    return {
+        'total': total,
+        'annualized': annualized,
+        'covered_from': first.isoformat() if first else None,
+        'covered_through': last.isoformat() if last else None,
+        'days_covered': span,
+        'days_in_year': year_days,
+        # True when the ledger does not reach back to 1 January, which is what makes
+        # annualizing over the elapsed year wrong in the first place.
+        'partial_history': bool(first and first > jan1),
+        'thin': bool(total and span < ANNUALIZE_MIN_DAYS),
+    }
+
+
 def _entity_report(user_id, entity_id, year=None, nets=None):
     """A set of books for one entity over a calendar year.
 
@@ -2342,11 +2395,25 @@ def _entity_report(user_id, entity_id, year=None, nets=None):
 
     txns = scoped(SpendTransaction).filter(SpendTransaction.posted_at >= start,
                                            SpendTransaction.posted_at <= end).all()
+    # Money moved between the owner's own accounts is not spending -- see
+    # NON_SPEND_CATEGORIES, and _pair_transfers, which recognizes a move by finding both
+    # halves of it. Every other spend total in this app drops these rows first. This one
+    # did not, and on real data 44% of a household book was internal movement: $56,657 of
+    # $128,301, where a cheque from checking to savings counted as an expense on the way
+    # out and as nothing on the way in. The books reported a $56k deficit nobody had spent.
+    #
+    # Totalled separately rather than silently dropped, the way the spending report does
+    # it: a transfer is a real movement, and a reader reconciling these books against a
+    # bank statement has to be able to see where the money went.
+    spend_rows = [t for t in txns if (t.category or 'other') not in NON_SPEND_CATEGORIES]
+    moved_rows = [t for t in txns if (t.category or 'other') in NON_SPEND_CATEGORIES]
     by_cat = {}
-    for t in txns:
+    for t in spend_rows:
         c = t.category or 'other'
         by_cat[c] = round(by_cat.get(c, 0) + float(t.amount or 0), 2)
-    expenses = round(sum(float(t.amount or 0) for t in txns), 2)
+    exp = _expense_view(spend_rows, yr)
+    expenses = exp['total']
+    moved = round(sum(float(t.amount or 0) for t in moved_rows), 2)
 
     docs = [d for d in scoped(TaxDocument).all() if (d.tax_year or yr) == yr]
     deductible = round(sum(float(d.amount or 0) for d in docs if d.deductible), 2)
@@ -2363,12 +2430,11 @@ def _entity_report(user_id, entity_id, year=None, nets=None):
     inc = _income_view(srcs, yr, nets=nets)
     income = inc['projected']
 
-    # Expenses are already actuals for the year, so the only figure missing for a
-    # like-for-like full-year view is where they land by December at this rate. Annualizing
-    # ten months is reasonable; annualizing three weeks is not, which is why days_elapsed
-    # travels with it rather than leaving the caller to guess how solid it is.
-    _, _, frac = _year_elapsed(yr)
-    expenses_annualized = round(expenses / frac, 2) if frac > 0 else None
+    # Expenses are already actuals, so the only figure missing for a like-for-like
+    # full-year view is where they land by December at the same rate -- measured over the
+    # span the ledger covers, which is not the same as the span of the year so far. See
+    # _expense_view: it returns None rather than a rate it cannot support.
+    expenses_annualized = exp['annualized']
 
     accounts = scoped(FinanceAccount).all()
     debts = scoped(Debt).all()
@@ -2388,6 +2454,12 @@ def _entity_report(user_id, entity_id, year=None, nets=None):
         'income_pace': inc,
         'expenses': expenses,
         'expenses_annualized': expenses_annualized,
+        # What the ledger moved rather than spent, and over what span it was measured.
+        # Both are reported because both change how the expense figure should be read, and
+        # neither can be inferred from it.
+        'transfers_out': moved,
+        'transfer_count': len(moved_rows),
+        'expense_span': exp,
         'net': round(income - expenses, 2),
         # Actual against actual: both sides the same span, which is the comparison the
         # books could not make before.
@@ -2438,7 +2510,12 @@ def finance_entity_report():
     reports = [_entity_report(uid, e.id, yr, nets=nets)
                for e in _visible_entities(uid).order_by(Entity.name).all()]
     unassigned = _entity_report(uid, None, yr, nets=nets)
+    # Reported here, next to the net it distorts, rather than on a page of its own: an
+    # arrival nobody has classified is money missing from the income side of these very
+    # books, and a reader looking at a deficit is the reader who needs to know.
     return jsonify({'year': yr, 'entities': reports, 'unassigned': unassigned,
+                    'unpaired_arrivals': _unpaired_arrivals(
+                        uid, date(yr, 1, 1), date(yr, 12, 31)),
                     'business_entities': [r for r in reports if r['tax_form']]})
 
 
@@ -3303,6 +3380,10 @@ def finance_deposits():
     uid = _get_current_user_id()
     if not uid:
         return jsonify({'error': 'Authentication required'}), 401
+    # The arrivals whose other half was never found, which count toward nothing until
+    # someone says what they are. See _unpaired_arrivals.
+    if request.args.get('unpaired') in ('1', 'true', 'yes'):
+        return jsonify(_unpaired_arrivals(uid, limit=300))
     q = PlaidDeposit.query.filter_by(user_id=uid)
     kind = (request.args.get('kind') or '').lower()
     if kind in PlaidDeposit.KINDS:
@@ -3659,6 +3740,58 @@ def _pair_transfers(user_id, since=None):
                 out.to_account_id, out.to_debt_id = dest.linked_account_id, None
         pairs += 1
     return pairs
+
+
+# Kinds that count toward neither income nor spending. A deposit sitting in one of these
+# is money the books are treating as though it never arrived.
+UNCOUNTED_DEPOSIT_KINDS = ('transfer_in', 'unknown')
+
+
+def _unpaired_arrivals(user_id, start=None, end=None, limit=50):
+    """Money that arrived from outside and is being counted as nothing.
+
+    A transfer_in whose other half was never found is not a transfer between the owner's
+    own accounts -- there is no other half to find. It is income, a drawdown from a
+    brokerage, a reimbursement or a gift, and nothing in the data says which. On real data
+    nine of these totalled $11,997.68: a brokerage withdrawal, two mobile cheque deposits.
+    Left classified as transfers they count toward neither income nor spending, which is
+    the exact mirror of the bug that counted internal moves as spending -- one side of a
+    movement recorded, the other side not.
+
+    So they are surfaced for a decision instead of guessed at. By the time a deposit
+    appears here _pair_transfers has already looked for its other half and failed, and
+    attributing it to an income source (or recording the matching outflow) resolves it.
+    Deposits already tied to an income source are not listed: that decision is made.
+    """
+    q = PlaidDeposit.query.filter(
+        PlaidDeposit.user_id == user_id,
+        PlaidDeposit.kind.in_(UNCOUNTED_DEPOSIT_KINDS),
+        PlaidDeposit.income_source_id.is_(None),
+        PlaidDeposit.income_event_id.is_(None))
+    if start is not None:
+        q = q.filter(PlaidDeposit.posted_at >= start)
+    if end is not None:
+        q = q.filter(PlaidDeposit.posted_at <= end)
+    claimed = {pid for (pid,) in db.session.query(SpendTransaction.paired_deposit_id).filter(
+        SpendTransaction.user_id == user_id,
+        SpendTransaction.paired_deposit_id.isnot(None)).all()}
+    rows = [d for d in q.order_by(PlaidDeposit.posted_at.desc()).all()
+            if d.id not in claimed]
+    names = {a.account_id: a.display_name()
+             for a in PlaidAccount.query.filter_by(user_id=user_id).all()}
+    out = []
+    for d in rows[:limit]:
+        r = d.to_dict()
+        r['account_name'] = names.get(d.plaid_account_id)
+        out.append(r)
+    return {
+        'arrivals': out,
+        # The count and total cover every row, not just the ones listed, so a truncated
+        # list never understates what is waiting.
+        'count': len(rows),
+        'total': round(sum(float(d.amount or 0) for d in rows), 2),
+        'truncated': len(rows) > len(out),
+    }
 
 
 def _attribute_linked_transactions(user_id, only_account=None):
