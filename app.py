@@ -1210,7 +1210,8 @@ def category_label(slug):
 
 HOUSEHOLD_CATEGORIES = {'housing', 'utilities', 'transportation', 'insurance', 'food',
                         'debt', 'subscriptions', 'healthcare', 'childcare', 'savings',
-                        'entertainment', 'personal', 'taxes', 'transfer', 'other'}
+                        'entertainment', 'personal', 'taxes', 'education', 'transfer',
+                        'other'}
 
 # Categories that move money rather than spend it. Excluded from every spend total: a
 # transfer between your own accounts, and a credit-card payment, are the same dollars in a
@@ -1262,8 +1263,21 @@ SPEND_CATEGORY_RULES = [
                   # landed in 'debt', so a card payment counted as spending AND the
                   # purchases it settled counted again when the card was used.
                   'card ending', 'payment to chase', 'mobile payment',
-                  'autopay', 'bank transfer', 'internal transfer', 'ach withdrawal')),
-    ('housing', ('rent', 'mortgage', 'hoa ', 'property mgmt', 'landlord')),
+                  'autopay', 'bank transfer', 'internal transfer', 'ach withdrawal',
+                  # Buying an asset moves money; it does not consume it. A weekly $50
+                  # into a brokerage and a crypto purchase are the same kind of event as
+                  # 'to savings', and filing them as spending overstates outgoings by
+                  # the amount you managed to invest -- the exact inversion that made a
+                  # month of internal moves read as $75,706 of spending. On real data
+                  # these were landing in 'other': $500 of SoFi Securities across ten
+                  # weekly buys and $770 of Kraken.
+                  'sofi securities', 'kraken')),
+    # 'uwm' and 'unitedwholesale' are the mortgage servicer by name. The generic words
+    # below never matched it, so four identical $3,103.88 payments were filed as 'other'
+    # and only the two that were hand-corrected ever read as housing. A lender's name is
+    # not a synonym for 'mortgage', and the importer has to be told it.
+    ('housing', ('rent', 'mortgage', 'hoa ', 'property mgmt', 'landlord',
+                 'uwm', 'unitedwholesale')),
     ('utilities', ('electric', 'energy', 'water dept', 'sewer', 'utility', 'comcast', 'xfinity',
                    'verizon', 'at&t', 'spectrum', 't-mobile', 'internet')),
     ('transportation', ('shell', 'exxon', 'chevron', 'sunoco', 'wawa', 'speedway', 'uber', 'lyft',
@@ -1283,7 +1297,20 @@ SPEND_CATEGORY_RULES = [
     ('childcare', ('daycare', 'childcare', 'preschool', 'babysit')),
     ('entertainment', ('cinema', 'theater', 'steam games', 'playstation', 'xbox', 'concert',
                        'ticketmaster', 'stubhub')),
-    ('debt', ('loan pmt', 'student loan', 'card payment', 'credit card pmt')),
+    # Interest and late fees are the cost of carrying the debt, not a payment against it,
+    # and they are the single most expensive thing a set of household books can hide. Ten
+    # rows under three different wordings -- "Interest Charge on Purchases", "INTEREST
+    # CHARGED TO STANDARD PURCH", "INTEREST CHARGE:PURCHASES" -- totalled $3,826.86 over
+    # 139 days of records, a $10,048.95 annual rate, and every one of them sat in 'other'
+    # between an Amazon order and a Home Depot run. A category total cannot prompt a
+    # payoff decision it never shows.
+    ('debt', ('loan pmt', 'student loan', 'card payment', 'credit card pmt',
+              'interest charge', 'interest charged', 'late fee')),
+    # Deliberately AFTER debt: 'student loan' is debt service, and an education rule
+    # placed first would claim it. No bare 'student' or 'college' here for the same
+    # reason -- they appear inside merchant names and place names that have nothing to do
+    # with tuition.
+    ('education', ('tuition', 'asu student', 'nbs-asu', 'bursar')),
     ('taxes', ('irs ', 'us treasury', 'tax pmt', 'franchise tax')),
 ]
 

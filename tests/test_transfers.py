@@ -124,6 +124,11 @@ for desc, want in (('AMEX EPAYMENT', 'transfer'),
                    ('CITI CARD ONLINE', 'transfer'),
                    ('To Savings - 3808', 'transfer'),
                    ('SoFi Bank TRANSFER JAllen WEB', 'transfer'),
+                   # Buying an asset is movement too. These were filing as 'other' and
+                   # counting as spending: $500 of weekly SoFi Securities buys and $770
+                   # of Kraken, on a book where 'other' was the second-largest category.
+                   ('SOFI SECURITIES', 'transfer'),
+                   ('Kraken', 'transfer'),
                    ('DTE ENERGY', 'utilities'),
                    ('Wegmans', 'food')):
     got = A._guess_spend_category(desc)
