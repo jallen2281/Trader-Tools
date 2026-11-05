@@ -46,6 +46,14 @@ google-genai>=1.0.0,<2
 python-dotenv>=1.2.2,<2     # <1.2.2: symlink following in set_key
 ta>=0.11.0,<1
 mplfinance==0.12.10b0
+# mplfinance does `from six.moves import zip` at module load but never declares six as a
+# dependency, so it only ever worked because something else in the tree happened to pull
+# six in. On 2026-11-05 a routine rebuild resolved without it and all three pods went into
+# CrashLoopBackOff on `import chart_generator` -- app.py imports it at line 15, so a
+# charting library took down the whole app. Same shape as the SQLAlchemy note below: a
+# module we genuinely import, left to arrive by accident. Declared directly now, which is
+# what it always was.
+six>=1.17.0,<2
 matplotlib>=3.8.2,<4
 requests>=2.33.0,<3         # <2.33: .netrc credential leak, verify=False bypass
 # Held below 2.1 deliberately. 2.1 changes the default postgresql:// driver to psycopg v3,
