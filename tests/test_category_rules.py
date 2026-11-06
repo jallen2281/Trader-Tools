@@ -85,6 +85,23 @@ check('and the dedicated card-payment check agrees',
 check('while an interest charge is not a card payment',
       not A._looks_like_card_payment('Interest Charge on Purchases'))
 
+print('\n--- the bank abbreviates PAYMENT, and the matcher reads it ---')
+# 'PYMT' and 'PMT' are the same word. Two Capital One card payments spelled this way
+# matched nothing, so Plaid's LOAN_PAYMENTS won and they filed as negative 'debt' rows.
+for d in ('CAPITAL ONE ONLINE PYMT', 'CAPITAL ONE MOBILE PYMT', 'CAPITAL ONE AUTOPAY PYMT'):
+    check('%-28s is a card payment' % d, A._looks_like_card_payment(d))
+    guess(d, 'transfer')
+# And the half of this that matters more: the abbreviation must NOT make everything a card
+# payment. The mortgage is written 'UWM MORTGAGE PYMT' on this very feed, and normalising
+# it to 'uwm mortgage payment' must still leave it as housing -- the wordings above are
+# specific for exactly this reason.
+for d in ('UWM MORTGAGE PYMT', 'Unitedwholesale Mtg PYMT'):
+    check('%-28s is NOT a card payment' % d, not A._looks_like_card_payment(d))
+    guess(d, 'housing')
+check('nor is a loan payment', not A._looks_like_card_payment('NELNET LOAN PMT'))
+guess('NELNET LOAN PMT', 'debt')
+check('nor an insurance premium', not A._looks_like_card_payment('STATE FARM INS PYMT'))
+
 print('\n--- an unknown payee still falls through to other, honestly ---')
 for d in ('SP FLUENTPET 9483', 'BRIGHTON REC AREA', 'MUDFLAP'):
     guess(d, 'other')

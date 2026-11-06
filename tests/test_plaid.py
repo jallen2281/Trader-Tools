@@ -243,6 +243,85 @@ with app.app_context():
           [p.external_id for p in paychecks])
 check('the removal is counted', res['removed'] >= 1, res)
 
+print('\n--- a transaction that turns out to be income leaves no spend row behind ---')
+# Plaid re-categorises after the fact. Tricia's 2026-08-25 pay arrived first under a
+# category that was not INCOME, so it was imported as spending; on a later sync it came
+# back in `modified` as INCOME, the deposit was created -- and the original -$1,881.28
+# spend row was simply left where it was. The same paycheck then counted once as her
+# income and once as $1,881.28 LESS spending, which no report shows as an error.
+FAKE.pages = [{'added': [txn('flip-1', 'GENESEE CHRISTIA PAYROLLACH PPD ID: 9807416000',
+                             -1881.28, 'GENERAL_SERVICES', date='2026-08-25')],
+               'modified': [], 'removed': [], 'next_cursor': 'cur-f1', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+FAKE.pages = [{'added': [], 'modified': [txn('flip-1', 'GENESEE CHRISTIA PAYROLLACH PPD ID: 9807416000',
+                                             -1881.28, 'INCOME', date='2026-08-25')],
+               'removed': [], 'next_cursor': 'cur-f2', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+with app.app_context():
+    spend = A.SpendTransaction.query.filter_by(user_id=2, external_id='plaid:flip-1').first()
+    dep = A.PlaidDeposit.query.filter_by(user_id=2, external_id='plaid:flip-1').first()
+    check('the paycheck is recorded as a deposit', dep is not None and dep.kind == 'income',
+          dep and dep.kind)
+    check('and the stale spend row is gone -- not in both tables', spend is None,
+          spend and (spend.amount, spend.category))
+    check('stored positive, because a deposit of -1881.28 reads as a mistake',
+          dep is not None and dep.amount == 1881.28, dep and dep.amount)
+
+print('\n--- an unrecognised credit goes to the arrivals queue, not into spending ---')
+# The sign says money came IN. Nothing recognised what it was, so the category resolved to
+# 'other' -- and it used to be stored as a negative 'other' spend row, quietly subtracting
+# from a total instead of appearing anywhere as a question.
+FAKE.pages = [{'added': [txn('cred-1', 'ZZQ MYSTERY CREDIT', -523.40, 'SOMETHING_NEW',
+                             date='2026-09-14')],
+               'modified': [], 'removed': [], 'next_cursor': 'cur-c1', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+with app.app_context():
+    check('not in the spending ledger',
+          A.SpendTransaction.query.filter_by(user_id=2, external_id='plaid:cred-1').first() is None)
+    d = A.PlaidDeposit.query.filter_by(user_id=2, external_id='plaid:cred-1').first()
+    check('recorded as money in', d is not None and d.amount == 523.40, d and d.amount)
+    check("and flagged 'unknown' so the arrivals queue asks about it",
+          d is not None and d.kind == 'unknown', d and d.kind)
+
+print('\n--- but a refund still nets against the purchase it reverses ---')
+# The one credit that genuinely belongs in the spending ledger. A $9.48 Walmart return
+# SHOULD reduce 'personal'; routing every credit to the deposits table would have
+# overstated spending by every refund ever received.
+FAKE.pages = [{'added': [txn('ref-1', 'Walmart', -9.48, 'GENERAL_MERCHANDISE',
+                             date='2026-09-15', merchant='Walmart')],
+               'modified': [], 'removed': [], 'next_cursor': 'cur-r1', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+with app.app_context():
+    t = A.SpendTransaction.query.filter_by(user_id=2, external_id='plaid:ref-1').first()
+    check('the refund stays in the ledger', t is not None, t)
+    check('against the category it reverses', t is not None and t.category == 'personal',
+          t and t.category)
+    check('and stays negative, so it reduces that total',
+          t is not None and t.amount == -9.48, t and t.amount)
+    check('not duplicated into the deposits table',
+          A.PlaidDeposit.query.filter_by(user_id=2, external_id='plaid:ref-1').first() is None)
+
+print('\n--- a card payment the bank abbreviated is still a card payment ---')
+# "CAPITAL ONE ONLINE PYMT" and "CAPITAL ONE MOBILE PYMT" matched none of the wordings, so
+# Plaid's LOAN_PAYMENTS won and they landed in 'debt' as negative rows -- subtracting
+# $2,817.51 from the category their other half belongs to. "CAPITAL ONE AUTOPAY PYMT" was
+# caught only because 'autopay' happened to be on the list.
+FAKE.pages = [{'added': [txn('cap-1', 'CAPITAL ONE ONLINE PYMT', -2766.17, 'LOAN_PAYMENTS',
+                             date='2026-10-17'),
+                         txn('cap-2', 'CAPITAL ONE MOBILE PYMT', -51.34, 'LOAN_PAYMENTS',
+                             date='2026-10-22')],
+               'modified': [], 'removed': [], 'next_cursor': 'cur-cap', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+with app.app_context():
+    for ext in ('plaid:cap-1', 'plaid:cap-2'):
+        t = A.SpendTransaction.query.filter_by(user_id=2, external_id=ext).first()
+        check('%s is a transfer, not debt' % ext,
+              t is not None and t.category == 'transfer', t and t.category)
+    start, end = A._month_bounds('2026-10')
+    act = A._spend_actuals(2, start, end)
+    check('so October debt is not reduced by the payments made to it',
+          act.get('debt', 0) >= 0, act.get('debt'))
+
 print('\n--- a sync pairs a transfer with its other half ---')
 from datetime import date as _date  # noqa: E402
 _today = _date.today().isoformat()

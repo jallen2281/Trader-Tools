@@ -1248,6 +1248,15 @@ CARD_PAYMENT_WORDS = ('epayment', 'card ending', 'payment thank you', 'payment-t
 
 def _looks_like_card_payment(text):
     t = (text or '').lower()
+    # Banks abbreviate. "CAPITAL ONE ONLINE PYMT" and "CAPITAL ONE MOBILE PYMT" are the
+    # same event as "ONLINE PAYMENT, THANK YOU", which this already caught, but they
+    # matched none of the words above -- so Plaid's LOAN_PAYMENTS won and two card-payment
+    # credits landed in 'debt' as negative rows, subtracting $2,817.51 from the very
+    # category their other half belongs to. Normalising the spelling beats adding
+    # 'online pymt' and 'mobile pymt' to the list: every phrase above now covers its
+    # abbreviation too, including the ones the next bank will spell this way.
+    for abbr in ('pymt', 'pmt'):
+        t = t.replace(abbr, 'payment')
     return any(w in t for w in CARD_PAYMENT_WORDS)
 
 
@@ -1263,6 +1272,12 @@ SPEND_CATEGORY_RULES = [
                   # landed in 'debt', so a card payment counted as spending AND the
                   # purchases it settled counted again when the card was used.
                   'card ending', 'payment to chase', 'mobile payment',
+                  # The abbreviated spellings, for the CSV importer -- which never calls
+                  # _looks_like_card_payment and so cannot benefit from the normalising it
+                  # does. Both phrases are specific enough to mean nothing else; the bare
+                  # 'pymt' is deliberately NOT here, because 'UWM MORTGAGE PYMT' is the
+                  # mortgage and 'NELNET LOAN PMT' is debt service.
+                  'online pymt', 'mobile pymt',
                   'autopay', 'bank transfer', 'internal transfer', 'ach withdrawal',
                   # Buying an asset moves money; it does not consume it. A weekly $50
                   # into a brokerage and a crypto purchase are the same kind of event as
@@ -4095,13 +4110,6 @@ def _plaid_sync_item(item, client=None, backfill=False):
         out = client.transactions_sync(token, cursor=cursor)
         pages += 1
         for txn in out.get('added', []) + out.get('modified', []):
-            if pc.is_income(txn):
-                # Recorded, not discarded. See PlaidDeposit: on a credit card these are
-                # card payments, not income, and throwing them away made that impossible
-                # to tell and left the income estimate unverifiable.
-                _record_deposit(item, txn, acct_types)
-                skipped += 1
-                continue
             ext = 'plaid:%s' % txn.get('transaction_id')
             text = '%s %s' % (txn.get('merchant_name') or '', txn.get('name') or '')
             # A card payment is decided here, ahead of Plaid. Plaid calls it a
@@ -4114,6 +4122,33 @@ def _plaid_sync_item(item, client=None, backfill=False):
                 cat = 'transfer'
             else:
                 cat = pc.category_for(txn) or _guess_spend_category(text)
+            # Plaid's amount is positive when money LEAVES, so a negative one is a credit.
+            amount = round(float(txn.get('amount') or 0), 2)
+            # Money in, by Plaid's category OR by its sign. The sign is the half this used
+            # to ignore, and ignoring it is how a credit Plaid had mislabelled reached the
+            # spending ledger and was stored still negative -- which reads as an error in
+            # no report anywhere. It just quietly subtracts from a category total.
+            #
+            # A refund is the one credit that genuinely belongs against the purchase it
+            # reverses (a $9.48 Walmart return should reduce 'personal'), and it arrives
+            # carrying a real merchant category. 'other' and 'debt' mean nothing
+            # recognised it, so it goes to the arrivals queue to be identified by a human
+            # instead of being netted off a total silently.
+            if pc.is_income(txn) or (amount < 0 and cat in ('other', 'debt')):
+                # Recorded, not discarded. See PlaidDeposit: on a credit card these are
+                # card payments, not income, and throwing them away made that impossible
+                # to tell and left the income estimate unverifiable.
+                _record_deposit(item, txn, acct_types)
+                # The `removed` branch below already knows a transaction can sit in both
+                # tables and that leaving it there counts the same paycheck twice. This
+                # branch did not. Plaid delivered Tricia's 2026-08-25 pay as spending,
+                # re-sent it as INCOME in `modified`, and the deposit was duly created
+                # while the original -$1,881.28 spend row stayed exactly where it was:
+                # counted once as her income and once as $1,881.28 less spending.
+                removed += SpendTransaction.query.filter_by(
+                    user_id=item.user_id, external_id=ext).delete(synchronize_session=False)
+                skipped += 1
+                continue
             posted = _parse_csv_date(txn.get('date'))
             if not posted:
                 skipped += 1
@@ -4144,7 +4179,7 @@ def _plaid_sync_item(item, client=None, backfill=False):
             # update path, which did not, so a hand-fix lasted until the next `modified`.
             if not row.category_locked:
                 row.category = cat
-            row.amount = round(float(txn.get('amount') or 0), 2)
+            row.amount = amount
             row.pending = bool(txn.get('pending'))
             # Which of the institution's accounts this came from. Plaid sends it on every
             # transaction; it was being discarded, so three Chase accounts pooled into one
