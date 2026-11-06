@@ -102,6 +102,26 @@ check('nor is a loan payment', not A._looks_like_card_payment('NELNET LOAN PMT')
 guess('NELNET LOAN PMT', 'debt')
 check('nor an insurance premium', not A._looks_like_card_payment('STATE FARM INS PYMT'))
 
+print('\n--- a description that names an account outranks Plaid ---')
+# Plaid's category is consulted BEFORE the keyword rules and is usually better, but it
+# cannot know which way money moved between two of his own accounts. It called "Online
+# Transfer to CHK ...0849" a LOAN_PAYMENT -- truthy, so the rules never ran -- and $550 of
+# internal movement counted as debt service.
+for d in ('Online Transfer to CHK ...0849 transaction', 'PAYPAL INST XFER PPCR CC REPAYME',
+          'ONLINE TRANSFER TO SAV 3808', 'Internal Transfer', 'BANK TRANSFER'):
+    check('%-42s moves between accounts' % d[:42], A._looks_like_account_transfer(d))
+# And the half that keeps this from eating the ledger: a payee is not an account. Every one
+# of these would become a transfer if the words were any looser, and three of them are
+# real rows from this feed.
+for d in ('DTE ENERGY AUTOPAY', 'WATERCRESS FIN G', 'COMMUNITY CHOICE', 'UWM MORTGAGE PYMT',
+          'Interest Charge on Purchases', 'ASU STUDENT ACCOUNTSTEMPE'):
+    check('%-42s is NOT an internal transfer' % d, not A._looks_like_account_transfer(d))
+# Not asserted here, and worth knowing: _guess_spend_category alone answers 'transfer' for
+# "DTE ENERGY AUTOPAY", because 'autopay' sits in the transfer rule and that rule runs
+# first. On the Plaid path it never matters -- RENT_AND_UTILITIES wins before the keywords
+# are consulted -- but a CSV import of that row would misfile it. Pinning either answer
+# would be wrong: 'transfer' enshrines the wart, 'utilities' claims a fix that is not here.
+
 print('\n--- an unknown payee still falls through to other, honestly ---')
 for d in ('SP FLUENTPET 9483', 'BRIGHTON REC AREA', 'MUDFLAP'):
     guess(d, 'other')

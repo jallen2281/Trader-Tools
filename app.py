@@ -1260,6 +1260,28 @@ def _looks_like_card_payment(text):
     return any(w in t for w in CARD_PAYMENT_WORDS)
 
 
+# Wordings that name an ACCOUNT the money moved to or from, rather than a payee. These are
+# checked ahead of Plaid's category, like the card wordings above and for the same reason:
+# which direction money moved between two of your own accounts is not something a merchant
+# categoriser can know better than the description does. Plaid labelled "Online Transfer to
+# CHK ...0849" a LOAN_PAYMENT, which maps to 'debt' -- and because that is truthy the
+# keyword rules were never consulted, so $550 of moving money between two of his own
+# chequing accounts read as debt service. 'xfer' is the same story at $2.99.
+#
+# Deliberately narrow, and narrower than the transfer rule in SPEND_CATEGORY_RULES: every
+# phrase has to name chequing, savings or a transfer in so many words. 'autopay' and
+# 'online payment' are kept OUT even though they sit in that rule, because "DTE ENERGY
+# AUTOPAY" is the electric bill, and a bare 'online transfer' is out too -- "Online
+# Transfer to WATERCRESS FIN" would be a loan payment, not an internal move.
+ACCOUNT_TRANSFER_WORDS = ('bank transfer', 'internal transfer', 'transfer to chk',
+                          'transfer to sav', 'xfer', 'to checking', 'to savings',
+                          'from checking', 'from savings')
+
+
+def _looks_like_account_transfer(text):
+    return any(w in (text or '').lower() for w in ACCOUNT_TRANSFER_WORDS)
+
+
 SPEND_CATEGORY_RULES = [
     # Money moving, not money spent -- see NON_SPEND_CATEGORIES. Deliberately ahead of the
     # card rules: 'AMEX EPAYMENT' is a payment TOWARD a card, and the purchases it settles
@@ -4118,23 +4140,27 @@ def _plaid_sync_item(item, client=None, backfill=False):
             # Only the card-payment wordings get this precedence; the general transfer
             # words stay in the ordinary rule order, where they cannot promote a payment
             # to a person into an internal transfer.
-            if _looks_like_card_payment(text):
+            if _looks_like_card_payment(text) or _looks_like_account_transfer(text):
                 cat = 'transfer'
             else:
                 cat = pc.category_for(txn) or _guess_spend_category(text)
             # Plaid's amount is positive when money LEAVES, so a negative one is a credit.
             amount = round(float(txn.get('amount') or 0), 2)
-            # Money in, by Plaid's category OR by its sign. The sign is the half this used
-            # to ignore, and ignoring it is how a credit Plaid had mislabelled reached the
-            # spending ledger and was stored still negative -- which reads as an error in
-            # no report anywhere. It just quietly subtracts from a category total.
+            # A credit is money in unless it is a merchant REFUND -- the one credit that
+            # genuinely belongs against a purchase already counted, and the only one that
+            # arrives carrying a real merchant category. A $9.48 Walmart return should
+            # reduce 'personal'; everything else should not be in this ledger at all.
             #
-            # A refund is the one credit that genuinely belongs against the purchase it
-            # reverses (a $9.48 Walmart return should reduce 'personal'), and it arrives
-            # carrying a real merchant category. 'other' and 'debt' mean nothing
-            # recognised it, so it goes to the arrivals queue to be identified by a human
-            # instead of being netted off a total silently.
-            if pc.is_income(txn) or (amount < 0 and cat in ('other', 'debt')):
+            # Getting this wrong in either direction costs real money. Leaving a credit in
+            # the ledger stores it still negative, which reads as an error in no report
+            # anywhere -- it just subtracts from a category total. But a card payment's
+            # inbound half is worse than useless here: _pair_transfers can only pair an
+            # outflow against a DEPOSIT, so while that half sat in the spending ledger the
+            # pairing never ran, and the outbound half stayed in 'debt'. Three
+            # "DISCOVER CAP ONE" outflows totalling $2,873.51 counted as debt service
+            # against purchases that were already counted when the card was used.
+            refund = cat not in ('other', 'debt', 'transfer')
+            if pc.is_income(txn) or (amount < 0 and not refund):
                 # Recorded, not discarded. See PlaidDeposit: on a credit card these are
                 # card payments, not income, and throwing them away made that impossible
                 # to tell and left the income estimate unverifiable.

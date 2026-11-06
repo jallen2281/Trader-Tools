@@ -301,26 +301,55 @@ with app.app_context():
     check('not duplicated into the deposits table',
           A.PlaidDeposit.query.filter_by(user_id=2, external_id='plaid:ref-1').first() is None)
 
-print('\n--- a card payment the bank abbreviated is still a card payment ---')
-# "CAPITAL ONE ONLINE PYMT" and "CAPITAL ONE MOBILE PYMT" matched none of the wordings, so
-# Plaid's LOAN_PAYMENTS won and they landed in 'debt' as negative rows -- subtracting
-# $2,817.51 from the category their other half belongs to. "CAPITAL ONE AUTOPAY PYMT" was
-# caught only because 'autopay' happened to be on the list.
-FAKE.pages = [{'added': [txn('cap-1', 'CAPITAL ONE ONLINE PYMT', -2766.17, 'LOAN_PAYMENTS',
-                             date='2026-10-17'),
-                         txn('cap-2', 'CAPITAL ONE MOBILE PYMT', -51.34, 'LOAN_PAYMENTS',
-                             date='2026-10-22')],
-               'modified': [], 'removed': [], 'next_cursor': 'cur-cap', 'has_more': False}]
+print('\n--- BOTH halves of a card payment stay out of debt ---')
+# The real shape of the bug, and the reason the inbound half must be a DEPOSIT rather than
+# a negative spend row: _pair_transfers can only pair an outflow against a deposit. While
+# the inbound half sat in the spending ledger the pairing never ran, so the outbound half
+# stayed in 'debt' -- three "DISCOVER CAP ONE" outflows worth $2,873.51 counted as debt
+# service against purchases already counted when the card was used. Both halves are
+# genuinely the same movement, and neither is spending.
+from datetime import date as _d  # noqa: E402
+_dt = _d.today().isoformat()
+_pay_out = txn('cap-out', 'DISCOVER CAP ONE', 2766.17, 'LOAN_PAYMENTS', date=_dt)
+_pay_out['account_id'] = 'acc-chk'
+_pay_in = txn('cap-in', 'CAPITAL ONE ONLINE PYMT', -2766.17, 'LOAN_PAYMENTS', date=_dt)
+_pay_in['account_id'] = 'acc-visa'
+FAKE.pages = [{'added': [_pay_out, _pay_in], 'modified': [], 'removed': [],
+               'next_cursor': 'cur-cap', 'has_more': False}]
 admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
 with app.app_context():
-    for ext in ('plaid:cap-1', 'plaid:cap-2'):
-        t = A.SpendTransaction.query.filter_by(user_id=2, external_id=ext).first()
-        check('%s is a transfer, not debt' % ext,
-              t is not None and t.category == 'transfer', t and t.category)
-    start, end = A._month_bounds('2026-10')
+    dep = A.PlaidDeposit.query.filter_by(user_id=2, external_id='plaid:cap-in').first()
+    out = A.SpendTransaction.query.filter_by(user_id=2, external_id='plaid:cap-out').first()
+    check('the inbound half is a deposit, not a negative spend row', dep is not None, dep)
+    check("and on a credit card it is a card payment whatever Plaid called it",
+          dep is not None and dep.kind == 'card_payment', dep and dep.kind)
+    check('the inbound half is NOT in the spending ledger',
+          A.SpendTransaction.query.filter_by(user_id=2, external_id='plaid:cap-in').first() is None)
+    check('so the outbound half can be paired to it',
+          out is not None and dep is not None and out.paired_deposit_id == dep.id,
+          (out and out.paired_deposit_id, dep and dep.id))
+    check('which takes the outbound half out of debt',
+          out is not None and out.category == 'transfer', out and out.category)
+    start, end = A._month_bounds(None)
     act = A._spend_actuals(2, start, end)
-    check('so October debt is not reduced by the payments made to it',
-          act.get('debt', 0) >= 0, act.get('debt'))
+    check('neither half reaches the debt total', act.get('debt', 0) == 0, act.get('debt'))
+
+print('\n--- a transfer between his own accounts is not a loan payment ---')
+# Plaid called "Online Transfer to CHK ...0849" a LOAN_PAYMENT, which maps to 'debt'. That
+# is truthy, so the keyword rules were never consulted and $550 of moving money between
+# two of his own chequing accounts counted as debt service. A description that names the
+# account is now read ahead of Plaid's category.
+FAKE.pages = [{'added': [txn('xf-1', 'Online Transfer to CHK ...0849 transaction', 550.00,
+                             'LOAN_PAYMENTS', date='2026-08-07'),
+                         txn('xf-2', 'PAYPAL INST XFER PPCR CC REPAYME WEB ID: 1234', 2.99,
+                             'LOAN_PAYMENTS', date='2026-07-06')],
+               'modified': [], 'removed': [], 'next_cursor': 'cur-xf', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+with app.app_context():
+    for ext, label in (('plaid:xf-1', 'Online Transfer to CHK'), ('plaid:xf-2', 'INST XFER')):
+        t = A.SpendTransaction.query.filter_by(user_id=2, external_id=ext).first()
+        check('%-24s is a transfer, not debt' % label,
+              t is not None and t.category == 'transfer', t and t.category)
 
 print('\n--- a sync pairs a transfer with its other half ---')
 from datetime import date as _date  # noqa: E402
