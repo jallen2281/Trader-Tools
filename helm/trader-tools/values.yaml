@@ -323,6 +323,27 @@ backup:
       cpu: 100m
       memory: 128Mi
 
+# Scheduled bank-feed refresh. Without this, /api/plaid/sync was reachable only from a
+# button on the finances page, so the ledger was as fresh as the last click -- it reached 12
+# days stale, and four bills read PAST DUE when only one was.
+plaidSync:
+  enabled: true
+  # Every 6 hours, on the half hour so it does not land on the 02:00 backup or the 03:30
+  # retention run. Banks post in batches rather than continuously, so a tighter schedule
+  # buys nothing and costs a Plaid request per item per run.
+  schedule: "30 */6 * * *"
+  # An hour is far more than any sync needs; it stops a wedged run retrying indefinitely.
+  activeDeadlineSeconds: 3600
+  # Leave empty for every user. Set to a single user id only to narrow a debugging run.
+  userId: ""
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
 retention:
   enabled: true
   # 03:30 UTC — deliberately after the 02:00 backup, so a fresh dump exists from

@@ -106,6 +106,50 @@ if os.path.exists(dockerfile):
                 check('Dockerfile copies %s, which exists' % src,
                       os.path.exists(os.path.join(os.getcwd(), src)), src)
 
+print('\n--- every script a workload is told to run is actually in the image ---')
+# The same class of bug as the doc-key secret above, one layer out: a CronJob whose command
+# names a script that the Dockerfile never copies renders fine, deploys fine, and fails
+# only when the schedule fires -- at 03:30, into a Job history nobody is watching.
+cmd_scripts = set()
+for name, text in template_text.items():
+    for script in re.findall(r'command:\s*\[\s*"python"\s*,\s*"([^"]+\.py)"\s*\]', text):
+        cmd_scripts.add((name, script))
+check('some workload runs a python script', bool(cmd_scripts), sorted(cmd_scripts))
+for name, script in sorted(cmd_scripts):
+    check('%s runs %s, which exists at the repo root' % (name, script),
+          os.path.exists(os.path.join(os.getcwd(), script)), script)
+    # And is reachable by the Dockerfile's copy rules, which is a separate question from
+    # existing: a script in a subdirectory would exist and still not be in the image.
+    check('%s is shipped by the Dockerfile' % script, os.sep not in script and '/' not in script,
+          'nested paths are not covered by `COPY *.py ./`')
+
+print('\n--- the scheduled sync is wired for the failure cases, not just the happy one ---')
+sync = template_text.get('plaid-sync-cronjob.yaml', '')
+check('the plaid-sync CronJob exists', bool(sync))
+if sync:
+    check('it is gated on its own values block', '.Values.plaidSync.enabled' in sync)
+    # Plaid bills per request and the cursor is stateful, so two overlapping runs would
+    # walk the same pages twice and pay for it.
+    check('overlapping runs are forbidden, not replaced',
+          'concurrencyPolicy: Forbid' in sync)
+    # A quietly failing sync leaves the stale ledger this job exists to prevent.
+    check('failed runs are kept long enough to notice',
+          re.search(r'failedJobsHistoryLimit:\s*([5-9]|\d{2,})', sync) is not None)
+    check('a wedged run cannot retry forever', 'activeDeadlineSeconds' in sync)
+    # Unlike retention, which can do its real work without Plaid, a sync with no
+    # credentials has nothing to do at all -- so this secretRef must NOT be optional.
+    idx = sync.find('.Values.plaidKeysSecret')
+    tail = sync[idx:idx + 160] if idx >= 0 else ''
+    check('Plaid credentials are required, not optional', idx >= 0 and 'optional' not in tail,
+          tail[:120])
+    # Importing app.py starts the alert monitor, so a cron pod would duplicate every
+    # notification the web pods fire for as long as it lives.
+    check('the job does not become a second alert source',
+          'TT_BACKGROUND_JOBS' in sync and '"0"' in sync, sync[:0] or 'flag missing')
+    check('and the app honours that flag',
+          "TT_BACKGROUND_JOBS" in io.open(os.path.join(os.getcwd(), 'app.py'),
+                                          encoding='utf-8').read())
+
 print('\n--- files referenced by templates exist ---')
 for name, text in template_text.items():
     for rel in sorted(set(re.findall(r'\.Files\.Get\s+"([^"]+)"', text))):

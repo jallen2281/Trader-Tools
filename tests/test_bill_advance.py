@@ -103,12 +103,28 @@ with A.app.app_context():
 
     # And it must not rewrite a correct stored date when rolling forward: a bill really on
     # the 17th with a stale due_day of 16 was being moved to the 16th.
+    #
+    # The dates here are pinned, and that is the point. This check used to anchor on
+    # TODAY - 9 days and assert the rolled day equalled that date's day -- which is
+    # unsatisfiable whenever TODAY - 9 lands on a 31st and the next month is shorter,
+    # because the anchor correctly clamps. That is five days a year (9 Feb, 9 Apr, 9 Jun,
+    # 9 Sep, 9 Nov), and on 2026-11-09 it duly failed: anchor 2026-10-31 rolled to
+    # 2026-11-30 and the test demanded a 30-day November produce a 31st. The clamp is the
+    # behaviour this very file asserts as correct thirty lines above, so the test was
+    # contradicting itself on a calendar trigger. A suite that fails on a date rather than
+    # on a change is worse than no suite: it teaches you to re-run instead of to look.
     asu = bill(name='ASU', frequency='monthly', amount=515.00, due_day=16,
-               next_due_date=TODAY - timedelta(days=9))
-    rolled = asu._anchor()
+               next_due_date=date(2027, 1, 17))
+    rolled = asu._anchor(today=date(2027, 2, 1))
     check('rolling forward keeps the stored day, not the stale due_day',
-          rolled.day == (TODAY - timedelta(days=9)).day,
-          (rolled, TODAY - timedelta(days=9), asu.due_day))
+          rolled.day == 17, (rolled, asu.due_day))
+    # The clamp still applies when the stored day genuinely cannot exist in the target
+    # month -- asserted explicitly here so the two behaviours cannot be confused again.
+    short = bill(name='Month end', frequency='monthly', due_day=16,
+                 next_due_date=date(2027, 1, 31))
+    check('but a 31st still clamps into a 30-day month',
+          short._anchor(today=date(2027, 4, 1)) == date(2027, 4, 30),
+          short._anchor(today=date(2027, 4, 1)))
 
     print('\n--- a past due date rolls forward to the next real one ---')
     stale = bill(name='Electric', frequency='monthly',

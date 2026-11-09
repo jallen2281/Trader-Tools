@@ -334,6 +334,32 @@ with app.app_context():
     act = A._spend_actuals(2, start, end)
     check('neither half reaches the debt total', act.get('debt', 0) == 0, act.get('debt'))
 
+print('\n--- the mortgage reaches housing through the real import path ---')
+# The test that was missing on 2026-11-05. The keyword rule was verified in isolation and
+# in the running pod, and the very next sync still filed $3,103.88 of mortgage into 'other'
+# -- because Plaid labels that ACH TRANSFER_OUT, which maps to 'other', which is truthy,
+# so the rule was never consulted. A rule the importer cannot reach is not a fix, and only
+# a test that goes through the importer would have caught it.
+FAKE.pages = [{'added': [txn('mtg-1', 'UWM', 3103.88, 'TRANSFER_OUT', date='2026-11-01'),
+                         txn('mtg-2', 'Unitedwholesale Mtg', 3103.88, 'GENERAL_SERVICES',
+                             date='2026-12-01'),
+                         txn('int-1', 'Interest Charge on Purchases', 789.49, 'BANK_FEES',
+                             date='2026-11-02')],
+               'modified': [], 'removed': [], 'next_cursor': 'cur-mtg', 'has_more': False}]
+admin.post('/api/plaid/items/%d/sync' % ITEM_ID)
+with app.app_context():
+    for ext, want, label in (('plaid:mtg-1', 'housing', 'UWM via TRANSFER_OUT'),
+                             ('plaid:mtg-2', 'housing', 'Unitedwholesale via GENERAL_SERVICES'),
+                             ('plaid:int-1', 'debt', 'interest via BANK_FEES')):
+        t = A.SpendTransaction.query.filter_by(user_id=2, external_id=ext).first()
+        check('%-38s -> %s' % (label, want),
+              t is not None and t.category == want, t and t.category)
+    # And the other direction: a specific Plaid category is still trusted over a keyword.
+    start, end = A._month_bounds('2026-11')
+    act = A._spend_actuals(2, start, end)
+    check('the mortgage reaches the housing total, not other',
+          act.get('housing', 0) >= 3103.88, act.get('housing'))
+
 print('\n--- a transfer between his own accounts is not a loan payment ---')
 # Plaid called "Online Transfer to CHK ...0849" a LOAN_PAYMENT, which maps to 'debt'. That
 # is truthy, so the keyword rules were never consulted and $550 of moving money between

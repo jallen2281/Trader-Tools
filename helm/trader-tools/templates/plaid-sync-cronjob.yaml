@@ -1,0 +1,81 @@
+{{- if .Values.plaidSync.enabled }}
+# Keeps the bank feed current. Before this existed, /api/plaid/sync was reachable from
+# exactly one place -- a button on the finances page -- so the ledger was only as fresh as
+# the last time someone clicked it. It went 12 days stale, and the damage was not the
+# missing rows but the bills that read PAST DUE when they had in fact been paid.
+#
+# Runs `python plaid_sync_job.py` in the application image, which imports app.py for the
+# single definition of how a transaction becomes a row. See that script for why a bank
+# needing re-authentication exits 0 while a network failure exits non-zero.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "trader-tools.fullname" . }}-plaid-sync
+  labels:
+    {{- include "trader-tools.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.plaidSync.schedule | quote }}
+  # Forbid, not Replace: a sync is not idempotent in cost. Plaid bills per request and two
+  # overlapping runs would walk the same cursor twice.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  # A quietly failing sync leaves exactly the stale ledger this job exists to prevent,
+  # while the app looks perfectly healthy -- so failures need to survive long enough to be
+  # noticed by someone who was not watching at the time.
+  failedJobsHistoryLimit: 5
+  # Deliberately short next to retention's hour. A sync missed because the cluster was busy
+  # is not worth catching up on 50 minutes later -- the next scheduled run is soon, and a
+  # late one only risks colliding with it.
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      # Without this a failing job retries under backoffLimit forever if the pod keeps
+      # being rescheduled; an hour is more than any sync needs.
+      activeDeadlineSeconds: {{ .Values.plaidSync.activeDeadlineSeconds | default 3600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "trader-tools.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: plaid-sync
+        spec:
+          restartPolicy: OnFailure
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "trader-tools.serviceAccountName" . }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: plaid-sync
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["python", "plaid_sync_job.py"]
+              envFrom:
+                # DATABASE_URL and SECRET_KEY come from the same secret the web pods use.
+                - configMapRef:
+                    name: {{ include "trader-tools.fullname" . }}
+                - secretRef:
+                    name: {{ include "trader-tools.fullname" . }}
+                # Not optional here, unlike the retention job: retention only needs these
+                # to revoke tokens on a purge and can do its real work without them, but a
+                # sync with no Plaid credentials has nothing to do at all.
+                - secretRef:
+                    name: {{ .Values.plaidKeysSecret | default "plaid-keys" }}
+              env:
+                # Importing app.py both creates and starts the alert monitor, so a cron pod
+                # would become a second source of the same user's notifications for as long
+                # as it lives. The job only needs the models and the sync helper.
+                - name: TT_BACKGROUND_JOBS
+                  value: "0"
+                {{- with .Values.plaidSync.userId }}
+                # Normally unset: every connected item for every user.
+                - name: PLAID_SYNC_USER_ID
+                  value: {{ . | quote }}
+                {{- end }}
+              resources:
+                {{- toYaml .Values.plaidSync.resources | nindent 16 }}
+{{- end }}

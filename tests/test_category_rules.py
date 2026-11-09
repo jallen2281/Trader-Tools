@@ -126,6 +126,33 @@ print('\n--- an unknown payee still falls through to other, honestly ---')
 for d in ('SP FLUENTPET 9483', 'BRIGHTON REC AREA', 'MUDFLAP'):
     guess(d, 'other')
 
+print("\n--- Plaid's 'other' is not an answer, and must not silence the rules ---")
+# The whole point of the 2026-11-05 mortgage rule, and the reason it did nothing. Plaid's
+# category wins when it says something; 'other' says nothing -- it is where BANK_FEES,
+# TRANSFER_OUT, GENERAL_SERVICES and every unmapped primary land -- but it is truthy, so
+# `category_for(txn) or guess(...)` took it as a verdict. _guess_spend_category('UWM')
+# returned 'housing', verified in the running pod, and the very next sync still filed
+# $3,103.88 of mortgage into 'other'.
+check("Plaid 'other' yields to a keyword that knows the payee",
+      A._resolve_category('other', 'UWM') == 'housing', A._resolve_category('other', 'UWM'))
+check('same for the servicer\'s other spelling',
+      A._resolve_category('other', 'Unitedwholesale Mtg') == 'housing')
+check('and for the interest wordings',
+      A._resolve_category('other', 'Interest Charge on Purchases') == 'debt')
+check('and for tuition',
+      A._resolve_category('other', 'NBS-ASU SERVICE FEE') == 'education')
+# But Plaid still wins wherever it is specific: it reads the merchant, we read a string.
+check('a specific Plaid category still beats the keywords',
+      A._resolve_category('food', 'UWM') == 'food', A._resolve_category('food', 'UWM'))
+check('even when the keywords would have said something else',
+      A._resolve_category('healthcare', 'SPEEDWAY 44411') == 'healthcare')
+check('no Plaid category at all falls back to the keywords',
+      A._resolve_category(None, 'DTE ENERGY') == 'utilities')
+check('and an unknown payee with no Plaid category is still honestly other',
+      A._resolve_category(None, 'ZZQ MYSTERY VENDOR') == 'other')
+check("'other' on both sides stays other",
+      A._resolve_category('other', 'ZZQ MYSTERY VENDOR') == 'other')
+
 print('\n--- every rule names a category that exists ---')
 for cat, keys in A.SPEND_CATEGORY_RULES:
     check('rule %-16s targets a real category' % cat, cat in A.BUDGET_CATEGORIES, cat)

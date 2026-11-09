@@ -129,9 +129,18 @@ if PHASE2_ENABLED:
         ml_detector = MLPatternDetector()
         logger.info("✓ ML Pattern Detector initialized")
         
-        # Base tick 60s; each user's own alert_check_interval gates actual checks
-        monitoring_svc = init_monitoring_service(app, check_interval=60)
-        logger.info("✓ Real-time Monitoring Service initialized (60s base tick, per-user intervals)")
+        # Base tick 60s; each user's own alert_check_interval gates actual checks.
+        #
+        # Skipped for scheduled jobs. init_monitoring_service() both creates AND starts the
+        # thread, so any process that imports this module becomes an alert source -- and a
+        # cron pod that imports app.py for its models would fire the same user's alerts the
+        # web pods are already firing, duplicating every notification for the ~30 seconds
+        # it lives. The jobs set TT_BACKGROUND_JOBS=0.
+        if os.getenv('TT_BACKGROUND_JOBS', '1').strip().lower() not in ('0', 'false', 'no'):
+            init_monitoring_service(app, check_interval=60)
+            logger.info("✓ Real-time Monitoring Service initialized (60s base tick, per-user intervals)")
+        else:
+            logger.info("✓ Monitoring Service deliberately not started (TT_BACKGROUND_JOBS=0)")
         
         # Register authentication routes
         auth_routes = get_auth_routes(google_oauth)
@@ -1362,6 +1371,32 @@ def _guess_spend_category(text):
         if any(k in t for k in keys):
             return cat
     return 'other'
+
+
+def _resolve_category(plaid_category, text):
+    """Plaid's category where it says something, the keyword rules where it does not.
+
+    Plaid's personal_finance_category beats keyword matching on a merchant name and should
+    win -- but 'other' is not an answer. It is where BANK_FEES, TRANSFER_OUT,
+    GENERAL_SERVICES and every primary we have no mapping for all land, so it carries no
+    information at all. It is still truthy, and `pc.category_for(txn) or guess(...)` treated
+    it as a verdict, which meant the keyword rules were never consulted for any of it.
+
+    That is not hypothetical. The mortgage rule shipped on 2026-11-05 made
+    _guess_spend_category('UWM') return 'housing', it was verified in the running pod, and
+    the very next sync still filed $3,103.88 of mortgage into 'other' -- because Plaid
+    labels that ACH with one of the three primaries above and the keyword rule was never
+    reached. A fix that the import path cannot consult is not a fix.
+
+    So: a specific answer from either side beats 'other' from Plaid, and Plaid still wins
+    whenever it is specific.
+    """
+    guess = _guess_spend_category(text)
+    if plaid_category and plaid_category != 'other':
+        return plaid_category
+    if guess and guess != 'other':
+        return guess
+    return plaid_category or guess or 'other'
 
 
 def _parse_csv_date(s, explicit=None):
@@ -4143,7 +4178,7 @@ def _plaid_sync_item(item, client=None, backfill=False):
             if _looks_like_card_payment(text) or _looks_like_account_transfer(text):
                 cat = 'transfer'
             else:
-                cat = pc.category_for(txn) or _guess_spend_category(text)
+                cat = _resolve_category(pc.category_for(txn), text)
             # Plaid's amount is positive when money LEAVES, so a negative one is a credit.
             amount = round(float(txn.get('amount') or 0), 2)
             # A credit is money in unless it is a merchant REFUND -- the one credit that
