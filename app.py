@@ -1187,6 +1187,19 @@ ENTITY_CATEGORY_SETS = {'farm': FARM_CATEGORIES, 'business': BUSINESS_CATEGORIES
 # Business meals are half deductible; everything else in the books counts in full.
 _HALF_DEDUCTIBLE = {'biz_meals'}
 
+# Categories that claim the SAME cost the standard mileage rate already covers. A book
+# cannot have both for one vehicle: the rate includes fuel, oil, repairs, insurance and
+# depreciation, so a car-and-truck expense row beside a logged trip deducts the same mile
+# twice. Only _business_books warns -- see _vehicle_method_conflict.
+#
+# farm_fuel is deliberately NOT in here. Schedule F splits the two on purpose: line 10
+# "Car and truck" is the vehicle, line 14 "Gasoline, fuel and oil" is the equipment. A farm
+# that logs truck miles AND buys tractor diesel is doing the right thing in both places,
+# and flagging that pairing would cry wolf on the single most common farm arrangement --
+# which is this install's own (one Silverado on mileage for the realty, tractors on diesel
+# for the farm). Off-road equipment has no mileage option, so there is nothing to conflict.
+VEHICLE_ACTUAL_CATEGORIES = {'biz_car_truck', 'farm_car_truck'}
+
 # IRS business standard mileage rates, by the date they took effect. 2026 changed mid-year:
 # fuel prices pushed the rate from 72.5 to 76 cents for July through December, so a trip's
 # rate depends on its date, not just its year.
@@ -8317,6 +8330,50 @@ def _mileage_for(user_id, entity_id, start, end):
     return miles, round(sum(t.total_miles() * mileage_rate(t.trip_date) for t in trips), 2)
 
 
+def _vehicle_method_conflict(user_id, entity_id, start, end):
+    """Is this book deducting one vehicle two ways in [start, end]? None if not.
+
+    The standard mileage rate already contains fuel, oil, repairs, insurance and
+    depreciation, so a car-and-truck expense row filed to a book that also logs trips
+    deducts the same mile twice. app.py has always said so in a category label --
+    'biz_car_truck': 'Car and truck, actual expenses (not with standard mileage)' -- and
+    has never once checked. _business_books subtracts `expenses` and `mileage` from the
+    same book without comparing them, so the overlap is invisible in the only figure
+    anyone reads.
+
+    It warns rather than blocks, deliberately. Switching methods is legitimate (a vehicle
+    placed in service this year, a second vehicle genuinely on actual expenses), and the
+    books cannot tell which vehicle a fuel receipt belongs to -- only the user knows. A
+    hard refusal would be wrong often enough to be worked around, and a guard people route
+    around is worse than a warning they read.
+    """
+    miles, deduction = _mileage_for(user_id, entity_id, start, end)
+    if miles <= 0:
+        return None
+    rows = [t for t in SpendTransaction.query.filter(
+        _visible(SpendTransaction, user_id), SpendTransaction.entity_id == entity_id,
+        SpendTransaction.posted_at >= start, SpendTransaction.posted_at <= end).all()
+        if (t.category or '') in VEHICLE_ACTUAL_CATEGORIES]
+    if not rows:
+        return None
+    vehicles = sorted({t.vehicle for t in MileageLog.query.filter(
+        _visible(MileageLog, user_id), MileageLog.entity_id == entity_id,
+        MileageLog.trip_date >= start, MileageLog.trip_date <= end).all() if t.vehicle})
+    return {'miles': miles, 'mileage_deduction': deduction, 'vehicles': vehicles,
+            'expense_rows': len(rows),
+            'expense_total': round(sum(float(t.amount or 0) for t in rows), 2),
+            'categories': sorted({t.category for t in rows}),
+            'spend_ids': sorted(t.id for t in rows),
+            'message': ('%s already deducts %s miles ($%s) by the standard rate, which '
+                        'includes fuel and repairs. %d row(s) worth $%s are also claiming '
+                        'vehicle costs as actual expenses, so that cost is counted twice. '
+                        'Pick one method per vehicle%s.'
+                        % ((vehicles[0] if len(vehicles) == 1 else 'This book'), miles,
+                           format(deduction, ',.2f'), len(rows),
+                           format(round(sum(float(t.amount or 0) for t in rows), 2), ',.2f'),
+                           '' if len(vehicles) < 2 else ' (%s)' % ', '.join(vehicles)))}
+
+
 def _business_books(user_id, yr, prof):
     """Farm and business (Schedule F / C) net for the year, and where it came from.
 
@@ -8359,15 +8416,25 @@ def _business_books(user_id, yr, prof):
                      'income_actual': inc['actual'], 'income_pace': inc,
                      'net_actual': round(inc['actual'] - expenses - mileage, 2),
                      'mileage_miles': miles, 'mileage_deduction': mileage,
+                     # Warned, never netted out. Which of the two the user means to keep
+                     # is theirs to decide, and silently dropping either would move the
+                     # tax estimate on a guess.
+                     'vehicle_conflict': _vehicle_method_conflict(user_id, e.id, start, end),
                      'net': round(income - expenses - mileage, 2)})
     carve = float(prof.business_mortgage_interest_annual or 0)
     books_net = round(sum(r['net'] for r in rows), 2)
     mileage_total = round(sum(r['mileage_deduction'] for r in rows), 2)
+    # Hoisted to the top level so a caller showing one headline figure can surface the
+    # warning without walking every entity. Empty list, not None, so `if conflicts:` reads
+    # the same whether or not any book has mileage at all.
+    conflicts = [dict(r['vehicle_conflict'], entity_id=r['id'], entity=r['name'])
+                 for r in rows if r.get('vehicle_conflict')]
     if prof.business_net_annual is not None:
         net = round(float(prof.business_net_annual), 2)
         return {'net': net, 'source': 'entered', 'se_profit': max(0.0, net),
                 'books_net_so_far': books_net, 'entities': rows, 'mileage_deduction': mileage_total,
-                'entity_ids': [r['id'] for r in rows], 'mortgage_interest': round(carve, 2)}
+                'entity_ids': [r['id'] for r in rows], 'mortgage_interest': round(carve, 2),
+                'vehicle_conflicts': conflicts}
     if not rows and not carve:
         return None
     # Self-employment tax is filed per person, and two books can belong to two people -- a
@@ -8378,7 +8445,8 @@ def _business_books(user_id, yr, prof):
     return {'net': round(books_net - carve, 2), 'source': 'books so far this year',
             'se_profit': se_profit, 'books_net_so_far': books_net, 'entities': rows,
             'mileage_deduction': mileage_total,
-            'entity_ids': [r['id'] for r in rows], 'mortgage_interest': round(carve, 2)}
+            'entity_ids': [r['id'] for r in rows], 'mortgage_interest': round(carve, 2),
+                'vehicle_conflicts': conflicts}
 
 
 def _project_state_withholding(prof, yr, payroll, fallback):

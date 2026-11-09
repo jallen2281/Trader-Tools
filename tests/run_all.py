@@ -88,6 +88,7 @@ SUITES = [
     ('plaid', 'Plaid client, sync and token handling'),
     ('plaid_accounts', 'accounts inside a connection, deposits, income reconciliation'),
     ('plaid_sync_job', 'the scheduled sync, and which failures are retryable'),
+    ('vehicle_method', 'one vehicle, one method -- mileage vs actual, and the farm exception'),
     ('batchfetch', 'batched market data fetching'),
     ('ui_render', 'pages render and controls are wired'),
     ('budget_render', 'what the Budget card actually renders (runs under node)'),
