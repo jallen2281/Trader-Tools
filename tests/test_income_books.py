@@ -193,8 +193,11 @@ with A.app.app_context():
     from models import RecurringBill
     card = Debt(user_id=UID, name='PayPal mastercard', type='credit_card',
                 balance=2333.50, apr=18.49)
+    # balance_as_of is stated because these payments post AFTER the figure was read. A
+    # balance entered with no as-of date is taken to be today's statement, which already
+    # contains last week's payment -- see _payment_floor and test_debt_as_of.py.
     loan = Debt(user_id=UID, name='Roof Loan', type='home_improvement',
-                balance=56000.00, apr=11.9)
+                balance=56000.00, apr=11.9, balance_as_of=TODAY - timedelta(days=30))
     db.session.add_all([card, loan])
     db.session.commit()
     db.session.add_all([
@@ -231,7 +234,7 @@ with A.app.app_context():
     # non-interest part as principal flatters the biggest number on the balance sheet --
     # by $66 every month on the loan this came from, compounding for the life of it.
     mort = Debt(user_id=UID, name='1st Mortgage', type='mortgage', balance=342000.00,
-                apr=6.0, escrow_monthly=66.00)
+                apr=6.0, escrow_monthly=66.00, balance_as_of=TODAY - timedelta(days=30))
     db.session.add(mort)
     db.session.commit()
     db.session.add(RecurringBill(user_id=UID, name='Mortgage', payee='UWM',

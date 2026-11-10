@@ -1047,6 +1047,19 @@ class Debt(db.Model):
     # which on a mortgage carrying $66 of PMI overstates the paydown by that much every
     # month, and quietly flatters the largest number on the balance sheet.
     escrow_monthly = db.Column(db.Numeric(12, 2, asdecimal=False), default=0)
+    # The date the stored balance was last known true.
+    #
+    # Without it nothing can tell which payments a hand-entered figure already includes,
+    # and _apply_debt_payments applied the whole ledger to it. Three debts on this install
+    # were created 2026-08-21 at round opening figures; a backfill on 13 October then
+    # subtracted the June, July and August payments those figures already reflected,
+    # retiring $3,395.30 of principal twice -- $1,452.54 of it on one truck loan, which
+    # read $23,595.26 against a real $25,767.33.
+    #
+    # Understating a debt flatters net worth, which is the direction that does damage, so
+    # the floor errs the other way: a payment posted ON this date is treated as already
+    # counted. NULL means never stated, and created_at stands in -- see _payment_floor.
+    balance_as_of = db.Column(db.Date)
     # Charges that are not interest. A tuition payment plan is the case that forced this:
     # 0% APR, but an enrolment fee each semester and a service charge on every instalment.
     # With only an APR field such a debt looks free, when it can easily cost more than a
@@ -1123,6 +1136,7 @@ class Debt(db.Model):
             'entity_id': self.entity_id,
             'id': self.id, 'name': self.name, 'type': self.type, 'lender': self.lender,
             'balance': float(self.balance or 0), 'apr': float(self.apr or 0),
+            'balance_as_of': self.balance_as_of.isoformat() if self.balance_as_of else None,
             'min_payment': float(self.min_payment or 0), 'secured': bool(self.secured),
             'credit_limit': float(self.credit_limit) if self.credit_limit is not None else None,
             'utilization_pct': self.utilization_pct(),

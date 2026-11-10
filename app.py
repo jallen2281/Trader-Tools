@@ -827,6 +827,10 @@ def finance_create_debt():
              secured=bool(d.get('secured')), notes=(d.get('notes') or None),
              credit_limit=_opt_float(d.get('credit_limit')),
              fee_lines=_clean_fee_lines(d.get('fee_lines')))
+    # An opening balance is read off a statement, so it already contains every payment
+    # made up to the day it was read. Stamping that day is what stops the payment pass
+    # retiring those payments a second time -- see _payment_floor.
+    x.balance_as_of = _parse_csv_date((d.get('balance_as_of') or '').strip()) or date.today()
     db.session.add(x)
     db.session.commit()
     return jsonify(x.to_dict()), 201
@@ -854,9 +858,17 @@ def finance_modify_debt(did):
     for f in ('lender', 'notes'):
         if f in d:
             setattr(x, f, d.get(f) or None)
+    before_balance = float(x.balance or 0)
     for f in ('balance', 'apr', 'min_payment', 'escrow_monthly'):
         if f in d:
             setattr(x, f, float(d.get(f) or 0))
+    # A corrected balance is a fresh statement reading unless the caller says otherwise,
+    # so it supersedes every payment up to today. Only a CHANGED figure restamps: editing
+    # the APR alone must not silently re-date the balance and swallow the payments since.
+    if 'balance_as_of' in d:
+        x.balance_as_of = _parse_csv_date((d.get('balance_as_of') or '').strip())
+    elif 'balance' in d and round(float(x.balance or 0), 2) != round(before_balance, 2):
+        x.balance_as_of = date.today()
     if 'secured' in d:
         x.secured = bool(d.get('secured'))
     if 'credit_limit' in d:
@@ -3328,6 +3340,39 @@ def _debt_is_bank_reported(user_id, debt_id):
     return PlaidAccount.query.filter_by(user_id=user_id, linked_debt_id=debt_id).first() is not None
 
 
+def _payment_floor(debt):
+    """The date up to and including which payments are already inside debt.balance.
+
+    A hand-entered balance is a statement figure: whoever typed it read it off the lender
+    AFTER some payments had posted, so those payments are already in it. Nothing recorded
+    which ones, and _apply_debt_payments therefore applied every unapplied row in the
+    ledger -- however old -- to whatever figure it found.
+
+    That is not hypothetical. Three debts here were created on 2026-08-21 at round opening
+    figures and a backfill on 13 October applied payments from June, July and August:
+
+        1st Mortgage      $342,000.00 entered, 1 payment pre-dating it, $1,341.19 removed
+        Home Improvement   $56,000.00 entered, 3 payments pre-dating it,  $601.57 removed
+        Car Loan           $26,000.00 entered, 3 payments pre-dating it, $1,452.54 removed
+
+    $3,395.30 of principal retired a second time. Debt understated is net worth
+    overstated, so the comparison is deliberately `<=`, not `<`: when a payment posts on
+    the very day a balance is stated there is no way to know which side of it the figure
+    was read, and the safe guess is the one that leaves a debt looking too big rather than
+    too small.
+
+    balance_as_of is the answer when it is set. For a row that predates the column,
+    created_at is the honest fallback -- a balance cannot describe a lender's figure from
+    before the record existed. date.min when there is neither, which applies everything
+    and preserves the old behaviour rather than silently skipping a whole ledger.
+    """
+    if getattr(debt, 'balance_as_of', None):
+        return debt.balance_as_of
+    if debt.created_at:
+        return debt.created_at.date() if hasattr(debt.created_at, 'date') else debt.created_at
+    return date.min
+
+
 def _split_payment(debt, amount):
     """Split a payment into (interest, principal) for the CURRENT balance.
 
@@ -3411,8 +3456,17 @@ def _apply_debt_payments(user_id, since=None):
         if not debt:
             continue
         debts[did] = debt
+        # Already inside the stored figure. Left unapplied rather than marked applied:
+        # the row is not spent work, it is evidence, and if the balance is later restated
+        # as of an earlier date it should be picked up then.
+        if t.posted_at and t.posted_at <= _payment_floor(debt):
+            continue
         interest, principal = _split_payment(debt, round(float(t.amount), 2))
         debt.balance = round(max(0.0, float(debt.balance or 0) - principal), 2)
+        # The balance now describes the world just after this payment, so say so. Without
+        # this the floor would never move and every later run would re-apply from the
+        # original figure's date.
+        debt.balance_as_of = t.posted_at
         t.debt_applied_at = datetime.utcnow()
         if not t.to_debt_id and not t.debt_id:
             t.to_debt_id = did
@@ -3490,6 +3544,11 @@ def finance_debt_payment(did):
     before = float(debt.balance or 0)
     interest, principal = _split_payment(debt, amount)
     debt.balance = round(max(0.0, before - principal), 2)
+    # Moved forward only. A payment entered out of order -- last month's, recorded late --
+    # still reduces the balance, but it must not drag the as-of date backwards and let the
+    # automatic pass re-apply everything in between.
+    if debt.balance_as_of is None or when > debt.balance_as_of:
+        debt.balance_as_of = when
     if txn is not None:
         # Marked as already applied, or the automatic pass would find this row later and
         # pay the same money down a second time.

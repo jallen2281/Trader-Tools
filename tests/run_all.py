@@ -88,6 +88,7 @@ SUITES = [
     ('plaid', 'Plaid client, sync and token handling'),
     ('plaid_accounts', 'accounts inside a connection, deposits, income reconciliation'),
     ('plaid_sync_job', 'the scheduled sync, and which failures are retryable'),
+    ('debt_as_of', 'a typed-in balance already contains the payments before it'),
     ('vehicle_method', 'one vehicle, one method -- mileage vs actual, and the farm exception'),
     ('batchfetch', 'batched market data fetching'),
     ('ui_render', 'pages render and controls are wired'),
