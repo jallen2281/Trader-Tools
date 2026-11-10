@@ -173,6 +173,26 @@ with app.app_context():
     check('and the mileage is still deducted in full',
           r['mileage_deduction'] == round(106.0 * 0.725 + 120.0 * 0.76, 2), r['mileage_deduction'])
 
+    print('\n--- the Books table gets it too, which is where it is actually read ---')
+    # _business_books feeds the tax estimate; _entity_report feeds the Books table, and
+    # the Books table is the one with a Mileage column on it. A warning only the tax
+    # estimate carries is a warning next to the wrong number.
+    er = A._entity_report(1, REALTY, YR)
+    check('the entity report carries the conflict', er['vehicle_conflict'] is not None,
+          er['vehicle_conflict'])
+    check('and agrees with _business_books on the miles',
+          er['vehicle_conflict']['miles'] == r['vehicle_conflict']['miles'],
+          (er['vehicle_conflict']['miles'], r['vehicle_conflict']['miles']))
+    check('a book with no conflict reports None, not a stub',
+          A._entity_report(1, FARM, YR)['vehicle_conflict'] is None,
+          A._entity_report(1, FARM, YR)['vehicle_conflict'])
+    check('the categories are labelled for a reader, not slugged',
+          er['vehicle_conflict']['category_labels'] == ['Car and truck, actual expenses (not with standard mileage)'],
+          er['vehicle_conflict']['category_labels'])
+    check('and the slugs are still there for anything matching on them',
+          er['vehicle_conflict']['categories'] == ['biz_car_truck'],
+          er['vehicle_conflict']['categories'])
+
     print('\n--- the list is always a list ---')
     bb2 = A._business_books(1, YR, PROF)
     check('vehicle_conflicts is a list, never None, so `if conflicts:` always reads right',

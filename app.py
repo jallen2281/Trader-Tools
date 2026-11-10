@@ -2593,6 +2593,10 @@ def _entity_report(user_id, entity_id, year=None, nets=None):
         'deductible_receipts': deductible,
         'mileage_miles': miles,
         'mileage_deduction': mileage,
+        # Reported here as well as in _business_books because this is the table a person
+        # actually reads a book's mileage off, and a warning nobody is shown is not a
+        # warning. Same helper, so the two cannot drift apart.
+        'vehicle_conflict': _vehicle_method_conflict(user_id, entity_id, start, end),
         'receipts_on_file': len(docs),
         'transactions': len(txns),
         # Labelled as well as slugged, so a farm's lines read as their Schedule F wording
@@ -8359,10 +8363,15 @@ def _vehicle_method_conflict(user_id, entity_id, start, end):
     vehicles = sorted({t.vehicle for t in MileageLog.query.filter(
         _visible(MileageLog, user_id), MileageLog.entity_id == entity_id,
         MileageLog.trip_date >= start, MileageLog.trip_date <= end).all() if t.vehicle})
+    cats = sorted({t.category for t in rows})
     return {'miles': miles, 'mileage_deduction': deduction, 'vehicles': vehicles,
             'expense_rows': len(rows),
             'expense_total': round(sum(float(t.amount or 0) for t in rows), 2),
-            'categories': sorted({t.category for t in rows}),
+            'categories': cats,
+            # Labelled as well as slugged, same as by_category: a reader should see
+            # "Car and truck", not "biz_car_truck", on a figure they may take to an
+            # accountant.
+            'category_labels': [category_label(c) for c in cats],
             'spend_ids': sorted(t.id for t in rows),
             'message': ('%s already deducts %s miles ($%s) by the standard rate, which '
                         'includes fuel and repairs. %d row(s) worth $%s are also claiming '

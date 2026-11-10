@@ -102,8 +102,18 @@ def span(total=0.0, days=303, frm='2026-01-01', through='2026-10-30', thin=False
             'partial_history': frm != '2026-01-01', 'thin': thin}
 
 
+def conflict(miles=226.0, deduction=167.05, vehicles=('2024 Silverado 2500',),
+             rows=1, total=163.87, cats=('biz_car_truck',),
+             labels=('Car and truck, actual expenses (not with standard mileage)',)):
+    return {'miles': miles, 'mileage_deduction': deduction, 'vehicles': list(vehicles),
+            'expense_rows': rows, 'expense_total': total, 'categories': list(cats),
+            'category_labels': list(labels), 'spend_ids': list(range(1, rows + 1)),
+            'message': 'counted twice'}
+
+
 def book(name, form=None, eid=1, income=0.0, actual=0.0, expenses=0.0, annualized=None,
-         deductible=0.0, miles=0, mileage=0.0, moved=0.0, moved_count=0, sp=None, **kw):
+         deductible=0.0, miles=0, mileage=0.0, moved=0.0, moved_count=0, sp=None,
+         vconflict=None, **kw):
     return {'entity': {'id': eid, 'name': name, 'kind': 'farm', 'tax_form': form},
             'year': 2026, 'income': income, 'income_projected': income,
             'income_actual': actual, 'income_pace': pace(actual=actual, projected=income, **kw),
@@ -114,6 +124,7 @@ def book(name, form=None, eid=1, income=0.0, actual=0.0, expenses=0.0, annualize
             'net_projected': (round(income - annualized, 2) if annualized is not None else None),
             'deductible_receipts': deductible, 'mileage_miles': miles,
             'mileage_deduction': mileage, 'receipts_on_file': 0, 'transactions': 0,
+            'vehicle_conflict': vconflict,
             'by_category': [], 'assets': 0.0, 'debts': 0.0, 'tax_form': form}
 
 
@@ -322,6 +333,50 @@ html, text = render({'year': 2026, 'entities': [
          stale_periods=1.9, records_stale=True)]})
 check('it reads "1 pay period", not "1 pay periods"',
       'about 1 pay period<' in html, [x for x in html.split('<br>') if 'pay period' in x])
+
+print('\n--- one vehicle deducted two ways is called out beside the Mileage column ---')
+# The API half of this is tests/test_vehicle_method.py. What cannot be seen from Python is
+# whether the warning reaches the screen at all: the block short-circuits on an empty
+# filter, so a book without the key renders exactly like a book with no conflict, and the
+# bug and the fix look identical from the server.
+html, text = render({'year': 2026, 'entities': [
+    book('Coldwell Banker Realty', form='Schedule C', eid=3, income=2398.15,
+         actual=2398.15, expenses=163.87, miles=226.0, mileage=167.05,
+         vconflict=conflict())]})
+check('the warning is rendered', 'deducted two ways' in text, text[-400:])
+check('it says the rate already covers it',
+      'already includes fuel' in text, text)
+check('it names the vehicle', '2024 Silverado 2500' in text, text)
+check('it shows the miles already claimed', '226 mi' in text, text)
+check('and what they were worth', '$167' in text, text)
+check('it shows the colliding total', '$164' in text, text)
+check('in the singular for one row', '1 row as actual expenses' in text, text)
+check('it labels the category rather than slugging it',
+      'Car and truck' in text and 'biz_car_truck' not in text, text)
+check('it says nothing was changed for them',
+      'yours to decide' in text, text)
+check('it exempts equipment fuel, so a farm is not scared off a correct entry',
+      'no mileage alternative' in text, text)
+check('it is red, not the amber used for work merely outstanding',
+      '#ef4444' in html, [x for x in html.split('border-left') if 'solid' in x][:2])
+
+print('\n--- and stays silent when there is nothing wrong ---')
+html, text = render({'year': 2026, 'entities': [
+    book('Coldwell Banker Realty', form='Schedule C', eid=3, miles=226.0, mileage=167.05),
+    book('Chicken Tales LLC', form='Schedule F', eid=1, expenses=158.26)]})
+check('mileage alone raises nothing', 'deducted two ways' not in text, text)
+check('but the mileage is still shown', '226 mi' in text, text)
+
+print('\n--- two books in conflict are both listed ---')
+html, text = render({'year': 2026, 'entities': [
+    book('Coldwell Banker Realty', form='Schedule C', eid=3, miles=226.0, mileage=167.05,
+         vconflict=conflict()),
+    book('Chicken Tales LLC', form='Schedule F', eid=1, miles=40.0, mileage=30.40,
+         vconflict=conflict(miles=40.0, deduction=30.40, rows=2, total=240.00,
+                            cats=('farm_car_truck',), labels=('Car and truck',)))]})
+check('both appear in the warning', text.count('deducted two ways') == 1
+      and 'Chicken Tales LLC' in text.split('deducted two ways')[1], text[-500:])
+check('the plural is used for two rows', '2 rows as actual expenses' in text, text)
 
 print('\n' + ('=' * 60))
 if fails:

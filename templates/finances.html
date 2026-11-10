@@ -2249,6 +2249,34 @@
                     </tr>`).join('')}</tbody></table>${
                     ua.truncated ? `<div class="muted" style="font-size:0.78em;padding-top:6px;">showing ${(ua.arrivals || []).length} of ${ua.count}</div>` : ''}
             </div>`;
+        /* One vehicle deducted two ways. The standard mileage rate already contains fuel,
+           oil, repairs and depreciation, so a car-and-truck expense row on a book that
+           also logs trips claims the same mile twice. Shown beside the Mileage column it
+           contradicts, and in red rather than amber: the unclassified-arrivals box above
+           is work outstanding, this is a figure that is currently wrong. */
+        const vconf = rows.filter(r => r.vehicle_conflict);
+        const vehicle = !vconf.length ? '' :
+            `<div style="margin:12px 2px 0;padding:10px 12px;border-radius:9px;background:rgba(239,68,68,.09);border-left:3px solid #ef4444;">
+                <div style="font-size:0.9em;line-height:1.5;"><strong>One vehicle is being deducted two ways</strong></div>
+                <div class="muted" style="font-size:0.8em;margin:4px 0 8px;line-height:1.55;">
+                  The IRS standard mileage rate already includes fuel, oil, repairs, insurance and depreciation.
+                  Claiming those as actual expenses on a set of books that also logs trips deducts the same mile
+                  twice. The election is per vehicle, not per business, so one of the two has to go &mdash;
+                  nothing here has been changed for you, because which one to keep is yours to decide.
+                  Tractor and equipment fuel is <em>not</em> part of this: it has no mileage alternative, so
+                  &ldquo;gasoline, fuel and oil&rdquo; sits correctly beside logged truck miles.
+                </div>
+                <table class="fin-table" style="font-size:0.82em;"><tbody>${vconf.map(r => {
+                    const c = r.vehicle_conflict;
+                    return `<tr>
+                        <td><strong>${esc(r.entity.name)}</strong>${c.vehicles.length
+                            ? `<div class="muted" style="font-size:0.9em;">${esc(c.vehicles.join(', '))}</div>` : ''}</td>
+                        <td style="text-align:right;white-space:nowrap;">${c.miles} mi<div class="muted" style="font-size:0.9em;">${fmt(c.mileage_deduction)} at the rate</div></td>
+                        <td style="text-align:right;white-space:nowrap;"><strong>${fmt(c.expense_total)}</strong><div class="muted" style="font-size:0.9em;">${c.expense_rows} row${c.expense_rows === 1 ? '' : 's'} as actual expenses</div></td>
+                        <td class="muted" style="font-size:0.9em;">${esc((c.category_labels || c.categories || []).join(', '))}</td>
+                    </tr>`;
+                }).join('')}</tbody></table>
+            </div>`;
         box.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr>' +
             '<th>Books</th>' +
             '<th style="text-align:right;" title="What actually arrived this year, with the full-year projection beneath it">Income' + sub('actual &middot; projected') + '</th>' +
@@ -2258,7 +2286,7 @@
             '</tr></thead><tbody>' + rows.map(r => line(r, false)).join('') +
             (rep.unassigned && (rep.unassigned.expenses || rep.unassigned.transactions)
                 ? line(rep.unassigned, true) : '') +
-            '</tbody></table></div>' + review +
+            '</tbody></table></div>' + review + vehicle +
             '<p class="muted" style="font-size:0.78em;padding:10px 2px 0;line-height:1.55;">' +
             'The bold figure on each line is what actually happened; the line under it is the full-year projection. ' +
             '<strong>vs pace</strong> sets the money that arrived against the projection over <em>the same span the records cover</em>, ' +
