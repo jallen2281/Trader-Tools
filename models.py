@@ -1682,34 +1682,75 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
         a, b = int(self.next_pay_date.day), int(self.pay_day_2)
         return (min(a, b), max(a, b)) if a != b else None
 
-    def upcoming_paydates(self, n=6):
-        # Irregular income has no schedule — nothing to project.
+    def _step_payday(self, d, pair):
+        """One cadence step from the NOMINAL payday `d`.
+
+        The weekend roll belongs to the reported date, never to `d`: rolling the anchor
+        too makes the rhythm compound, so a Friday-paid 10th becomes the 8th next time
+        round. test_paydates pins that distinction.
+        """
+        freq = self.pay_frequency
+        if freq == 'weekly':
+            return d + timedelta(days=7)
+        if freq == 'biweekly':
+            return d + timedelta(days=14)
+        if freq == 'semimonthly':
+            if pair:
+                lo, hi = pair
+                if d.day < hi:
+                    return date(d.year, d.month, min(hi, _last_day_of_month(d.year, d.month)))
+                nxt = _add_one_month(date(d.year, d.month, 1))
+                return date(nxt.year, nxt.month,
+                            min(lo, _last_day_of_month(nxt.year, nxt.month)))
+            # No second day declared: the old 1st-and-15th assumption.
+            return (date(d.year, d.month, 15) if d.day < 15
+                    else _add_one_month(date(d.year, d.month, 1)))
+        return _add_one_month(d)                      # monthly
+
+    def _pay_anchor(self, today=None):
+        """The next payday to project from.
+
+        A stored next_pay_date that has already passed is rolled forward by this source's
+        own cadence until it is no longer behind. Nothing advances the field when a
+        paycheck simply arrives -- the edit form is its only writer -- so it falls
+        steadily further behind.
+
+        That is not a display problem, it is a missing paycheck. The projection asks for a
+        bounded number of occurrences (_occurrences_for), and an anchor far enough in the
+        past spends all of them before reaching today, so the INCOME drops out of the
+        forecast while every bill keeps arriving. On this install a semimonthly salary
+        anchored to 2026-10-09 was asked for three paydates over a 30-day horizon, got
+        9 Oct, 23 Oct and 10 Nov -- all behind -- and $1,956.03 of real pay silently left
+        the projection. The 60-day horizon asked for five, reached 25 Nov, and included
+        her: that is how the two horizons came to disagree about the same income.
+
+        RecurringBill._anchor has done exactly this for bills since the bill side was
+        found stale by up to 56 days. The income side was simply never given the same
+        treatment.
+        """
         if self.irregular or not self.next_pay_date:
+            return None                     # irregular income has no schedule to project
+        today = today or date.today()
+        d, pair = self.next_pay_date, self.semimonthly_days()
+        # Bounded. A weekly source a decade stale is ~520 steps; a nonsense date far in
+        # the past must not spin forever.
+        for _ in range(1200):
+            if d >= today:
+                break
+            d = self._step_payday(d, pair)
+        return d
+
+    def upcoming_paydates(self, n=6, today=None):
+        d = self._pay_anchor(today=today)
+        if d is None:
             return []
-        out, d, freq = [], self.next_pay_date, self.pay_frequency
         rule = self.weekend_rule or 'none'
         pair = self.semimonthly_days()
+        out = []
         for _ in range(n):
             # The reported date is rolled off the weekend; `d` keeps the nominal schedule.
             out.append(_roll_off_weekend(d, rule))
-            if freq == 'weekly':
-                d = d + timedelta(days=7)
-            elif freq == 'biweekly':
-                d = d + timedelta(days=14)
-            elif freq == 'semimonthly':
-                if pair:
-                    lo, hi = pair
-                    if d.day < hi:
-                        d = date(d.year, d.month, min(hi, _last_day_of_month(d.year, d.month)))
-                    else:
-                        nxt = _add_one_month(date(d.year, d.month, 1))
-                        d = date(nxt.year, nxt.month,
-                                 min(lo, _last_day_of_month(nxt.year, nxt.month)))
-                else:
-                    # No second day declared: the old 1st-and-15th assumption.
-                    d = date(d.year, d.month, 15) if d.day < 15 else _add_one_month(date(d.year, d.month, 1))
-            else:  # monthly
-                d = _add_one_month(d)
+            d = self._step_payday(d, pair)
         return out
 
     def to_dict(self, include_events=False):
