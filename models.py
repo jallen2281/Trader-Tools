@@ -1060,6 +1060,18 @@ class Debt(db.Model):
     # the floor errs the other way: a payment posted ON this date is treated as already
     # counted. NULL means never stated, and created_at stands in -- see _payment_floor.
     balance_as_of = db.Column(db.Date)
+    # The date the stored APR was last known true.
+    #
+    # A rate is not a constant. The roof loan on this install is a variable line: it was
+    # recorded at 11.900% and that was CORRECT when entered -- the lender's own
+    # "interest paid YTD" proves it. By 2026-11-12 the rate was 10.950%, and nothing in
+    # the app had any way to notice. An APR that has silently drifted is worse than a
+    # missing one, because every payoff date, every interest projection and the blended
+    # APR across the book are all built on it and all look confident.
+    #
+    # Same lesson as balance_as_of one column over: a number read off a statement is only
+    # true as of a date, so store the date with the number. NULL means never stated.
+    apr_as_of = db.Column(db.Date)
     # Charges that are not interest. A tuition payment plan is the case that forced this:
     # 0% APR, but an enrolment fee each semester and a service charge on every instalment.
     # With only an APR field such a debt looks free, when it can easily cost more than a
@@ -1122,6 +1134,17 @@ class Debt(db.Model):
         """Interest plus the fees, which is what actually leaves each month."""
         return round(self.monthly_interest() + self.annual_fees() / 12.0, 2)
 
+    def apr_age_days(self, today=None):
+        """How many days old the stored APR is, or None if it was never stated.
+
+        None rather than a large number: "never recorded" and "recorded long ago" are
+        different problems and the caller should be able to tell them apart. A fixed-rate
+        loan can legitimately carry an old date; a variable line cannot.
+        """
+        if not self.apr_as_of:
+            return None
+        return ((today or date.today()) - self.apr_as_of).days
+
     def utilization_pct(self):
         """Percent of this line in use, or None when there is no line to measure against.
         None rather than 0 so a card with no limit recorded never reads as a healthy one."""
@@ -1137,6 +1160,8 @@ class Debt(db.Model):
             'id': self.id, 'name': self.name, 'type': self.type, 'lender': self.lender,
             'balance': float(self.balance or 0), 'apr': float(self.apr or 0),
             'balance_as_of': self.balance_as_of.isoformat() if self.balance_as_of else None,
+            'apr_as_of': self.apr_as_of.isoformat() if self.apr_as_of else None,
+            'apr_age_days': self.apr_age_days(),
             'min_payment': float(self.min_payment or 0), 'secured': bool(self.secured),
             'credit_limit': float(self.credit_limit) if self.credit_limit is not None else None,
             'utilization_pct': self.utilization_pct(),

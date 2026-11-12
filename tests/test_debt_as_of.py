@@ -285,6 +285,84 @@ with app.app_context():
         check('but does not drag the as-of date back and re-open the gap',
               x.balance_as_of == date(2026, 6, 20), x.balance_as_of)
 
+print('\n--- A RATE IS ONLY TRUE AS OF A DATE, TOO ---')
+# The roof loan is the case. It was recorded at 11.900% and that was RIGHT when it was
+# entered: the lender's own "interest paid YTD" of $5,441.93, less the known September
+# ($515.49) and October ($496.76) interest, leaves $4,429.68 over the 243 days of the
+# January-August payments -- $18.23/day, which is 11.90% on the balance it carried then
+# and cannot be 10.95% on any balance a $57,000 line can hold. By 2026-11-12 the lender's
+# rate was 10.950%. The number was never wrong; it went stale, and nothing in the app
+# could tell a rate read yesterday from one read in March.
+with app.app_context():
+    c = client_for(UID)
+
+    r = c.post('/api/finance/debts', json={'name': 'Roof', 'type': 'home_improvement',
+                                           'balance': 54941.93, 'apr': 11.9})
+    check('create succeeds', r.status_code == 201, r.status_code)
+    body = r.get_json()
+    rid = body['id']
+    check('a new APR is taken as read today',
+          body.get('apr_as_of') == TODAY.isoformat(), body.get('apr_as_of'))
+    check('to_dict reports apr_as_of', 'apr_as_of' in body, sorted(body))
+    check('and reports its age, which is 0 on the day it was stated',
+          body.get('apr_age_days') == 0, body.get('apr_age_days'))
+
+    r = c.post('/api/finance/debts', json={'name': 'Promo card', 'type': 'credit_card',
+                                           'balance': 1200.0, 'apr': 0})
+    check('a 0% APR is stamped too -- a promo rate has an expiry, it is not a missing value',
+          r.get_json().get('apr_as_of') == TODAY.isoformat(), r.get_json().get('apr_as_of'))
+
+    r = c.post('/api/finance/debts', json={'name': 'Old quote', 'type': 'personal',
+                                           'balance': 900.0, 'apr': 7.25,
+                                           'apr_as_of': '2026-02-01'})
+    check('an explicitly older rate date is honoured on create',
+          r.get_json().get('apr_as_of') == '2026-02-01', r.get_json().get('apr_as_of'))
+
+    x = A.Debt(user_id=UID, name='Never stated', type='other', balance=100.0, apr=6.0)
+    db.session.add(x)
+    db.session.commit()
+    check('an unstamped APR reports age None, not a large number',
+          x.apr_age_days() is None, x.apr_age_days())
+    x.apr_as_of = date(2026, 1, 1)
+    check('and counts real days once it is stated',
+          x.apr_age_days(today=date(2026, 3, 2)) == 60,
+          x.apr_age_days(today=date(2026, 3, 2)))
+
+print('\n--- the two as-of dates move independently ---')
+with app.app_context():
+    c = client_for(UID)
+    y = db.session.get(A.Debt, rid)
+    y.apr_as_of = date(2026, 3, 3)
+    y.balance_as_of = date(2026, 4, 4)
+    db.session.commit()
+
+    r = c.put('/api/finance/debts/%d' % rid, json={'balance': 54000.00})
+    check('CORRECTING THE BALANCE DOES NOT RE-DATE THE APR',
+          r.get_json().get('apr_as_of') == '2026-03-03', r.get_json().get('apr_as_of'))
+    check('though it does re-date the balance',
+          r.get_json().get('balance_as_of') == TODAY.isoformat(),
+          r.get_json().get('balance_as_of'))
+
+    r = c.put('/api/finance/debts/%d' % rid, json={'apr': 11.9})
+    check('re-sending the SAME APR does not re-date it',
+          r.get_json().get('apr_as_of') == '2026-03-03', r.get_json().get('apr_as_of'))
+
+    r = c.put('/api/finance/debts/%d' % rid, json={'apr': 10.95})
+    check('but a CHANGED APR is a fresh reading and restamps',
+          r.get_json().get('apr_as_of') == TODAY.isoformat(), r.get_json().get('apr_as_of'))
+
+    r = c.put('/api/finance/debts/%d' % rid, json={'apr': 9.5, 'apr_as_of': '2026-07-07'})
+    check('an explicit rate date on an edit wins over today',
+          r.get_json().get('apr_as_of') == '2026-07-07', r.get_json().get('apr_as_of'))
+
+    y = db.session.get(A.Debt, rid)
+    y.apr_as_of = date(2026, 3, 3)
+    db.session.commit()
+    r = c.put('/api/finance/debts/%d' % rid, json={'apr': 9.5004})
+    check('a change below the stored precision is not a new reading',
+          r.get_json().get('apr_as_of') == '2026-03-03', r.get_json().get('apr_as_of'))
+
+
 print('\n' + ('=' * 60))
 if fails:
     print('FAILED (%d):' % len(fails))

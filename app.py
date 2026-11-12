@@ -831,6 +831,10 @@ def finance_create_debt():
     # made up to the day it was read. Stamping that day is what stops the payment pass
     # retiring those payments a second time -- see _payment_floor.
     x.balance_as_of = _parse_csv_date((d.get('balance_as_of') or '').strip()) or date.today()
+    # An APR is read off the same statement, so it is current as of the same day unless
+    # the caller says otherwise. Stamped even when the APR is 0, because "0% as of today"
+    # is a real promotional rate with an expiry, not an absent value.
+    x.apr_as_of = _parse_csv_date((d.get('apr_as_of') or '').strip()) or date.today()
     db.session.add(x)
     db.session.commit()
     return jsonify(x.to_dict()), 201
@@ -859,6 +863,7 @@ def finance_modify_debt(did):
         if f in d:
             setattr(x, f, d.get(f) or None)
     before_balance = float(x.balance or 0)
+    before_apr = float(x.apr or 0)
     for f in ('balance', 'apr', 'min_payment', 'escrow_monthly'):
         if f in d:
             setattr(x, f, float(d.get(f) or 0))
@@ -869,6 +874,13 @@ def finance_modify_debt(did):
         x.balance_as_of = _parse_csv_date((d.get('balance_as_of') or '').strip())
     elif 'balance' in d and round(float(x.balance or 0), 2) != round(before_balance, 2):
         x.balance_as_of = date.today()
+    # Same rule for the rate, judged independently: a caller correcting a balance has said
+    # nothing about the APR, and re-dating an untouched rate would launder a stale number
+    # into a fresh-looking one. Only a CHANGED APR restamps.
+    if 'apr_as_of' in d:
+        x.apr_as_of = _parse_csv_date((d.get('apr_as_of') or '').strip())
+    elif 'apr' in d and round(float(x.apr or 0), 3) != round(before_apr, 3):
+        x.apr_as_of = date.today()
     if 'secured' in d:
         x.secured = bool(d.get('secured'))
     if 'credit_limit' in d:
