@@ -140,9 +140,12 @@ class PlaidClient:
         them. Plaid rejects a product listed in both, so the overlap is dropped here
         rather than left for the caller to remember.
 
-        Update mode sends neither list. Plaid requires products to be omitted when
-        repairing a connection, and adding consent to an item that already exists is its
-        own flow -- not something to smuggle into a re-auth.
+        Update mode omits `products` -- Plaid requires that -- but DOES send the consent
+        list, because update mode is Plaid's documented way to add a product to an Item
+        that already exists. That matters for more than tidiness: without it, granting
+        liabilities on six live connections would mean deleting and re-adding all six,
+        re-entering bank credentials each time. The access token survives update mode, so
+        no re-exchange is needed either.
         """
         payload = {
             'user': {'client_user_id': str(user_id)},
@@ -154,9 +157,12 @@ class PlaidClient:
             payload['access_token'] = access_token     # update mode: products must be omitted
         else:
             payload['products'] = list(products)
-            extra = [p for p in (consented or []) if p not in (products or [])]
-            if extra:
-                payload['additional_consented_products'] = extra
+        # Consent rides along either way. In update mode there is no `products` to
+        # overlap with, so the whole list goes.
+        extra = [p for p in (consented or [])
+                 if access_token or p not in (products or [])]
+        if extra:
+            payload['additional_consented_products'] = extra
         if redirect_uri:
             payload['redirect_uri'] = redirect_uri
         if webhook:

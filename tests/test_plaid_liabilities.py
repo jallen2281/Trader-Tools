@@ -422,8 +422,12 @@ check('a product in both lists is dropped from consent -- Plaid rejects the over
 spy = TokenSpy()
 pc.PlaidClient.link_token_create(spy, 1, ['transactions'], access_token='tok',
                                  consented=['liabilities'])
-check('update mode sends neither list -- a re-auth is not a place to add products',
-      'products' not in spy.payload and 'additional_consented_products' not in spy.payload,
+check('update mode omits products, which Plaid requires',
+      'products' not in spy.payload, spy.payload)
+check('BUT STILL ASKS FOR CONSENT -- update mode is how a live Item gains a product, and '
+      'without this, enabling liabilities would mean deleting and re-adding all six '
+      'connections and re-entering the bank credentials each time',
+      spy.payload.get('additional_consented_products') == ['liabilities'],
       spy.payload)
 
 print('\n' + ('=' * 60))
