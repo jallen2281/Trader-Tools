@@ -200,6 +200,13 @@ config:
   # edit does not restart anything by itself; the commit-sha annotation is what does).
   plaidEnv: production
   plaidProducts: "transactions"
+  # Consented-but-not-required products (Plaid additional_consented_products).
+  # These are callable without being required for the link to succeed, so an
+  # institution that offers no liabilities does not fail to connect. Billing starts
+  # when a product is first CALLED, not when it is consented to. Granted once at
+  # link time, which is what makes turning one on later a config change rather than
+  # a re-authentication for every institution.
+  plaidConsentedProducts: "liabilities,investments"
   
   # LLM Provider: ollama or rkllm
   llmProvider: rkllm

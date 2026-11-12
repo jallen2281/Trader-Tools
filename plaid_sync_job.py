@@ -76,15 +76,27 @@ def run_sync(db, user_id=None):
     items = q.all()
 
     out = {'items': len(items), 'added': 0, 'updated': 0, 'removed': 0,
-           'skipped_income': 0, 'synced': 0, 'reauth': [], 'failed': [], 'announced': 0}
+           'skipped_income': 0, 'synced': 0, 'reauth': [], 'failed': [], 'announced': 0,
+           # Paid products. `relink` is NOT a failure: the product is enabled in config
+           # but the institution was connected before it was, so only the user can clear
+           # it by re-authenticating through Link.
+           'liabilities': 0, 'holdings': 0, 'holdings_cash': 0, 'relink': [],
+           'unreported': []}
 
     for item in items:
         name = item.institution_name or 'item:%s' % item.id
         was = item.status
         try:
             r = _plaid_sync_item(item)
-            for k in ('added', 'updated', 'removed', 'skipped_income'):
+            for k in ('added', 'updated', 'removed', 'skipped_income',
+                      'liabilities', 'holdings', 'holdings_cash'):
                 out[k] += r.get(k, 0) or 0
+            for rl in (r.get('relink') or []):
+                out['relink'].append(dict(rl, institution=name))
+            for sym in (r.get('unreported') or []):
+                out['unreported'].append({'institution': name, 'symbol': sym})
+            for ee in (r.get('extra_errors') or []):
+                out['failed'].append(dict(ee, institution=name))
             out['synced'] += 1
             # A sync that worked clears a stale error state, or the item would keep
             # claiming it needs attention after the user has already fixed it.
@@ -92,9 +104,10 @@ def run_sync(db, user_id=None):
                 item.status = 'active'
                 item.last_error = None
             db.session.commit()
-            logger.info('plaid-sync: %s ok added=%s updated=%s removed=%s skipped_income=%s',
+            logger.info('plaid-sync: %s ok added=%s updated=%s removed=%s '
+                        'skipped_income=%s liabilities=%s holdings=%s',
                         name, r.get('added'), r.get('updated'), r.get('removed'),
-                        r.get('skipped_income'))
+                        r.get('skipped_income'), r.get('liabilities'), r.get('holdings'))
         except pc.PlaidError as e:
             db.session.rollback()
             item.status = 'login_required' if e.code == REAUTH_CODE else 'error'

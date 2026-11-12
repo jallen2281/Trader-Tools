@@ -128,12 +128,22 @@ class PlaidClient:
             raise PlaidError(msg, code=data.get('error_code'), status=r.status_code)
         return data
 
-    # ---- the five calls this app actually makes -------------------------------------
+    # ---- the calls this app actually makes -------------------------------------
     def link_token_create(self, user_id, products, redirect_uri=None, webhook=None,
-                          access_token=None):
+                          access_token=None, consented=None):
         """A link_token is short-lived and client-safe; it is what the browser hands to
         Plaid Link. Passing access_token puts Link into update mode to repair a connection
-        that needs re-authentication."""
+        that needs re-authentication.
+
+        `consented` becomes additional_consented_products: things the user agrees we may
+        ask for later, without the link failing at an institution that does not offer
+        them. Plaid rejects a product listed in both, so the overlap is dropped here
+        rather than left for the caller to remember.
+
+        Update mode sends neither list. Plaid requires products to be omitted when
+        repairing a connection, and adding consent to an item that already exists is its
+        own flow -- not something to smuggle into a re-auth.
+        """
         payload = {
             'user': {'client_user_id': str(user_id)},
             'client_name': 'Trader Tools',
@@ -144,6 +154,9 @@ class PlaidClient:
             payload['access_token'] = access_token     # update mode: products must be omitted
         else:
             payload['products'] = list(products)
+            extra = [p for p in (consented or []) if p not in (products or [])]
+            if extra:
+                payload['additional_consented_products'] = extra
         if redirect_uri:
             payload['redirect_uri'] = redirect_uri
         if webhook:
@@ -176,6 +189,27 @@ class PlaidClient:
         return self._post('/item/remove', {'access_token': access_token})
 
 
+    def liabilities_get(self, access_token, account_ids=None):
+        """Issuer-reported terms: APR, minimum payment, next due date, statement balance.
+
+        This is the only Plaid call that knows a rate. /accounts/get returns balances and
+        nothing else, which is why _apply_plaid_balance deliberately left APR to the user
+        -- it had no better source. Liabilities is a better source: it is the issuer's own
+        number rather than an inference, and it carries a date.
+        """
+        payload = {'access_token': access_token}
+        if account_ids:
+            payload['options'] = {'account_ids': list(account_ids)}
+        return self._post('/liabilities/get', payload)
+
+    def investments_holdings_get(self, access_token, account_ids=None):
+        """Positions and prices inside a brokerage or retirement account."""
+        payload = {'access_token': access_token}
+        if account_ids:
+            payload['options'] = {'account_ids': list(account_ids)}
+        return self._post('/investments/holdings/get', payload)
+
+
 # ------------------------------------------------------------------------ normalization
 def category_for(txn):
     """Map a Plaid transaction onto a budget category, or None to skip it.
@@ -204,3 +238,148 @@ def is_income(txn):
     reliable signal, and a refund is a credit that is NOT income."""
     primary = ((txn.get('personal_finance_category') or {}).get('primary') or '').upper()
     return primary in SKIP_PFC
+
+
+# ------------------------------------------------------------- liabilities and holdings
+# Plaid error codes meaning "this item was linked without the product you just asked for".
+# Distinct from a transient failure: retrying never fixes one, the user has to
+# re-authenticate that institution through Link with the product enabled. Worth telling
+# apart, because a sync that reports "failed" for a condition only the user can clear
+# teaches people to ignore the word.
+NEEDS_RELINK_CODES = {
+    'PRODUCTS_NOT_SUPPORTED', 'PRODUCT_NOT_ENABLED', 'PRODUCT_NOT_READY',
+    'NO_LIABILITY_ACCOUNTS', 'NO_INVESTMENT_ACCOUNTS', 'INVALID_PRODUCT',
+}
+
+
+def apr_for_card(credit):
+    """The rate a card is ACTUALLY being charged, out of the list Plaid returns.
+
+    A card does not have one APR. Plaid returns a list -- purchase_apr, cash_apr,
+    balance_transfer_apr, and any number of `special` promotional rates -- each with the
+    slice of the balance it applies to. Taking the first entry, or always taking
+    purchase_apr, is wrong in the case that matters most: a card parked on a 0% balance
+    transfer would be recorded at its 24% purchase rate and every payoff plan built on it
+    would be fiction, while a card whose promo has just expired would be recorded at 0%.
+
+    So prefer whichever rate the largest part of the balance is actually subject to --
+    that is where the money is accruing. Only when nothing reports a balance does it fall
+    back to purchase_apr, and then to anything carrying a number.
+
+    Returns (percentage, apr_type), or (None, None) when the issuer gave no rate at all.
+    None rather than 0.0: a card with no rate reported is unknown, not interest-free.
+    """
+    aprs = [a for a in (credit.get('aprs') or []) if a.get('apr_percentage') is not None]
+    if not aprs:
+        return None, None
+    charged = [a for a in aprs if (a.get('balance_subject_to_apr') or 0) > 0]
+    if charged:
+        best = max(charged, key=lambda a: float(a.get('balance_subject_to_apr') or 0))
+        return float(best['apr_percentage']), (best.get('apr_type') or None)
+    for a in aprs:
+        if (a.get('apr_type') or '') == 'purchase_apr':
+            return float(a['apr_percentage']), 'purchase_apr'
+    return float(aprs[0]['apr_percentage']), (aprs[0].get('apr_type') or None)
+
+
+def liability_terms(entry, kind):
+    """Normalize one credit / mortgage / student entry into a single shape.
+
+    Plaid names the same idea differently per product -- a mortgage's rate is
+    interest_rate.percentage, a student loan's is interest_rate_percentage, a card's is an
+    entire list -- and the caller should not have to know which kind it is holding.
+
+    Every value may be absent, and absent stays absent: None is never turned into 0,
+    because a zeroed minimum payment or a zeroed rate reads as fact downstream.
+    """
+    def num(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    out = {'account_id': entry.get('account_id'), 'kind': kind, 'apr': None,
+           'apr_type': None, 'min_payment': None, 'next_due': None,
+           'last_payment_amount': num(entry.get('last_payment_amount')),
+           'last_payment_date': entry.get('last_payment_date') or None,
+           'last_statement_balance': None, 'maturity_date': None,
+           'origination_date': None, 'ytd_interest_paid': None}
+
+    if kind == 'credit':
+        out['apr'], out['apr_type'] = apr_for_card(entry)
+        out['min_payment'] = num(entry.get('minimum_payment_amount'))
+        out['last_statement_balance'] = num(entry.get('last_statement_balance'))
+    elif kind == 'mortgage':
+        rate = entry.get('interest_rate') or {}
+        out['apr'] = num(rate.get('percentage'))
+        out['apr_type'] = (rate.get('type') or None)
+        # next_monthly_payment is the scheduled payment, which for a mortgage IS the
+        # minimum. There is no separate minimum field on this product.
+        out['min_payment'] = num(entry.get('next_monthly_payment'))
+        out['maturity_date'] = entry.get('maturity_date') or None
+        out['origination_date'] = entry.get('origination_date') or None
+        out['ytd_interest_paid'] = num(entry.get('ytd_interest_paid'))
+    elif kind == 'student':
+        out['apr'] = num(entry.get('interest_rate_percentage'))
+        out['min_payment'] = num(entry.get('minimum_payment_amount'))
+        out['origination_date'] = entry.get('origination_date') or None
+        out['ytd_interest_paid'] = num(entry.get('ytd_interest_paid'))
+    out['next_due'] = entry.get('next_payment_due_date') or None
+    return out
+
+
+def liability_rows(payload):
+    """Every liability in a /liabilities/get response, normalized and flattened."""
+    out = []
+    liabs = (payload or {}).get('liabilities') or {}
+    for kind in ('credit', 'mortgage', 'student'):
+        for entry in (liabs.get(kind) or []):
+            if entry.get('account_id'):
+                out.append(liability_terms(entry, kind))
+    return out
+
+
+def holdings_rows(payload):
+    """Positions from /investments/holdings/get, joined to their security.
+
+    Returns (rows, cash_by_account). Cash equivalents are split out rather than returned
+    as positions: a money-market sweep is the account's cash, and recording it as a
+    holding with a $1.00 price would put a fake ticker in the portfolio and double-count
+    it against the account's own cash balance.
+
+    Plaid's `cost_basis` is the TOTAL cost of the holding, not a per-share price, so the
+    average cost is derived -- guarded, because a zero quantity would otherwise divide.
+    """
+    payload = payload or {}
+    secs = {s.get('security_id'): s for s in (payload.get('securities') or [])}
+    rows, cash = [], {}
+    for h in (payload.get('holdings') or []):
+        sec = secs.get(h.get('security_id')) or {}
+        aid = h.get('account_id')
+        qty = float(h.get('quantity') or 0)
+        price = h.get('institution_price')
+        value = h.get('institution_value')
+        if sec.get('is_cash_equivalent'):
+            # Value, not quantity: a sweep fund's quantity is shares, and only
+            # institution_value is reliably dollars.
+            amt = float(value) if value is not None else qty
+            cash[aid] = round(cash.get(aid, 0.0) + amt, 2)
+            continue
+        symbol = (sec.get('ticker_symbol') or '').strip().upper()
+        if not symbol or qty == 0:
+            # No ticker means an instrument the portfolio cannot key on (a private fund,
+            # an option with no symbol). Skipped rather than invented.
+            continue
+        basis = h.get('cost_basis')
+        rows.append({
+            'account_id': aid,
+            'symbol': symbol,
+            'name': (sec.get('name') or '').strip() or None,
+            'quantity': qty,
+            'price': float(price) if price is not None else None,
+            'price_as_of': h.get('institution_price_as_of') or None,
+            'value': float(value) if value is not None else None,
+            'average_cost': round(float(basis) / qty, 4) if basis and qty else None,
+            'security_type': (sec.get('type') or None),
+        })
+    return rows, cash

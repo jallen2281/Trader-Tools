@@ -60,6 +60,20 @@ class Config:
     # PLAID_OPTIONAL_PRODUCTS instead — adding a product to `products` after the fact forces
     # every connected user back through Link to re-authorize.
     PLAID_PRODUCTS = [p.strip() for p in os.getenv('PLAID_PRODUCTS', 'transactions').split(',') if p.strip()]
+    # Products the user consents to at Link time but which the link does not REQUIRE.
+    # This is the mechanism the comment above is pointing at. A product listed in
+    # PLAID_PRODUCTS must be available at the institution or the whole connection fails,
+    # so putting 'investments' there would break linking a credit card; a consented
+    # product can simply be called later, and Plaid bills only once it is called.
+    #
+    # Keeping these separate is what makes enabling a product a config change rather than
+    # a re-authentication: consent is granted once, at link time, for everything we might
+    # ever ask for.
+    PLAID_CONSENTED_PRODUCTS = [p.strip() for p in os.getenv(
+        'PLAID_CONSENTED_PRODUCTS', 'liabilities,investments').split(',') if p.strip()]
+    # What the app may actually call. Consent is what grants the right, so the union is
+    # the honest answer -- not PLAID_PRODUCTS alone.
+    PLAID_CALLABLE_PRODUCTS = list(dict.fromkeys(PLAID_PRODUCTS + PLAID_CONSENTED_PRODUCTS))
 
     # Flask settings
     FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))

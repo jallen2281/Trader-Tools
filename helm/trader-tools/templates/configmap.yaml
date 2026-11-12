@@ -59,6 +59,7 @@ data:
   # Plaid (non-sensitive; client id, secret and encryption key live in the secret)
   PLAID_ENV: {{ .Values.config.plaidEnv | quote }}
   PLAID_PRODUCTS: {{ .Values.config.plaidProducts | quote }}
+  PLAID_CONSENTED_PRODUCTS: {{ .Values.config.plaidConsentedProducts | quote }}
 
   # Database (non-sensitive)
   SQL_DEBUG: "False"

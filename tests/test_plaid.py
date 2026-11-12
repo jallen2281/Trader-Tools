@@ -51,8 +51,10 @@ class FakePlaid:
     def available(self):
         return True
 
-    def link_token_create(self, uid, products, redirect_uri=None, webhook=None, access_token=None):
+    def link_token_create(self, uid, products, redirect_uri=None, webhook=None,
+                          access_token=None, consented=None):
         self.calls.append(('link_token_create', access_token))
+        self.last_consented = list(consented or [])
         return {'link_token': 'link-sandbox-tok', 'expiration': '2026-09-05T00:00:00Z'}
 
     def exchange_public_token(self, public_token):
@@ -79,6 +81,19 @@ class FakePlaid:
     def item_remove(self, token):
         self.calls.append(('item_remove', token))
         return {'removed': True}
+
+    # The paid products. Empty payloads: this file is about tokens and transactions, and
+    # test_plaid_liabilities.py is where their content is exercised. They exist here at
+    # all because _plaid_sync_item now calls them whenever the config says they are
+    # consented to, and a fake that silently lacks a method the real client has turns a
+    # contract change into a confusing failure somewhere else.
+    def liabilities_get(self, token, account_ids=None):
+        self.calls.append(('liabilities_get', token))
+        return {'liabilities': {}}
+
+    def investments_holdings_get(self, token, account_ids=None):
+        self.calls.append(('investments_holdings_get', token))
+        return {'holdings': [], 'securities': []}
 
 
 FakePlaid.accounts = [
@@ -142,6 +157,9 @@ check('no key -> 503, before the user touches Link', r.status_code == 503, r.sta
 check('explains why', 'PLAID_ENCRYPTION_KEY' in (r.get_json() or {}).get('error', ''))
 os.environ['PLAID_ENCRYPTION_KEY'] = saved
 r = admin.post('/api/plaid/link-token', json={})
+check('the endpoint asks for the consented products too, so enabling one later is a '
+      'config change rather than six re-authentications',
+      FAKE.last_consented == A.Config.PLAID_CONSENTED_PRODUCTS, FAKE.last_consented)
 check('key restored -> 200 with a link_token', r.status_code == 200 and r.get_json().get('link_token'),
       (r.status_code, r.get_json()))
 

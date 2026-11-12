@@ -2723,7 +2723,9 @@ def plaid_link_token():
             return jsonify({'error': 'Not found'}), 404
         access_token = pc.decrypt_token(item.access_token_enc)
     try:
-        out = _plaid().link_token_create(uid, Config.PLAID_PRODUCTS, access_token=access_token)
+        out = _plaid().link_token_create(
+            uid, Config.PLAID_PRODUCTS, access_token=access_token,
+            consented=Config.PLAID_CONSENTED_PRODUCTS)
     except pc.PlaidError as e:
         return jsonify({'error': str(e), 'code': e.code}), 502
     return jsonify({'link_token': out.get('link_token'), 'expiration': out.get('expiration')})
@@ -4214,6 +4216,192 @@ def _suggest_link(pa, debts, accounts):
     return tied[0].id, top
 
 
+def _plaid_product_enabled(name):
+    """Whether PLAID_PRODUCTS asks for this product.
+
+    Checked before the call rather than after the error, because every product is billed
+    per item per month and an item linked without one answers with an error anyway. The
+    config is the single place that decides what this install pays for.
+    """
+    return name in (getattr(Config, 'PLAID_CALLABLE_PRODUCTS', None)
+                    or getattr(Config, 'PLAID_PRODUCTS', None) or [])
+
+
+# Plaid's security.type -> this app's asset_type vocabulary ('stock' is the fallback,
+# matching the rest of app.py).
+_PLAID_SEC_TYPE = {
+    'equity': 'stock', 'etf': 'etf', 'mutual fund': 'etf', 'fixed income': 'stock',
+    'cryptocurrency': 'crypto', 'derivative': 'option',
+}
+
+
+def _sync_plaid_liabilities(item, client=None, token=None):
+    """Pull issuer-reported APR, minimum payment and due date onto the linked debts.
+
+    _apply_plaid_balance deliberately leaves APR alone, and that was right while
+    /accounts/get was the only source: it returns balances and no rate at all, so any APR
+    the app held was the user's and guessing at it would have been worse than nothing.
+    /liabilities/get is a different kind of source -- the issuer's own number.
+
+    Note what this does with an UNCHANGED rate. A bank confirming today that the rate is
+    still 24.490% is a fresh reading, so apr_as_of advances even though apr does not. That
+    is the opposite of the API rule, where re-sending the same value deliberately does NOT
+    restamp -- a person re-saving a form has not checked anything, whereas the issuer has
+    just told us. The roof loan is why the distinction earns its keep: 11.900% was correct
+    when it was entered and silently wrong months later, and nothing could see the
+    difference between a rate read yesterday and one read in March.
+
+    Returns a count of debts touched. Raises PlaidError for the caller to classify.
+    """
+    import plaid_client as pc
+    client = client or _plaid()
+    token = token or pc.decrypt_token(item.access_token_enc)
+    today = date.today()
+    touched = 0
+    for row in pc.liability_rows(client.liabilities_get(token)):
+        pa = PlaidAccount.query.filter_by(user_id=item.user_id,
+                                          account_id=row['account_id']).first()
+        if not pa or not pa.linked_debt_id:
+            continue
+        d = Debt.query.filter_by(id=pa.linked_debt_id, user_id=item.user_id).first()
+        if not d:
+            continue
+        changed = False
+        if row['apr'] is not None:
+            if round(float(d.apr or 0), 3) != round(row['apr'], 3):
+                logger.info('plaid: %s APR %.3f -> %.3f (%s)', d.name,
+                            float(d.apr or 0), row['apr'], row['apr_type'] or 'unspecified')
+                d.apr = row['apr']
+                changed = True
+            # Confirmed as well as corrected: the date moves either way.
+            d.apr_as_of = today
+            changed = True
+        if row['min_payment'] is not None and float(d.min_payment or 0) != row['min_payment']:
+            d.min_payment = row['min_payment']
+            changed = True
+        if changed:
+            touched += 1
+        # The issuer's due date beats the app's rolling guess. Only a future date is
+        # taken: a past one is the LAST due date under another name, and writing it would
+        # make RecurringBill._anchor roll it forward into the same date it already had.
+        due = _parse_csv_date(row['next_due'] or '')
+        if due and due >= today:
+            for b in RecurringBill.query.filter_by(user_id=item.user_id,
+                                                   linked_debt_id=d.id).all():
+                b.next_due_date = due
+    return touched
+
+
+def _sync_plaid_holdings(item, client=None, token=None):
+    """Pull positions onto the portfolio accounts the user has linked.
+
+    UPSERT ONLY -- nothing is ever deleted here, and that is deliberate. A Portfolio row
+    carries the user's own tags (intent, ipo_lock_until, take_profit_pct, stop_loss_pct)
+    which Plaid knows nothing about, so a position Plaid stops reporting is reported as a
+    discrepancy rather than removed. A partial response from a flaky institution must not
+    be able to delete someone's trading plan.
+
+    Only `account_id`-linked portfolios are touched. An unlinked portfolio (a 401k tracked
+    by hand as one lump) is left entirely alone.
+
+    Returns (positions_written, cash_accounts_written, unreported_symbols).
+    """
+    import plaid_client as pc
+    client = client or _plaid()
+    token = token or pc.decrypt_token(item.access_token_enc)
+    rows, cash = pc.holdings_rows(client.investments_holdings_get(token))
+
+    # Plaid account_id -> the portfolio the user linked it to.
+    linked = {a.account_id: a.linked_portfolio_id for a in
+              PlaidAccount.query.filter_by(user_id=item.user_id).all()
+              if a.linked_portfolio_id}
+
+    wrote = 0
+    seen = {}
+    for r in rows:
+        pid = linked.get(r['account_id'])
+        if not pid:
+            continue
+        seen.setdefault(pid, set()).add(r['symbol'])
+        h = Portfolio.query.filter_by(user_id=item.user_id, account_id=pid,
+                                      symbol=r['symbol']).first()
+        if h is None:
+            h = Portfolio(user_id=item.user_id, account_id=pid, symbol=r['symbol'],
+                          asset_type=_PLAID_SEC_TYPE.get((r['security_type'] or '').lower(),
+                                                         'stock'))
+            db.session.add(h)
+        h.quantity = r['quantity']
+        if r['price'] is not None:
+            h.current_price = r['price']
+        # Cost basis only when the app has none. A holding bought across several lots has
+        # a basis the user may have entered more precisely than the custodian reports it,
+        # and overwriting that would quietly restate every gain figure on the page.
+        if r['average_cost'] is not None and not h.average_cost:
+            h.average_cost = r['average_cost']
+        h.last_updated = datetime.utcnow()
+        wrote += 1
+
+    cash_wrote = 0
+    for aid, amount in cash.items():
+        pid = linked.get(aid)
+        if not pid:
+            continue
+        acct = PortfolioAccount.query.filter_by(id=pid, user_id=item.user_id).first()
+        if acct:
+            acct.cash_balance = amount
+            cash_wrote += 1
+
+    # Positions the app holds that this sync did not report back.
+    unreported = []
+    for pid, symbols in seen.items():
+        for h in Portfolio.query.filter_by(user_id=item.user_id, account_id=pid).all():
+            if h.symbol not in symbols:
+                unreported.append(h.symbol)
+    return wrote, cash_wrote, unreported
+
+
+def _pull_plaid_extras(item, client, token):
+    """Liabilities and holdings, each optional and neither allowed to break the sync.
+
+    A product that was not enabled when the institution was linked answers with a
+    permanent error -- retrying never clears it, only re-authenticating through Link
+    does. That is reported as `relink`, separately from a real failure, because a sync
+    that cries "failed" at a condition the user alone can fix teaches people to ignore
+    the word.
+    """
+    import plaid_client as pc
+    out = {'liabilities': 0, 'holdings': 0, 'holdings_cash': 0,
+           'unreported': [], 'relink': [], 'extra_errors': []}
+    jobs = []
+    if _plaid_product_enabled('liabilities'):
+        jobs.append(('liabilities', _sync_plaid_liabilities))
+    if _plaid_product_enabled('investments'):
+        jobs.append(('investments', _sync_plaid_holdings))
+    for name, fn in jobs:
+        try:
+            r = fn(item, client=client, token=token)
+        except pc.PlaidError as e:
+            if e.code in pc.NEEDS_RELINK_CODES:
+                out['relink'].append({'product': name, 'code': e.code})
+                logger.info('plaid: item %s has no %s product (%s) -- needs re-link',
+                            item.id, name, e.code)
+            else:
+                out['extra_errors'].append({'product': name, 'code': e.code,
+                                            'error': str(e)[:200]})
+                logger.warning('plaid: %s failed for item %s: %s', name, item.id, e)
+            continue
+        except Exception as e:                      # noqa: BLE001
+            out['extra_errors'].append({'product': name, 'error': '%s: %s' % (type(e).__name__, e)})
+            logger.error('plaid: %s failed unexpectedly for item %s', name, item.id,
+                         exc_info=True)
+            continue
+        if name == 'liabilities':
+            out['liabilities'] = r
+        else:
+            out['holdings'], out['holdings_cash'], out['unreported'] = r
+    return out
+
+
 def _plaid_sync_item(item, client=None, backfill=False):
     """Pull everything new for one item into the spending ledger.
 
@@ -4242,6 +4430,9 @@ def _plaid_sync_item(item, client=None, backfill=False):
     except Exception as e:
         logger.warning('plaid: account fetch failed for item %s: %s', item.id, e)
         accounts_seen = 0
+    # Terms and positions, where the products are paid for. After the accounts, because
+    # both key off PlaidAccount links that the refresh above may have just created.
+    extras = _pull_plaid_extras(item, client, token)
     # account_id -> type, so a deposit can be told apart from a card payment as it arrives.
     acct_types = {a.account_id: (a.type or '') for a in
                   PlaidAccount.query.filter_by(user_id=item.user_id).all()}
@@ -4387,6 +4578,7 @@ def _plaid_sync_item(item, client=None, backfill=False):
     db.session.commit()
     out = {'accounts': accounts_seen, 'added': added, 'updated': updated,
            'removed': removed, 'skipped_income': skipped}
+    out.update(extras)
     if backfill:
         out['backfill'] = True
         out['unchanged'] = unchanged
