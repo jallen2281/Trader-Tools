@@ -445,6 +445,10 @@ check('update-mode link token passes the access_token through',
 print('\n--- disconnect ---')
 with app.app_context():
     before = A.SpendTransaction.query.filter_by(user_id=2).count()
+with app.app_context():
+    n_accts = A.PlaidAccount.query.filter_by(item_id=ITEM_ID).count()
+check('the item being disconnected actually HAS accounts, or the next check proves nothing',
+      n_accts > 0, n_accts)
 r = admin.delete('/api/plaid/items/%d' % ITEM_ID)
 res = r.get_json()
 check('disconnect -> 200', r.status_code == 200, (r.status_code, res))
@@ -453,6 +457,14 @@ check('item/remove was actually called with the token',
       any(c[0] == 'item_remove' and c[1] == SECRET_TOKEN for c in FAKE.calls))
 with app.app_context():
     check('stored token row is gone', db.session.get(A.PlaidItem, ITEM_ID) is None)
+    # PlaidAccount.item_id is a NOT NULL foreign key and PlaidItem declared no cascade,
+    # so on Postgres this raised ForeignKeyViolation on plaid_accounts_item_id_fkey and
+    # NO institution holding an account could be disconnected at all. This suite passed
+    # for months regardless, because SQLite does not enforce foreign keys unless it is
+    # asked to -- the bug lived in the gap between the test database and the real one.
+    check('AND ITS ACCOUNTS GO WITH IT',
+          A.PlaidAccount.query.filter_by(item_id=ITEM_ID).count() == 0,
+          A.PlaidAccount.query.filter_by(item_id=ITEM_ID).count())
     check('spending history kept by default',
           A.SpendTransaction.query.filter_by(user_id=2).count() == before, before)
 

@@ -2286,6 +2286,18 @@ class PlaidItem(db.Model):
     # metadata against 6,221 with it, so it is refreshed freely.
     institution_products = db.Column(JSON)
     institution_products_at = db.Column(db.DateTime)
+    # Deleting a connection has to take its accounts with it. PlaidAccount.item_id is a
+    # NOT NULL foreign key with no cascade, so `db.session.delete(item)` raised
+    # ForeignKeyViolation on plaid_accounts_item_id_fkey -- which meant NO institution
+    # holding any account could ever be disconnected. Latent since the feature was
+    # written, and only found when a duplicate SoFi connection needed removing.
+    #
+    # An account has no meaning apart from its connection, so delete-orphan is the honest
+    # relationship. Imported transactions are deliberately NOT swept up: they are the
+    # user's spending history and plaid_account_id is a plain string, not a foreign key,
+    # so they survive the disconnect exactly as plaid_disconnect promises.
+    accounts = db.relationship('PlaidAccount', lazy=True, cascade='all, delete-orphan',
+                               passive_deletes=False)
     access_token_enc = db.Column(db.LargeBinary, nullable=False)        # Fernet ciphertext
     cursor = db.Column(db.Text)                                         # transactions/sync
     status = db.Column(db.String(30), default='active')  # active | login_required | error
