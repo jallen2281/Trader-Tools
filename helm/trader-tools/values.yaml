@@ -207,6 +207,10 @@ config:
   # link time, which is what makes turning one on later a config change rather than
   # a re-authentication for every institution.
   plaidConsentedProducts: "liabilities,investments"
+  # Enrich is billed per TRANSACTION ($2.00/1000), not per item per month. Off by
+  # default: the dry run that reports the backlog and what clearing it would cost
+  # works without this and calls Plaid not at all.
+  plaidEnrichEnabled: "false"
   
   # LLM Provider: ollama or rkllm
   llmProvider: rkllm

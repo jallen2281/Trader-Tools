@@ -183,6 +183,17 @@ class PlaidClient:
             payload['cursor'] = cursor
         return self._post('/transactions/sync', payload)
 
+    def transactions_enrich(self, transactions, account_type='depository'):
+        """Merchant and category for transactions Plaid did NOT supply.
+
+        This is the one call billed per transaction ($2.00/1000), and unlike every other
+        endpoint here it takes no access_token: it enriches text the app already holds, so
+        it is for CSV imports and hand-entered rows. Running it over rows that arrived
+        through /transactions/sync would be paying for a category they already carry.
+        """
+        return self._post('/transactions/enrich',
+                          {'account_type': account_type, 'transactions': list(transactions)})
+
     def item_remove(self, access_token):
         """Invalidates the access_token at Plaid. Called on disconnect so the credential is
         dead on their side too, not merely deleted on ours."""
@@ -211,14 +222,14 @@ class PlaidClient:
 
 
 # ------------------------------------------------------------------------ normalization
-def category_for(txn):
-    """Map a Plaid transaction onto a budget category, or None to skip it.
+def budget_for_pfc(primary, detailed=None):
+    """One personal_finance_category -> one budget category, or None to skip it.
 
-    Plaid's own personal_finance_category is better than keyword matching on the merchant
-    name, so it wins when present; the caller falls back to _guess_spend_category otherwise.
+    Split out from category_for because /transactions/enrich returns the same taxonomy in
+    a different envelope, and the RENT_AND_UTILITIES rule below is far too easy to get
+    subtly wrong twice.
     """
-    pfc = (txn.get('personal_finance_category') or {})
-    primary = (pfc.get('primary') or '').upper()
+    primary = (primary or '').upper()
     if primary in SKIP_PFC:
         return None
     if primary == 'RENT_AND_UTILITIES':
@@ -226,10 +237,20 @@ def category_for(txn):
         # RENT_AND_UTILITIES_GAS_AND_ELECTRICITY. Substring-matching 'RENT' therefore hits
         # the prefix on EVERY value in this group and would file the electric bill as
         # housing — compare the suffix, not the whole string.
-        detailed = (pfc.get('detailed') or '').upper()
+        detailed = (detailed or '').upper()
         suffix = detailed[len('RENT_AND_UTILITIES_'):] if detailed.startswith('RENT_AND_UTILITIES_') else detailed
         return 'housing' if suffix in ('RENT', 'MORTGAGE') else 'utilities'
     return PFC_TO_BUDGET.get(primary)
+
+
+def category_for(txn):
+    """Map a Plaid transaction onto a budget category, or None to skip it.
+
+    Plaid's own personal_finance_category is better than keyword matching on the merchant
+    name, so it wins when present; the caller falls back to _guess_spend_category otherwise.
+    """
+    pfc = (txn.get('personal_finance_category') or {})
+    return budget_for_pfc(pfc.get('primary'), pfc.get('detailed'))
 
 
 def is_income(txn):
@@ -383,3 +404,65 @@ def holdings_rows(payload):
             'security_type': (sec.get('type') or None),
         })
     return rows, cash
+
+
+# ------------------------------------------------------------------------------- enrich
+# Plaid's per-request ceiling for /transactions/enrich.
+ENRICH_BATCH = 100
+# $2.00 per thousand transactions. The only per-item charge this app makes, so it is the
+# only one where the number of rows is the number of dollars -- hence a price constant
+# that the caller can quote BEFORE spending anything.
+ENRICH_COST_PER_TXN = 0.002
+
+
+def enrich_cost(n):
+    """What enriching n transactions costs, rounded up to the cent."""
+    import math
+    return math.ceil(n * ENRICH_COST_PER_TXN * 100) / 100.0
+
+
+def enrich_request(rows, account_type='depository'):
+    """Build the /transactions/enrich payload from (id, description, amount) rows.
+
+    Plaid wants a positive amount plus an explicit direction, while this app stores one
+    signed number (positive when money leaves). Converting here rather than at the call
+    site keeps the sign convention in the one file that already documents it.
+
+    `account_type` applies to the whole request, which is why the caller groups rows by
+    it instead of passing a mixed list.
+    """
+    txns = []
+    for r in rows:
+        amount = float(r.get('amount') or 0)
+        txns.append({
+            'id': str(r['id']),
+            'description': (r.get('description') or '')[:500],
+            'amount': round(abs(amount), 2),
+            'direction': 'OUTFLOW' if amount >= 0 else 'INFLOW',
+            'iso_currency_code': r.get('currency') or 'USD',
+        })
+    return {'account_type': account_type, 'transactions': txns}
+
+
+def enrichment_rows(payload):
+    """id -> {category, merchant, pfc_primary, pfc_detailed, website}.
+
+    Only entries Plaid actually resolved to a category come back. A row it could not
+    place is absent rather than present-and-empty, so the caller writes nothing for it
+    instead of overwriting a real category with a blank.
+    """
+    out = {}
+    for e in ((payload or {}).get('enriched_transactions') or []):
+        enr = e.get('enrichments') or {}
+        pfc = enr.get('personal_finance_category') or {}
+        cat = budget_for_pfc(pfc.get('primary'), pfc.get('detailed'))
+        if not cat:
+            continue
+        out[str(e.get('id'))] = {
+            'category': cat,
+            'merchant': (enr.get('merchant_name') or None),
+            'pfc_primary': (pfc.get('primary') or None),
+            'pfc_detailed': (pfc.get('detailed') or None),
+            'website': (enr.get('website') or None),
+        }
+    return out

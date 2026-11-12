@@ -74,6 +74,11 @@ class Config:
     # What the app may actually call. Consent is what grants the right, so the union is
     # the honest answer -- not PLAID_PRODUCTS alone.
     PLAID_CALLABLE_PRODUCTS = list(dict.fromkeys(PLAID_PRODUCTS + PLAID_CONSENTED_PRODUCTS))
+    # Enrich is billed per TRANSACTION ($2.00/1000), not per item per month, so it is the
+    # one Plaid call where a loop over the ledger is an invoice. Off unless asked for;
+    # the dry run that reports what it would cost works either way and calls nothing.
+    PLAID_ENRICH_ENABLED = os.getenv('PLAID_ENRICH_ENABLED', 'false').strip().lower() in (
+        '1', 'true', 'yes', 'on')
 
     # Flask settings
     FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))

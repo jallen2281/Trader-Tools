@@ -4216,6 +4216,141 @@ def _suggest_link(pa, debts, accounts):
     return tied[0].id, top
 
 
+# The most rows one request may touch. Enrich is the only Plaid call billed per
+# transaction, so the row count IS the bill: at $2.00/1000 this caps a single call at
+# $1.00. A cap rather than a warning, because the failure mode is a loop over a ledger
+# that quietly spends real money.
+ENRICH_HARD_CAP = 500
+ENRICH_DEFAULT_LIMIT = 100
+
+
+def _enrich_account_type(txn, accounts):
+    """Plaid wants 'depository' or 'credit' for the whole request.
+
+    Everything this app imports by CSV or types in by hand comes off a bank account --
+    card spending arrives through /transactions/sync and is excluded from enrichment
+    anyway, because it already carries a category we have paid for once. So depository is
+    the answer unless an account says otherwise, and the lookup exists so that stays true
+    if it ever stops being true.
+    """
+    a = accounts.get(txn.account_id)
+    return 'credit' if (a and (a.type or '').lower() in ('credit', 'credit_card')) else 'depository'
+
+
+def _enrich_candidates(user_id, limit):
+    """Rows worth paying to classify: unfiled, and not already carrying a Plaid category.
+
+    source == 'plaid' is excluded on purpose. Those rows arrived with a
+    personal_finance_category included in the per-item subscription, and enriching them
+    would be buying the same answer a second time.
+
+    Only 'other' and blank are candidates. A row filed anywhere else is somebody's
+    decision -- possibly a hand correction -- and this is not the place to overrule it.
+    """
+    q = SpendTransaction.query.filter(
+        SpendTransaction.user_id == user_id,
+        db.or_(SpendTransaction.source.is_(None), SpendTransaction.source != 'plaid'),
+        db.or_(SpendTransaction.category.is_(None),
+               SpendTransaction.category == '',
+               SpendTransaction.category == 'other'))
+    return q.order_by(SpendTransaction.posted_at.desc()).limit(limit).all()
+
+
+@app.route('/api/finance/spend/enrich', methods=['POST'])
+@require_api_auth
+def finance_enrich_spend():
+    """Classify unfiled CSV / manual rows through Plaid's enrich endpoint.
+
+    DRY RUN BY DEFAULT, and the dry run never calls Plaid, so asking what this would cost
+    is free. `apply: true` is what spends money, and only when PLAID_ENRICH_ENABLED is
+    set -- two separate gates, because this is the one endpoint in the app where a loop
+    and a typo produce an invoice.
+
+    The response always names the price before and after. Returns the per-row diff rather
+    than a count: a bulk recategorisation nobody can inspect is how you lose track of
+    which figures moved and why.
+    """
+    import plaid_client as pc
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    d = request.get_json(silent=True) or {}
+    # `or` would turn an explicit 0 into the default, which on an endpoint that spends
+    # money means a caller asking for nothing gets charged for a hundred rows. A limit
+    # the caller actually supplied is never raised -- only clamped down.
+    raw = d.get('limit')
+    if raw is None or raw == '':
+        limit = ENRICH_DEFAULT_LIMIT
+    else:
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'limit must be a number'}), 400
+    limit = max(1, min(limit, ENRICH_HARD_CAP))
+    rows = _enrich_candidates(uid, limit)
+    cost = pc.enrich_cost(len(rows))
+
+    if not d.get('apply'):
+        return jsonify({
+            'dry_run': True, 'candidates': len(rows), 'limit': limit,
+            'hard_cap': ENRICH_HARD_CAP, 'estimated_cost': cost,
+            'rate': '$%.2f per 1000 transactions' % (pc.ENRICH_COST_PER_TXN * 1000),
+            'enabled': bool(getattr(Config, 'PLAID_ENRICH_ENABLED', False)),
+            'sample': [{'id': t.id, 'posted_at': t.posted_at.isoformat() if t.posted_at else None,
+                        'description': t.description, 'amount': float(t.amount or 0),
+                        'category': t.category} for t in rows[:10]],
+        })
+
+    if not getattr(Config, 'PLAID_ENRICH_ENABLED', False):
+        return jsonify({'error': 'Enrichment is billed per transaction and is turned off. '
+                                 'Set PLAID_ENRICH_ENABLED=true to allow it.',
+                        'candidates': len(rows), 'estimated_cost': cost}), 403
+    if not rows:
+        return jsonify({'applied': 0, 'spent': 0.0, 'changes': []})
+
+    accounts = {a.id: a for a in FinanceAccount.query.filter_by(user_id=uid).all()}
+    groups = {}
+    for t in rows:
+        groups.setdefault(_enrich_account_type(t, accounts), []).append(t)
+
+    client = _plaid()
+    changes, billed = [], 0
+    for account_type, batch_rows in groups.items():
+        for i in range(0, len(batch_rows), pc.ENRICH_BATCH):
+            chunk = batch_rows[i:i + pc.ENRICH_BATCH]
+            payload = pc.enrich_request(
+                [{'id': t.id, 'description': t.description, 'amount': float(t.amount or 0)}
+                 for t in chunk], account_type=account_type)
+            try:
+                got = pc.enrichment_rows(client.transactions_enrich(
+                    payload['transactions'], account_type=account_type))
+            except pc.PlaidError as e:
+                # Stop rather than press on: every further chunk is more money for the
+                # same failure, and what has already been applied is committed below.
+                logger.warning('enrich: stopped after %d rows: %s', billed, e)
+                db.session.commit()
+                return jsonify({'applied': len(changes), 'spent': pc.enrich_cost(billed),
+                                'changes': changes, 'error': str(e), 'code': e.code}), 502
+            billed += len(chunk)
+            for t in chunk:
+                hit = got.get(str(t.id))
+                if not hit or hit['category'] == t.category:
+                    continue
+                changes.append({'id': t.id, 'description': t.description,
+                                'amount': float(t.amount or 0),
+                                'from': t.category, 'to': hit['category'],
+                                'merchant': hit['merchant'],
+                                'pfc': hit['pfc_detailed'] or hit['pfc_primary']})
+                t.category = hit['category']
+                # Only when empty. A merchant the user typed is better than a guess.
+                if hit['merchant'] and not (t.merchant or '').strip():
+                    t.merchant = hit['merchant'][:120]
+    db.session.commit()
+    return jsonify({'applied': len(changes), 'billed_rows': billed,
+                    'spent': pc.enrich_cost(billed), 'unresolved': billed - len(changes),
+                    'changes': changes})
+
+
 def _plaid_product_enabled(name):
     """Whether PLAID_PRODUCTS asks for this product.
 

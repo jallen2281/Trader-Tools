@@ -60,6 +60,7 @@ data:
   PLAID_ENV: {{ .Values.config.plaidEnv | quote }}
   PLAID_PRODUCTS: {{ .Values.config.plaidProducts | quote }}
   PLAID_CONSENTED_PRODUCTS: {{ .Values.config.plaidConsentedProducts | quote }}
+  PLAID_ENRICH_ENABLED: {{ .Values.config.plaidEnrichEnabled | quote }}
 
   # Database (non-sensitive)
   SQL_DEBUG: "False"
