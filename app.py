@@ -2747,11 +2747,16 @@ def plaid_exchange():
         ex = client.exchange_public_token(public_token)
         access_token = ex['access_token']
         item_id = ex['item_id']
-        inst_id, inst_name = None, None
+        inst_id, inst_name, inst_products = None, None, None
         try:
             inst_id = ((client.item_get(access_token) or {}).get('item') or {}).get('institution_id')
             if inst_id:
-                inst_name = ((client.institution_get(inst_id) or {}).get('institution') or {}).get('name')
+                inst = (client.institution_get(inst_id) or {}).get('institution') or {}
+                inst_name = inst.get('name')
+                # Capabilities cached at connect time, so the first sync already knows
+                # not to ask Kraken for liabilities. See PlaidItem.institution_products.
+                if isinstance(inst.get('products'), list):
+                    inst_products = inst['products']
         except pc.PlaidError:
             pass          # naming the institution is cosmetic; never fail the connect over it
     except pc.PlaidError as e:
@@ -2766,6 +2771,9 @@ def plaid_exchange():
     item.access_token_enc = pc.encrypt_token(access_token)
     item.institution_id = inst_id
     item.institution_name = inst_name
+    if inst_products is not None:
+        item.institution_products = inst_products
+        item.institution_products_at = datetime.utcnow()
     item.status = 'active'
     item.last_error = None
     db.session.commit()
@@ -4495,38 +4503,114 @@ def _sync_plaid_holdings(item, client=None, token=None):
     return wrote, cash_wrote, unreported
 
 
-def _pull_plaid_extras(item, client, token):
-    """Liabilities and holdings, each optional and neither allowed to break the sync.
+# How stale a cached capability list may get before it is re-read. Institutions do gain
+# products, and a cached False would otherwise keep the app from ever asking again.
+INSTITUTION_PRODUCTS_TTL_DAYS = 30
 
-    A product that was not enabled when the institution was linked answers with a
-    permanent error -- retrying never clears it, only re-authenticating through Link
-    does. That is reported as `relink`, separately from a real failure, because a sync
-    that cries "failed" at a condition the user alone can fix teaches people to ignore
-    the word.
+
+def _refresh_institution_products(item, client=None, force=False):
+    """Cache what the institution offers, from the directory.
+
+    Unbilled: /institutions/get_by_id is metadata, creates no Item and fetches no
+    transaction, and comes back in 338 bytes when the optional logo blob is left alone.
+    Cheap enough to re-read monthly, which matters because institutions gain products and
+    a capability cached as absent must not become permanent.
+
+    Never raises. A directory lookup failing is not a reason to abandon a sync; the
+    capability simply stays unknown, and unknown means "try the product anyway".
+    """
+    if not item.institution_id:
+        return None
+    fresh = (item.institution_products_at and not force and
+             (datetime.utcnow() - item.institution_products_at).days
+             < INSTITUTION_PRODUCTS_TTL_DAYS)
+    if item.institution_products and fresh:
+        return item.institution_products
+    try:
+        client = client or _plaid()
+        inst = (client.institution_get(item.institution_id) or {}).get('institution') or {}
+        prods = inst.get('products')
+        if isinstance(prods, list):
+            item.institution_products = prods
+            item.institution_products_at = datetime.utcnow()
+            if inst.get('name') and not item.institution_name:
+                item.institution_name = inst['name'][:160]
+    except Exception as e:                          # noqa: BLE001
+        logger.info('plaid: institution lookup failed for item %s (%s): %s',
+                    item.id, item.institution_id, e)
+    return item.institution_products
+
+
+def _pull_plaid_extras(item, client, token):
+    """Liabilities and holdings: optional, and never allowed to break the sync.
+
+    The whole point of this function is that a failure gets reported as the RIGHT kind of
+    failure, because three quite different things arrive wearing one error code:
+
+      unsupported  the institution does not offer it, or this Item holds no accounts of
+                   that kind. Kraken offers investments and no liabilities. Nothing the
+                   user does will change that, so saying "needs attention" every six
+                   hours would train them to ignore the word -- and then they would
+                   ignore it on the day it meant something.
+      consent      the user has not authorised the scope. Theirs to fix, through update
+                   mode, and the only one of the three worth surfacing.
+      retry        Plaid is still preparing the data. The next run gets it.
+
+    PRODUCTS_NOT_SUPPORTED covers the first two by itself, which is why the institution's
+    capability list is consulted to separate them -- Plaid's own documented advice.
+
+    A product the institution is KNOWN not to offer is never called at all. That is the
+    difference between a clean skip and an error to be explained away.
     """
     import plaid_client as pc
-    out = {'liabilities': 0, 'holdings': 0, 'holdings_cash': 0,
-           'unreported': [], 'relink': [], 'extra_errors': []}
+    out = {'liabilities': 0, 'holdings': 0, 'holdings_cash': 0, 'unreported': [],
+           'unsupported': [], 'consent': [], 'retry': [], 'extra_errors': [],
+           # Kept so older callers and dashboards do not break; it now means strictly
+           # "the user can fix this", which is what `relink` always claimed to mean.
+           'relink': []}
     jobs = []
     if _plaid_product_enabled('liabilities'):
         jobs.append(('liabilities', _sync_plaid_liabilities))
     if _plaid_product_enabled('investments'):
         jobs.append(('investments', _sync_plaid_holdings))
+    if not jobs:
+        return out
+
+    _refresh_institution_products(item, client=client)
     for name, fn in jobs:
+        supports = item.supports(name)
+        if supports is False:
+            out['unsupported'].append({'product': name, 'code': None,
+                                       'reason': 'the institution does not offer it'})
+            logger.debug('plaid: item %s skipping %s -- institution does not offer it',
+                         item.id, name)
+            continue
         try:
             r = fn(item, client=client, token=token)
         except pc.PlaidError as e:
-            if e.code in pc.NEEDS_RELINK_CODES:
-                out['relink'].append({'product': name, 'code': e.code})
-                logger.info('plaid: item %s has no %s product (%s) -- needs re-link',
+            kind = pc.classify_product_error(e.code, supports)
+            entry = {'product': name, 'code': e.code}
+            if kind == 'consent':
+                entry['reason'] = 'the connection was authorised without this product'
+                out['consent'].append(entry)
+                out['relink'].append(entry)
+                logger.info('plaid: item %s needs consent for %s (%s)',
                             item.id, name, e.code)
+            elif kind == 'unsupported':
+                entry['reason'] = 'not available on this connection'
+                out['unsupported'].append(entry)
+                logger.debug('plaid: item %s has no %s (%s)', item.id, name, e.code)
+            elif kind == 'retry':
+                out['retry'].append(entry)
+                logger.info('plaid: item %s %s not ready yet (%s)', item.id, name, e.code)
             else:
-                out['extra_errors'].append({'product': name, 'code': e.code,
-                                            'error': str(e)[:200]})
+                entry['error'] = str(e)[:200]
+                out['extra_errors'].append(entry)
                 logger.warning('plaid: %s failed for item %s: %s', name, item.id, e)
             continue
         except Exception as e:                      # noqa: BLE001
-            out['extra_errors'].append({'product': name, 'error': '%s: %s' % (type(e).__name__, e)})
+            out['extra_errors'].append({'product': name,
+                                        'error': '%s: %s' % (type(e).__name__, e)})
             logger.error('plaid: %s failed unexpectedly for item %s', name, item.id,
                          exc_info=True)
             continue

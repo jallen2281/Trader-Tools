@@ -268,15 +268,52 @@ def is_income(txn):
 
 
 # ------------------------------------------------------------- liabilities and holdings
-# Plaid error codes meaning "this item was linked without the product you just asked for".
-# Distinct from a transient failure: retrying never fixes one, the user has to
-# re-authenticate that institution through Link with the product enabled. Worth telling
-# apart, because a sync that reports "failed" for a condition only the user can clear
-# teaches people to ignore the word.
-NEEDS_RELINK_CODES = {
-    'PRODUCTS_NOT_SUPPORTED', 'PRODUCT_NOT_ENABLED', 'PRODUCT_NOT_READY',
-    'NO_LIABILITY_ACCOUNTS', 'NO_INVESTMENT_ACCOUNTS', 'INVALID_PRODUCT',
-}
+# What a failed product call means. Three different things wear one error code between
+# them, and only one of the three is something the user can act on.
+#
+#   PRODUCTS_NOT_SUPPORTED is returned BOTH when the institution genuinely cannot do it
+#   and when the Item was linked without asking for it. Plaid's own guidance is to
+#   consult /institutions/get_by_id to tell those apart, which is why
+#   classify_product_error takes the institution's capability list.
+#   https://plaid.com/docs/errors/item/
+#
+# The sets below hold only codes with documented meanings. An unrecognised code falls
+# through to 'error' rather than being guessed at.
+
+# The institution cannot, or this Item holds no accounts of the kind. Re-authenticating
+# changes nothing, so reporting it as "needs attention" every six hours is how a real
+# signal turns into noise people learn to scroll past.
+UNSUPPORTED_CODES = {'NO_LIABILITY_ACCOUNTS', 'NO_INVESTMENT_ACCOUNTS'}
+
+# The user has not consented to this data scope. Fixable, by them, through update mode.
+CONSENT_CODES = {'ADDITIONAL_CONSENT_REQUIRED'}
+
+# Plaid has not finished preparing the data. Transient: the next scheduled run gets it,
+# and announcing it would be crying wolf at a job that is still running.
+RETRY_CODES = {'PRODUCT_NOT_READY'}
+
+
+def classify_product_error(code, institution_supports=None):
+    """Turn a PlaidError code into what should be DONE about it.
+
+    `institution_supports` is True / False / None straight from the institution
+    directory, and it is the only thing that disambiguates PRODUCTS_NOT_SUPPORTED. When
+    the institution does offer the product, that error means the Item was linked without
+    it -- the user's to fix. When it does not, nothing will ever fix it. With no
+    capability list cached the honest answer is the unactionable one, because telling
+    someone to re-authenticate six institutions on a maybe is worse than saying nothing.
+
+    Returns one of 'unsupported', 'consent', 'retry', 'error'.
+    """
+    if code in CONSENT_CODES:
+        return 'consent'
+    if code in RETRY_CODES:
+        return 'retry'
+    if code in UNSUPPORTED_CODES:
+        return 'unsupported'
+    if code == 'PRODUCTS_NOT_SUPPORTED':
+        return 'consent' if institution_supports is True else 'unsupported'
+    return 'error'
 
 
 def apr_for_card(credit):

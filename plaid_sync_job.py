@@ -80,8 +80,13 @@ def run_sync(db, user_id=None):
            # Paid products. `relink` is NOT a failure: the product is enabled in config
            # but the institution was connected before it was, so only the user can clear
            # it by re-authenticating through Link.
+           # Paid products. `consent` is the only one the user can act on: `unsupported`
+           # means the institution cannot do it and never will, and `retry` means Plaid
+           # is still preparing data. Keeping them apart is the whole point -- a run that
+           # reports Kraken as needing attention every six hours, forever, for a product
+           # Kraken does not offer, teaches you to stop reading the field.
            'liabilities': 0, 'holdings': 0, 'holdings_cash': 0, 'relink': [],
-           'unreported': []}
+           'consent': [], 'unsupported': [], 'retry': [], 'unreported': []}
 
     for item in items:
         name = item.institution_name or 'item:%s' % item.id
@@ -91,6 +96,9 @@ def run_sync(db, user_id=None):
             for k in ('added', 'updated', 'removed', 'skipped_income',
                       'liabilities', 'holdings', 'holdings_cash'):
                 out[k] += r.get(k, 0) or 0
+            for key in ('consent', 'unsupported', 'retry'):
+                for e in (r.get(key) or []):
+                    out[key].append(dict(e, institution=name))
             for rl in (r.get('relink') or []):
                 out['relink'].append(dict(rl, institution=name))
             for sym in (r.get('unreported') or []):

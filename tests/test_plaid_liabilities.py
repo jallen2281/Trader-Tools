@@ -150,11 +150,21 @@ check('and a zero-quantity line never divides by zero', len(hrows) == 1, hrows)
 class FakeClient:
     """Stands in for PlaidClient. `raises` lets a product fail on demand."""
 
-    def __init__(self, liabilities=None, holdings=None, raises=None):
+    def __init__(self, liabilities=None, holdings=None, raises=None, products=None):
         self._liabilities = liabilities or {}
         self._holdings = holdings or {}
         self.raises = raises or {}
         self.calls = []
+        self.institution_calls = 0
+        self._products = products if products is not None else ['transactions',
+                                                                'liabilities']
+
+    def institution_get(self, institution_id):
+        self.institution_calls += 1
+        if 'institution' in self.raises:
+            raise self.raises['institution']
+        return {'institution': {'institution_id': institution_id, 'name': 'Test Bank',
+                                'products': list(self._products)}}
 
     def liabilities_get(self, token, account_ids=None):
         self.calls.append('liabilities')
@@ -343,32 +353,161 @@ with app.app_context():
           float(lump.average_cost) == 140504.51 and float(lump.quantity) == 1.0,
           (lump.quantity, lump.average_cost))
 
-print('\n--- a product that was never consented to is not a failure ---')
+print('\n--- THREE THINGS WEAR ONE ERROR CODE, AND ONLY ONE IS ACTIONABLE ---')
+# PRODUCTS_NOT_SUPPORTED is returned both when the institution genuinely cannot do
+# something and when the Item was linked without asking for it. The institution's own
+# capability list is the only thing that separates them, which is Plaid's documented
+# advice: https://plaid.com/docs/errors/item/
+check('an unauthorised scope is the user\'s to fix',
+      pc.classify_product_error('ADDITIONAL_CONSENT_REQUIRED') == 'consent')
+check('data still being prepared is transient, NOT a re-link',
+      pc.classify_product_error('PRODUCT_NOT_READY') == 'retry')
+check('an Item with no accounts of the kind is unsupported, not broken',
+      pc.classify_product_error('NO_LIABILITY_ACCOUNTS') == 'unsupported')
+check('PRODUCTS_NOT_SUPPORTED where the institution DOES offer it -> consent',
+      pc.classify_product_error('PRODUCTS_NOT_SUPPORTED', True) == 'consent')
+check('PRODUCTS_NOT_SUPPORTED where the institution does NOT -> unsupported',
+      pc.classify_product_error('PRODUCTS_NOT_SUPPORTED', False) == 'unsupported')
+check('and with no capability cached it stays unactionable -- telling someone to '
+      're-authenticate six banks on a maybe is worse than saying nothing',
+      pc.classify_product_error('PRODUCTS_NOT_SUPPORTED', None) == 'unsupported')
+check('an unrecognised code is never guessed at',
+      pc.classify_product_error('INSTITUTION_DOWN', True) == 'error')
+
+print('\n--- an unknown capability means "try it", never "skip it" ---')
 with app.app_context():
-    item = db.session.get(A.PlaidItem, 1)
+    it = db.session.get(A.PlaidItem, 1)
+    it.institution_products = None
+    check('no list cached -> None, which is not False',
+          it.supports('liabilities') is None, it.supports('liabilities'))
+    it.institution_products = []
+    check('an empty list is also unknown, not a denial',
+          it.supports('liabilities') is None, it.supports('liabilities'))
+    it.institution_products = ['transactions', 'liabilities']
+    check('a cached list answers True', it.supports('liabilities') is True)
+    check('and answers False for what is absent',
+          it.supports('investments') is False, it.supports('investments'))
+    db.session.commit()
+
+print('\n--- THE KRAKEN CASE: what the institution cannot do is never asked for ---')
+# Kraken offers investments and no liabilities. Before this, the sync asked anyway, got
+# PRODUCTS_NOT_SUPPORTED, and reported Kraken as needing re-authentication -- every six
+# hours, forever, for something no amount of re-authenticating would ever fix.
+with app.app_context():
+    it = db.session.get(A.PlaidItem, 1)
+    it.institution_products = ['transactions', 'investments', 'balance']
+    it.institution_products_at = A.datetime.utcnow()
+    db.session.commit()
+    fc = FakeClient(liabilities=LIABS, holdings=HOLD)
+    out = A._pull_plaid_extras(it, fc, 'tok')
+    check('LIABILITIES WAS NOT CALLED AT ALL', 'liabilities' not in fc.calls, fc.calls)
+    check('it is reported as unsupported', [e['product'] for e in out['unsupported']]
+          == ['liabilities'], out['unsupported'])
+    check('with a reason a human can read',
+          'does not offer' in out['unsupported'][0]['reason'], out['unsupported'])
+    check('NOTHING IS REPORTED AS NEEDING THE USER',
+          out['consent'] == [] and out['relink'] == [], (out['consent'], out['relink']))
+    check('not as an error either', out['extra_errors'] == [], out['extra_errors'])
+    check('and the product it DOES offer still ran', out['holdings'] == 2, out)
+
+print('\n--- but where the institution offers it, the same error means consent ---')
+with app.app_context():
+    it = db.session.get(A.PlaidItem, 1)
+    it.institution_products = ['transactions', 'liabilities', 'investments']
+    it.institution_products_at = A.datetime.utcnow()
+    db.session.commit()
     fc = FakeClient(liabilities=LIABS, holdings=HOLD, raises={
-        'liabilities': pc.PlaidError('no liabilities', code='PRODUCTS_NOT_SUPPORTED')})
-    out = A._pull_plaid_extras(item, fc, 'tok')
-    check('it is reported as needing a re-link',
-          out['relink'] == [{'product': 'liabilities', 'code': 'PRODUCTS_NOT_SUPPORTED'}],
-          out['relink'])
-    check('NOT as an error', out['extra_errors'] == [], out['extra_errors'])
-    check('and the other product still ran', out['holdings'] == 2, out)
+        'liabilities': pc.PlaidError('not supported', code='PRODUCTS_NOT_SUPPORTED')})
+    out = A._pull_plaid_extras(it, fc, 'tok')
+    check('it WAS called, because the institution can do it',
+          'liabilities' in fc.calls, fc.calls)
+    check('and now it is the user\'s to fix',
+          [e['product'] for e in out['consent']] == ['liabilities'], out['consent'])
+    check('relink still carries it, for anything reading the old field',
+          [e['product'] for e in out['relink']] == ['liabilities'], out['relink'])
+    check('and it is not filed as unsupported',
+          out['unsupported'] == [], out['unsupported'])
+
+print('\n--- the documented consent code, which was missing entirely before ---')
+with app.app_context():
+    it = db.session.get(A.PlaidItem, 1)
+    fc = FakeClient(liabilities=LIABS, holdings=HOLD, raises={
+        'liabilities': pc.PlaidError('consent', code='ADDITIONAL_CONSENT_REQUIRED')})
+    out = A._pull_plaid_extras(it, fc, 'tok')
+    check('ADDITIONAL_CONSENT_REQUIRED reaches the user',
+          [e['code'] for e in out['consent']] == ['ADDITIONAL_CONSENT_REQUIRED'],
+          out['consent'])
+    check('and is not mistaken for an outage', out['extra_errors'] == [], out['extra_errors'])
+
+print('\n--- data not ready yet is nobody\'s problem ---')
+with app.app_context():
+    it = db.session.get(A.PlaidItem, 1)
+    fc = FakeClient(liabilities=LIABS, holdings=HOLD, raises={
+        'liabilities': pc.PlaidError('not ready', code='PRODUCT_NOT_READY')})
+    out = A._pull_plaid_extras(it, fc, 'tok')
+    check('it is a retry', [e['code'] for e in out['retry']] == ['PRODUCT_NOT_READY'],
+          out['retry'])
+    check('not a consent problem', out['consent'] == [] and out['relink'] == [], out)
+    check('not an error', out['extra_errors'] == [], out['extra_errors'])
+
+print('\n--- caching the capability list ---')
+with app.app_context():
+    it = db.session.get(A.PlaidItem, 1)
+    it.institution_products = None
+    it.institution_products_at = None
+    it.institution_id = 'ins_test'
+    db.session.commit()
+    fc = FakeClient(liabilities=LIABS, holdings=HOLD)
+    A._refresh_institution_products(it, client=fc)
+    check('an empty cache is filled from the directory',
+          it.institution_products == ['transactions', 'liabilities'],
+          it.institution_products)
+    check('and stamped', it.institution_products_at is not None)
+    before = fc.institution_calls
+    A._refresh_institution_products(it, client=fc)
+    check('a fresh cache is not re-fetched', fc.institution_calls == before,
+          (before, fc.institution_calls))
+    it.institution_products_at = A.datetime.utcnow() - A.timedelta(
+        days=A.INSTITUTION_PRODUCTS_TTL_DAYS + 1)
+    db.session.commit()
+    A._refresh_institution_products(it, client=fc)
+    check('a stale one IS -- an institution that gains a product must not be locked out '
+          'by a cached denial', fc.institution_calls == before + 1,
+          (before, fc.institution_calls))
+
+    fc_bad = FakeClient(raises={'institution': RuntimeError('directory down')})
+    it.institution_products = ['transactions']
+    A._refresh_institution_products(it, client=fc_bad, force=True)
+    check('a directory outage never raises and never wipes what was cached',
+          it.institution_products == ['transactions'], it.institution_products)
+
+    it.institution_id = None
+    check('and an item with no institution id is simply skipped',
+          A._refresh_institution_products(it, client=fc_bad) is None)
+    it.institution_id = 'ins_test'
+    it.institution_products = ['transactions', 'liabilities', 'investments']
+    it.institution_products_at = A.datetime.utcnow()
+    db.session.commit()
+
 
 print('\n--- a real outage IS an error, and still does not stop the sync ---')
 with app.app_context():
-    item = db.session.get(A.PlaidItem, 1)
+    it = db.session.get(A.PlaidItem, 1)
     fc = FakeClient(liabilities=LIABS, holdings=HOLD, raises={
         'investments': pc.PlaidError('upstream down', code='INSTITUTION_DOWN')})
-    out = A._pull_plaid_extras(item, fc, 'tok')
-    check('it is recorded as an error', len(out['extra_errors']) == 1, out['extra_errors'])
+    out = A._pull_plaid_extras(it, fc, 'tok')
+    check('an unrecognised code lands in errors, not quietly in unsupported',
+          len(out['extra_errors']) == 1, out['extra_errors'])
     check('it names the product', out['extra_errors'][0]['product'] == 'investments')
+    check('it is not passed off as the user\'s problem',
+          out['consent'] == [] and out['unsupported'] == [], out)
     check('and liabilities still ran', out['liabilities'] == 1, out)
 
     fc = FakeClient(raises={'liabilities': ValueError('something unforeseen')})
-    out = A._pull_plaid_extras(item, fc, 'tok')
-    check('an unexpected exception is caught too -- extras never break a sync',
-          len(out['extra_errors']) == 1, out['extra_errors'])
+    out = A._pull_plaid_extras(it, fc, 'tok')
+    check('an exception that is not a PlaidError is caught too -- extras never break '
+          'a sync', len(out['extra_errors']) == 1, out['extra_errors'])
+
 
 print('\n--- nothing is called unless it is paid for ---')
 with app.app_context():

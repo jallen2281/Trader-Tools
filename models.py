@@ -2272,6 +2272,20 @@ class PlaidItem(db.Model):
     item_id = db.Column(db.String(80), nullable=False, index=True)      # Plaid's item id
     institution_id = db.Column(db.String(60))
     institution_name = db.Column(db.String(160))
+    # What the INSTITUTION offers, from /institutions/get_by_id. Cached because it answers
+    # a question no error message can: Plaid returns PRODUCTS_NOT_SUPPORTED both when an
+    # institution genuinely cannot do something and when the Item was simply linked
+    # without asking for it, and only the second is fixable by the user. Plaid's own
+    # guidance is to consult the institution directory to tell them apart.
+    #
+    # Without it, Kraken -- which offers investments but no liabilities -- would be
+    # reported as "needs re-authentication" for liabilities every six hours forever, a
+    # signal that can never clear. That is how a warning becomes noise.
+    #
+    # It is a directory lookup, not a billed product, and 338 bytes without the optional
+    # metadata against 6,221 with it, so it is refreshed freely.
+    institution_products = db.Column(JSON)
+    institution_products_at = db.Column(db.DateTime)
     access_token_enc = db.Column(db.LargeBinary, nullable=False)        # Fernet ciphertext
     cursor = db.Column(db.Text)                                         # transactions/sync
     status = db.Column(db.String(30), default='active')  # active | login_required | error
@@ -2281,6 +2295,19 @@ class PlaidItem(db.Model):
 
     __table_args__ = (db.UniqueConstraint('user_id', 'item_id', name='uq_plaid_user_item'),)
 
+    def supports(self, product):
+        """Does the institution offer this product? True, False, or None for unknown.
+
+        None is a real answer and not a convenience. An Item linked before this column
+        existed carries no capability list, and treating that as False would silently
+        stop asking for data the institution may well have. Unknown means "try it and
+        find out", which is the only one of the three that cannot lose data.
+        """
+        prods = self.institution_products
+        if not prods:
+            return None
+        return product in prods
+
     def to_dict(self):
         """Metadata only — the access token never leaves the server in any form."""
         return {
@@ -2289,6 +2316,7 @@ class PlaidItem(db.Model):
             'institution_name': self.institution_name or 'Connected account',
             'status': self.status, 'last_error': self.last_error,
             'has_cursor': bool(self.cursor),
+            'institution_products': list(self.institution_products or []),
             'last_synced_at': self.last_synced_at.isoformat() if self.last_synced_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
