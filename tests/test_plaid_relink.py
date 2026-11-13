@@ -66,6 +66,7 @@ class Fake:
         self.institution_id = 'ins_sofi'
         self.accounts = []
         self.removed = []
+        self.txns = []
 
     def available(self):
         return True
@@ -84,8 +85,8 @@ class Fake:
         return {'accounts': self.accounts}
 
     def transactions_sync(self, t, cursor=None, count=500):
-        return {'added': [], 'modified': [], 'removed': [], 'next_cursor': 'c',
-                'has_more': False}
+        return {'added': list(self.txns), 'modified': [], 'removed': [],
+                'next_cursor': 'c', 'has_more': False}
 
     def item_remove(self, t):
         self.removed.append(t)
@@ -239,6 +240,73 @@ with app.app_context():
           float(db.session.get(A.FinanceAccount, 2).balance) == 500.0,
           db.session.get(A.FinanceAccount, 2).balance)
     new_id = new.id
+
+print('\n--- THE FIRST REPLAY OF AN ADOPTED CONNECTION DOES NOT RE-IMPORT ITS HISTORY ---')
+# Plaid's transaction ids are per Item, so the replacement delivers the same three rows
+# under ids the ledger has never seen; external_id dedupe recognises none of them. In
+# production that was 47 spend rows and 31 deposits, $99,516 of phantom activity. The
+# gate is a DATE watermark per account, deliberately not an amount match: a row dated
+# after everything held must still arrive, and so must a different amount on the
+# boundary day. Only a same-day exact amount is taken as already held.
+
+
+def txn(tid, acct, name, amount, day, income=False):
+    t = {'transaction_id': tid, 'account_id': acct, 'name': name, 'merchant_name': name,
+         'amount': amount, 'date': day, 'pending': False}
+    if income:
+        t['personal_finance_category'] = {'primary': 'INCOME', 'detailed': 'INCOME_WAGES'}
+    return t
+
+
+FAKE.txns = [
+    txn('new-1', 'C-chk', 'COFFEE', 4.5, '2026-10-01'),                  # held: before the watermark
+    txn('new-2', 'C-chk', 'PAY', -1000.0, '2026-10-02', income=True),    # held: ON it, same amount
+    txn('new-3', 'C-sav', 'MUDFLAP', 174.7, '2026-10-09'),               # held: on it
+    txn('new-4', 'C-chk', 'NETFLIX', 26.99, '2026-10-20'),               # NEW: after the watermark
+    txn('new-5', 'C-sav', 'DTE', 52.10, '2026-10-09'),                   # NEW: boundary day, other amount
+]
+with app.app_context():
+    it = db.session.get(A.PlaidItem, new_id)
+    check('the replacement is marked as having adopted', it.adopted_at is not None)
+    check('and says so to the UI', bool(it.to_dict().get('adopted_at')), it.to_dict())
+r = admin.post('/api/plaid/items/%d/sync' % new_id)
+body = r.get_json() or {}
+check('200', r.status_code == 200, (r.status_code, body))
+check('ONLY THE TWO GENUINELY NEW ROWS ARE ADDED', body.get('added') == 2, body)
+check('the three already held are reported as such, not silently dropped',
+      body.get('already_held') == 3, body)
+with app.app_context():
+    rows = A.SpendTransaction.query.filter_by(user_id=UID).order_by(A.SpendTransaction.id).all()
+    check('four spend rows, not seven', len(rows) == 4,
+          [(t.description, float(t.amount)) for t in rows])
+    check('THE PAYCHECK WAS NOT RECORDED A SECOND TIME',
+          A.PlaidDeposit.query.filter_by(user_id=UID).count() == 1,
+          A.PlaidDeposit.query.filter_by(user_id=UID).count())
+    check('the row dated after the watermark landed', any(t.description == 'NETFLIX' for t in rows))
+    check('the boundary-day row with a different amount landed too',
+          any(t.description == 'DTE' for t in rows))
+    check('and the hand-categorisation on the held rows is untouched',
+          {t.category for t in rows if t.description in ('COFFEE', 'MUDFLAP')}
+          == {'food', 'transportation'}, [(t.description, t.category) for t in rows])
+r = admin.get('/api/plaid/duplicates')
+check('so the duplicate report has nothing to say', r.get_json().get('count') == 0, r.get_json())
+
+print('\n--- a backfill of an adopted connection is gated the same way ---')
+with app.app_context():
+    out = A._plaid_sync_item(db.session.get(A.PlaidItem, new_id), backfill=True)
+    check('nothing added', out.get('added') == 0, out)
+    check('all five count as held -- the two it added now sit on the watermark day',
+          out.get('already_held') == 5, out)
+    check('still four rows', A.SpendTransaction.query.filter_by(user_id=UID).count() == 4)
+
+print('\n--- an ordinary incremental sync is NOT gated: the cursor has moved on ---')
+FAKE.txns = [txn('new-6', 'C-chk', 'GRANGER', 31.0, '2026-10-25')]
+r = admin.post('/api/plaid/items/%d/sync' % new_id)
+body = r.get_json() or {}
+check('the new row is added', body.get('added') == 1, body)
+check('and nothing is reported as held, because nothing old was delivered',
+      'already_held' not in body, body)
+FAKE.txns = []
 
 print('\n--- a mask it cannot place is reported, never guessed ---')
 with app.app_context():

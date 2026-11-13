@@ -76,7 +76,7 @@ def run_sync(db, user_id=None):
     items = q.all()
 
     out = {'items': len(items), 'added': 0, 'updated': 0, 'removed': 0,
-           'skipped_income': 0, 'synced': 0, 'reauth': [], 'failed': [], 'announced': 0,
+           'skipped_income': 0, 'already_held': 0, 'synced': 0, 'reauth': [], 'failed': [], 'announced': 0,
            # Paid products. `relink` is NOT a failure: the product is enabled in config
            # but the institution was connected before it was, so only the user can clear
            # it by re-authenticating through Link.
@@ -93,7 +93,7 @@ def run_sync(db, user_id=None):
         was = item.status
         try:
             r = _plaid_sync_item(item)
-            for k in ('added', 'updated', 'removed', 'skipped_income',
+            for k in ('added', 'updated', 'removed', 'skipped_income', 'already_held',
                       'liabilities', 'holdings', 'holdings_cash'):
                 out[k] += r.get(k, 0) or 0
             for key in ('consent', 'unsupported', 'retry'):
@@ -113,9 +113,10 @@ def run_sync(db, user_id=None):
                 item.last_error = item.last_error_code = None
             db.session.commit()
             logger.info('plaid-sync: %s ok added=%s updated=%s removed=%s '
-                        'skipped_income=%s liabilities=%s holdings=%s',
+                        'skipped_income=%s already_held=%s liabilities=%s holdings=%s',
                         name, r.get('added'), r.get('updated'), r.get('removed'),
-                        r.get('skipped_income'), r.get('liabilities'), r.get('holdings'))
+                        r.get('skipped_income'), r.get('already_held', 0),
+                        r.get('liabilities'), r.get('holdings'))
         except pc.PlaidError as e:
             db.session.rollback()
             _record_item_error(item, e)

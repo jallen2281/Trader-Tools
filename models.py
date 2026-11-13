@@ -2308,6 +2308,12 @@ class PlaidItem(db.Model):
     # offered no way to fix it. That is how a healthy connection came to be re-linked from
     # scratch -- the only button on offer was "+ Connect a bank".
     last_error_code = db.Column(db.String(60))
+    # Set when this connection replaced a dead one and took over its records. Plaid's
+    # transaction ids are per Item, so the replacement's first full replay delivers the
+    # whole history again under ids the ledger has never seen -- 47 rows and 31 deposits
+    # the first time it happened. _plaid_sync_item uses this to know that history dated
+    # before what the account already holds is not new.
+    adopted_at = db.Column(db.DateTime)
     last_synced_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -2358,6 +2364,7 @@ class PlaidItem(db.Model):
             'last_error_code': self.last_error_code,
             'recovery': self.recovery(),
             'has_cursor': bool(self.cursor),
+            'adopted_at': self.adopted_at.isoformat() if self.adopted_at else None,
             'institution_products': list(self.institution_products or []),
             'last_synced_at': self.last_synced_at.isoformat() if self.last_synced_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,

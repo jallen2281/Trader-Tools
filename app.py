@@ -4519,6 +4519,10 @@ def _adopt_plaid_item(new_item, old_item, client=None, token=None):
             user_id=uid, plaid_account_id=o.account_id).update(
             {'plaid_account_id': a.account_id}, synchronize_session=False)
 
+    # Mark the replacement. Its first full replay will be handed this same history again
+    # under fresh transaction ids, and only this flag lets the sync know that rows dated
+    # before what the account already holds are not new -- see _plaid_sync_item.
+    new_item.adopted_at = datetime.utcnow()
     # The replaced connection goes, with its accounts. Its token is already dead -- that
     # is why there is a replacement -- so /item/remove would only fail.
     db.session.delete(old_item)
@@ -4835,6 +4839,17 @@ def _plaid_sync_item(item, client=None, backfill=False):
     are. A replay would otherwise rewrite the category on every transaction ever imported,
     including any the user recategorized by hand, which is a silent way to destroy work the
     person did. The point of the replay is the rows that are MISSING.
+
+    A connection that ADOPTED a dead one (PlaidItem.adopted_at) is the other case where a
+    full replay must not re-import. Plaid's transaction ids are per Item, so external_id
+    cannot recognise a single one of the adopted rows, and the first sync re-imported five
+    months of history: 47 spend rows and 31 deposits, $99,516 of phantom activity. On a
+    replay of an adopted item, anything dated before the newest row the account already
+    holds is treated as held. That is a DATE watermark, deliberately not an amount match:
+    it cannot collapse two genuine charges for the same sum, and a paycheck that landed
+    after the old connection died is newer than the watermark and so still arrives. Only
+    on the boundary day itself does an exact amount decide, which bounds any slip to one
+    day in either direction and leaves it to /api/plaid/duplicates to report.
     """
     import plaid_client as pc
     client = client or _plaid()
@@ -4855,6 +4870,21 @@ def _plaid_sync_item(item, client=None, backfill=False):
                   PlaidAccount.query.filter_by(user_id=item.user_id).all()}
     unchanged = attributed = 0
     cursor = None if backfill else item.cursor
+    # account_id -> (newest posted date already held, {abs amounts on that day}). Only on
+    # a full replay of an adopted item; an incremental sync delivers nothing old.
+    held, already_held = {}, 0
+    if cursor is None and item.adopted_at:
+        own = [a.account_id for a in PlaidAccount.query.filter_by(item_id=item.id).all()]
+        for model in (SpendTransaction, PlaidDeposit):
+            for r in model.query.filter(model.user_id == item.user_id,
+                                        model.plaid_account_id.in_(own or ['-']),
+                                        model.posted_at.isnot(None)).all():
+                amt = round(abs(float(r.amount or 0)), 2)
+                d, amts = held.get(r.plaid_account_id, (None, None))
+                if d is None or r.posted_at > d:
+                    held[r.plaid_account_id] = (r.posted_at, {amt})
+                elif r.posted_at == d:
+                    amts.add(amt)
     # A full replay reaches back much further than an incremental sync, so it needs a bigger
     # ceiling. Whether the ceiling was actually hit is reported, because silently stopping
     # half way through a backfill would look identical to one that finished.
@@ -4865,6 +4895,14 @@ def _plaid_sync_item(item, client=None, backfill=False):
         for txn in out.get('added', []) + out.get('modified', []):
             ext = 'plaid:%s' % txn.get('transaction_id')
             text = '%s %s' % (txn.get('merchant_name') or '', txn.get('name') or '')
+            if held:
+                wm = held.get(txn.get('account_id'))
+                tdate = _parse_csv_date(txn.get('date'))
+                if wm and tdate and (tdate < wm[0] or (
+                        tdate == wm[0]
+                        and round(abs(float(txn.get('amount') or 0)), 2) in wm[1])):
+                    already_held += 1
+                    continue
             # A card payment is decided here, ahead of Plaid. Plaid calls it a
             # LOAN_PAYMENT, which this app maps to 'debt' -- so the payment counted as
             # spending AND the purchases it settled counted again when the card was used.
@@ -4995,6 +5033,10 @@ def _plaid_sync_item(item, client=None, backfill=False):
     db.session.commit()
     out = {'accounts': accounts_seen, 'added': added, 'updated': updated,
            'removed': removed, 'skipped_income': skipped}
+    if already_held:
+        # History the ledger already had under the replaced connection's ids. Reported
+        # so a sync that says '3 new' after a relink is explicable, not alarming.
+        out['already_held'] = already_held
     out.update(extras)
     if backfill:
         out['backfill'] = True
@@ -5034,12 +5076,14 @@ def plaid_sync_all():
     """Sync every connected item. One failing institution must not abort the others."""
     import plaid_client as pc
     uid = _get_current_user_id()
-    results, totals = [], {'added': 0, 'updated': 0, 'removed': 0, 'skipped_income': 0}
+    results, totals = [], {'added': 0, 'updated': 0, 'removed': 0, 'skipped_income': 0,
+                           'already_held': 0}
     for item in PlaidItem.query.filter_by(user_id=uid).all():
         try:
             r = _plaid_sync_item(item)
             for k in totals:
-                totals[k] += r[k]
+                # already_held is only present when non-zero, so .get, not [k].
+                totals[k] += r.get(k, 0) or 0
             results.append({'item': item.to_dict(), **r})
         except pc.PlaidError as e:
             db.session.rollback()

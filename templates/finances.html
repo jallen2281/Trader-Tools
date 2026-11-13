@@ -2041,7 +2041,12 @@
             const d = await r.json();
             if (!r.ok) { alert(d.error || 'Sync failed.'); await loadPlaid(); return; }
             const t = d.totals || d;
-            alert(`Synced.\n\n${t.added||0} new · ${t.updated||0} updated · ${t.removed||0} removed\n${t.skipped_income||0} deposits skipped (income is tracked separately)`);
+            alert(`Synced.\n\n${t.added||0} new · ${t.updated||0} updated · ${t.removed||0} removed\n${t.skipped_income||0} deposits skipped (income is tracked separately)`
+                /* After a relink the first sync re-reads the whole history. Rows the
+                   ledger already held under the replaced connection are counted here,
+                   so '3 new' after five months of activity reads as inherited, not lost. */
+                + (t.already_held ? `
+${t.already_held} already held — history this connection inherited, not re-imported` : ''));
             await loadPlaid(); loadBudgeting();
         } catch(e) { alert('Sync failed: ' + e.message); }
     }
