@@ -1829,24 +1829,58 @@
             el.innerHTML = '<p class="muted" style="padding:12px;">No accounts connected. Connecting a bank imports transactions automatically, so Budget measures against real spend without a CSV.</p>';
             return;
         }
-        el.innerHTML = '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Institution</th><th>Status</th><th>Last synced</th><th></th></tr></thead><tbody>' +
+        el.innerHTML = plaidItemsHtml(items) + renderPlaidAccounts();
+    }
+    /* Pure: items in, HTML out, no DOM. Split out so the decision below can actually be
+       tested -- which control a broken connection offers is the thing that went wrong, and
+       it was unreachable from any Python test. */
+    function plaidItemsHtml(items) {
+        return '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Institution</th><th>Status</th><th>Last synced</th><th></th></tr></thead><tbody>' +
             items.map(i => {
                 const bad = i.status !== 'active';
                 const status = i.status === 'login_required'
                     ? '<span class="neg">needs re-authentication</span>'
                     : (bad ? `<span class="neg">${esc(i.status)}</span>` : '<span class="pos">active</span>');
+                /* What the user can actually DO about it, decided on the server from
+                   Plaid's error_code -- see PlaidItem.recovery. The row used to offer
+                   "reconnect" only for login_required, so a connection broken any other
+                   way left "+ Connect a bank" as the only visible route, and that makes a
+                   SECOND connection: duplicate history, double-counted balances. Equally,
+                   reconnect must NOT be offered for a dead Item, because update mode has
+                   nothing left to repair. */
+                let action;
+                if (i.recovery === 'reconnect') {
+                    action = `<button class="link-btn" onclick="connectPlaid(${i.id})" title="Re-authenticate this connection. Keeps its history.">reconnect</button>`;
+                } else if (i.recovery === 'relink') {
+                    action = `<button class="link-btn" onclick="relinkPlaid(${i.id},'${esc(i.institution_name)}')" title="This connection no longer exists at Plaid. A new one is needed.">reconnect (new)</button>`;
+                } else {
+                    action = `<button class="link-btn" onclick="syncPlaid(${i.id})">sync</button>`;
+                    if (!bad) {
+                        /* Adding a product to a healthy connection is an update-mode job
+                           too. Without this there was no way to grant new consent except
+                           by connecting the bank again from scratch. */
+                        action += ` <button class="link-btn" onclick="connectPlaid(${i.id})" title="Re-authorize to grant access to new products. Keeps this connection and its history.">re-authorize</button>`;
+                    }
+                }
                 return `<tr>
                     <td><strong>${esc(i.institution_name)}</strong>${i.last_error?`<div class="muted" style="font-size:0.78em;">${esc(i.last_error)}</div>`:''}</td>
                     <td>${status}</td>
                     <td>${i.last_synced_at ? i.last_synced_at.replace('T',' ').slice(0,16) : '<span class="muted">never</span>'}</td>
                     <td style="text-align:right;white-space:nowrap;">
-                        ${i.status === 'login_required'
-                            ? `<button class="link-btn" onclick="connectPlaid(${i.id})">reconnect</button>`
-                            : `<button class="link-btn" onclick="syncPlaid(${i.id})">sync</button>`}
+                        ${action}
                         <button class="link-btn danger" onclick="disconnectPlaid(${i.id},'${esc(i.institution_name)}')">disconnect</button>
                     </td>
                 </tr>`;
-            }).join('') + '</tbody></table></div>' + renderPlaidAccounts();
+            }).join('') + '</tbody></table></div>';
+    }
+
+    /* A connection Plaid no longer has cannot be repaired in update mode, so this opens a
+       fresh Link. The exchange recognises the institution and adopts the existing records
+       rather than duplicating them -- see plaid_exchange. */
+    async function relinkPlaid(id, name) {
+        if (!confirm(`${name} no longer exists at Plaid, so it needs a new connection.\n\n`
+                     + `Your history and account links are kept and carried across to it.`)) return;
+        connectPlaid(null);
     }
 
     /* A connection is a login, not an account: one Chase login can return a checking

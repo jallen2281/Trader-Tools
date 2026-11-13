@@ -532,6 +532,85 @@ with app.app_context():
           A.PlaidAccount.query.filter_by(item_id=keep_id).count() == 1)
 
 
+print('\n--- a failure records the CODE, not only the sentence ---')
+# Five sites in app.py and one in the sync job stored str(e) and dropped e.code, so
+# nothing downstream could tell a connection update mode would repair from one that was
+# gone. The UI fell back to testing status == 'login_required' and offered no way out of
+# any other failure -- which is how a healthy connection came to be re-linked from
+# scratch, duplicating the ledger.
+with app.app_context():
+    it = A.PlaidItem(user_id=2, item_id='item-rec', institution_name='Recovery Bank',
+                     status='active', access_token_enc=pc.encrypt_token('tok-rec'))
+    db.session.add(it)
+    db.session.commit()
+    rid = it.id
+
+    A._record_item_error(it, pc.PlaidError('log in again', code='ITEM_LOGIN_REQUIRED'))
+    db.session.commit()
+    check('login_required becomes its own status', it.status == 'login_required', it.status)
+    check('and the code is kept', it.last_error_code == 'ITEM_LOGIN_REQUIRED',
+          it.last_error_code)
+    check('along with the message', 'log in again' in (it.last_error or ''), it.last_error)
+    check('recovery says update mode', it.recovery() == 'reconnect', it.recovery())
+    check('and to_dict carries both out to the UI',
+          it.to_dict().get('recovery') == 'reconnect'
+          and it.to_dict().get('last_error_code') == 'ITEM_LOGIN_REQUIRED', it.to_dict())
+
+    A._record_item_error(it, pc.PlaidError('gone', code='ITEM_NOT_FOUND'))
+    db.session.commit()
+    check('a removed Item is a generic error, not login_required',
+          it.status == 'error', it.status)
+    check('AND RECOVERY SAYS A NEW CONNECTION, not update mode -- there is no Item left '
+          'to repair', it.recovery() == 'relink', it.recovery())
+
+    A._record_item_error(it, pc.PlaidError('consent', code='ADDITIONAL_CONSENT_REQUIRED'))
+    db.session.commit()
+    check('a missing consent scope is repaired in update mode',
+          it.recovery() == 'reconnect', it.recovery())
+
+    A._record_item_error(it, pc.PlaidError('down', code='INSTITUTION_DOWN'))
+    db.session.commit()
+    check('a transient outage offers nothing to click', it.recovery() is None, it.recovery())
+    A._record_item_error(it, pc.PlaidError('???', code='SOME_CODE_I_HAVE_NEVER_SEEN'))
+    db.session.commit()
+    check('nor does an unrecognised code -- it is not guessed at',
+          it.recovery() is None, it.recovery())
+    A._record_item_error(it, pc.PlaidError('no code at all'))
+    db.session.commit()
+    check('an error with no code stores None rather than the string "None"',
+          it.last_error_code is None, repr(it.last_error_code))
+
+    print('\n--- a healthy connection has nothing to recover from ---')
+    it.status = 'active'
+    it.last_error = it.last_error_code = None
+    db.session.commit()
+    check('recovery is None when active', it.recovery() is None, it.recovery())
+    it.last_error_code = 'ITEM_LOGIN_REQUIRED'
+    check('and stays None even with a stale code left on an active row',
+          it.recovery() is None, it.recovery())
+
+    print('\n--- a row written before the column existed still works ---')
+    it.status = 'login_required'
+    it.last_error_code = None
+    db.session.commit()
+    check('login_required with no code falls back to update mode',
+          it.recovery() == 'reconnect', it.recovery())
+    it.status = 'error'
+    check('but a bare "error" with no code promises nothing',
+          it.recovery() is None, it.recovery())
+
+    print('\n--- recovering clears the code, so no stale reason lingers ---')
+    A._record_item_error(it, pc.PlaidError('x', code='ITEM_LOGIN_REQUIRED'))
+    db.session.commit()
+    r = admin.post('/api/plaid/items/%d/sync' % rid)
+    with app.app_context():
+        it2 = db.session.get(A.PlaidItem, rid)
+        check('a successful sync clears the status', it2.status == 'active',
+              (it2.status, r.status_code))
+        check('the message', it2.last_error is None, it2.last_error)
+        check('and the code', it2.last_error_code is None, it2.last_error_code)
+
+
 print('\n' + ('=' * 60))
 if fails:
     print('FAILED (%d):' % len(fails))

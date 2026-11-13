@@ -316,6 +316,46 @@ def classify_product_error(code, institution_supports=None):
     return 'error'
 
 
+# ---------------------------------------------------------------- item recovery
+# What the USER can do about a broken connection. Only codes whose resolution is
+# documented appear here; anything else falls to None, which means "nothing for you to
+# do, the next sync retries". Offering a button that cannot work is the same mistake as
+# reporting an unfixable condition as needing attention -- see classify_product_error.
+
+# Update mode repairs these: the Item still exists, it just needs re-authenticating or
+# a wider consent. https://plaid.com/docs/link/update-mode/
+RECONNECT_CODES = {
+    'ITEM_LOGIN_REQUIRED',           # the bank wants credentials again
+    'PENDING_EXPIRATION',            # consent about to lapse (UK/EU)
+    'PENDING_DISCONNECT',            # consent about to lapse (US/CA)
+    'ADDITIONAL_CONSENT_REQUIRED',   # a product was requested that was never authorised
+}
+
+# Update mode has nothing to repair -- the Item is gone or the institution is finished.
+# A fresh connection is the only way back.
+RELINK_CODES = {
+    # "This Item does not exist, has been previously removed via /item/remove, or has had
+    # access removed by the user." Its own message rules out repair.
+    'ITEM_NOT_FOUND',
+    # A bank migration has broken the Item permanently; Plaid documents update mode as
+    # FAILING with this code.
+    'INSTITUTION_NO_LONGER_SUPPORTED',
+}
+
+
+def item_recovery(code):
+    """'reconnect' (update mode), 'relink' (a new connection), or None.
+
+    None is the honest answer for an unrecognised code and for a transient outage alike:
+    there is nothing the user should click, and the scheduled sync will try again.
+    """
+    if code in RECONNECT_CODES:
+        return 'reconnect'
+    if code in RELINK_CODES:
+        return 'relink'
+    return None
+
+
 def apr_for_card(credit):
     """The rate a card is ACTUALLY being charged, out of the list Plaid returns.
 

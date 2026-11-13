@@ -2302,10 +2302,38 @@ class PlaidItem(db.Model):
     cursor = db.Column(db.Text)                                         # transactions/sync
     status = db.Column(db.String(30), default='active')  # active | login_required | error
     last_error = db.Column(db.String(255))
+    # Plaid's error_code, not just its prose. Five call sites in app.py and one in the
+    # sync job all stored str(e) and threw e.code away, which left nothing to branch on:
+    # the UI could only test status == 'login_required', so an Item broken any other way
+    # offered no way to fix it. That is how a healthy connection came to be re-linked from
+    # scratch -- the only button on offer was "+ Connect a bank".
+    last_error_code = db.Column(db.String(60))
     last_synced_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     __table_args__ = (db.UniqueConstraint('user_id', 'item_id', name='uq_plaid_user_item'),)
+
+    def recovery(self):
+        """What the user can do about this connection: 'reconnect', 'relink' or None.
+
+        'reconnect' means Plaid Link in update mode, which repairs this very Item and
+        keeps its token, its transaction ids and therefore its history. 'relink' means
+        the Item is gone and only a new connection will do -- which duplicates the ledger
+        unless the exchange adopts the old records, so the two belong together.
+
+        A healthy Item returns None here. Wanting to ADD a product to a working
+        connection is also an update-mode job, but it is an intention rather than a
+        fault, so the UI offers that separately instead of dressing it up as an error.
+        """
+        if self.status not in ('error', 'login_required'):
+            return None
+        from plaid_client import item_recovery
+        rec = item_recovery(self.last_error_code)
+        if rec:
+            return rec
+        # Rows that predate last_error_code, and the sync job's own shorthand, both
+        # express "needs re-authentication" as the status alone.
+        return 'reconnect' if self.status == 'login_required' else None
 
     def supports(self, product):
         """Does the institution offer this product? True, False, or None for unknown.
@@ -2327,6 +2355,8 @@ class PlaidItem(db.Model):
             'institution_id': self.institution_id,
             'institution_name': self.institution_name or 'Connected account',
             'status': self.status, 'last_error': self.last_error,
+            'last_error_code': self.last_error_code,
+            'recovery': self.recovery(),
             'has_cursor': bool(self.cursor),
             'institution_products': list(self.institution_products or []),
             'last_synced_at': self.last_synced_at.isoformat() if self.last_synced_at else None,

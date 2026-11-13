@@ -2680,6 +2680,22 @@ def _plaid():
     return PlaidClient(Config.PLAID_CLIENT_ID, Config.PLAID_SECRET, Config.PLAID_ENV)
 
 
+def _record_item_error(item, e):
+    """Put a Plaid failure onto the item, CODE included.
+
+    This was five copies of the same two lines in this file plus a sixth in the sync job,
+    every one of them keeping str(e) and discarding e.code. The cost was not the
+    duplication: with only the prose stored, nothing downstream could tell a connection
+    that update mode would repair from one that was gone for good, so the UI tested
+    status == 'login_required' and offered no route out of any other failure. See
+    PlaidItem.recovery.
+    """
+    item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
+    item.last_error = str(e)[:255]
+    item.last_error_code = (getattr(e, 'code', None) or None)
+    return item.status
+
+
 def _plaid_item_or_404(uid, iid):
     return PlaidItem.query.filter_by(id=iid, user_id=uid).first()
 
@@ -2775,7 +2791,7 @@ def plaid_exchange():
         item.institution_products = inst_products
         item.institution_products_at = datetime.utcnow()
     item.status = 'active'
-    item.last_error = None
+    item.last_error = item.last_error_code = None
     db.session.commit()
     logger.info("Plaid item connected for user %s (%s)", uid, inst_name or item_id)
     return jsonify(item.to_dict()), 201
@@ -3656,8 +3672,7 @@ def plaid_backfill(iid):
         return jsonify(_plaid_sync_item(item, backfill=True))
     except pc.PlaidError as e:
         db.session.rollback()
-        item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
-        item.last_error = str(e)[:255]
+        _record_item_error(item, e)
         db.session.commit()
         return jsonify({'error': str(e), 'code': e.code, 'status': item.status}), 502
 
@@ -3679,8 +3694,7 @@ def plaid_backfill_all():
             results.append({'institution': item.institution_name, **r})
         except pc.PlaidError as e:
             db.session.rollback()
-            item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
-            item.last_error = str(e)[:255]
+            _record_item_error(item, e)
             db.session.commit()
             results.append({'institution': item.institution_name, 'error': str(e),
                             'code': e.code})
@@ -3842,8 +3856,7 @@ def plaid_refresh_accounts():
         try:
             seen += _sync_plaid_accounts(item)
         except pc.PlaidError as e:
-            item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
-            item.last_error = str(e)[:255]
+            _record_item_error(item, e)
             errors.append({'institution': item.institution_name, 'error': str(e)})
         except Exception as e:
             errors.append({'institution': item.institution_name, 'error': str(e)})
@@ -4793,7 +4806,7 @@ def _plaid_sync_item(item, client=None, backfill=False):
     item.cursor = cursor
     item.last_synced_at = datetime.utcnow()
     item.status = 'active'
-    item.last_error = None
+    item.last_error = item.last_error_code = None
     db.session.commit()
     out = {'accounts': accounts_seen, 'added': added, 'updated': updated,
            'removed': removed, 'skipped_income': skipped}
@@ -4824,8 +4837,7 @@ def plaid_sync(iid):
         db.session.rollback()
         # ITEM_LOGIN_REQUIRED is not a failure to retry — the user must re-authenticate
         # through Link in update mode, so surface it as its own state.
-        item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
-        item.last_error = str(e)[:255]
+        _record_item_error(item, e)
         db.session.commit()
         return jsonify({'error': str(e), 'code': e.code, 'status': item.status}), 502
 
@@ -4846,8 +4858,7 @@ def plaid_sync_all():
             results.append({'item': item.to_dict(), **r})
         except pc.PlaidError as e:
             db.session.rollback()
-            item.status = 'login_required' if e.code == 'ITEM_LOGIN_REQUIRED' else 'error'
-            item.last_error = str(e)[:255]
+            _record_item_error(item, e)
             db.session.commit()
             results.append({'item': item.to_dict(), 'error': str(e), 'code': e.code})
     return jsonify({'totals': totals, 'results': results})

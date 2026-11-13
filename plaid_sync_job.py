@@ -68,7 +68,7 @@ def run_sync(db, user_id=None):
     """
     import plaid_client as pc
     from models import PlaidItem
-    from app import _plaid_sync_item
+    from app import _plaid_sync_item, _record_item_error
 
     q = PlaidItem.query
     if user_id:
@@ -110,7 +110,7 @@ def run_sync(db, user_id=None):
             # claiming it needs attention after the user has already fixed it.
             if item.status != 'active':
                 item.status = 'active'
-                item.last_error = None
+                item.last_error = item.last_error_code = None
             db.session.commit()
             logger.info('plaid-sync: %s ok added=%s updated=%s removed=%s '
                         'skipped_income=%s liabilities=%s holdings=%s',
@@ -118,8 +118,7 @@ def run_sync(db, user_id=None):
                         r.get('skipped_income'), r.get('liabilities'), r.get('holdings'))
         except pc.PlaidError as e:
             db.session.rollback()
-            item.status = 'login_required' if e.code == REAUTH_CODE else 'error'
-            item.last_error = str(e)[:255]
+            _record_item_error(item, e)
             if e.code == REAUTH_CODE:
                 out['reauth'].append(name)
                 if was != 'login_required':
