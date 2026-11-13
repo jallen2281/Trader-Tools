@@ -468,18 +468,69 @@ with app.app_context():
     check('spending history kept by default',
           A.SpendTransaction.query.filter_by(user_id=2).count() == before, before)
 
-print('\n--- disconnect with ?purge=1 removes the history too ---')
-FAKE.pages = [{'added': [txn('z1', 'AGAIN', 5.0, 'FOOD_AND_DRINK')], 'modified': [],
-               'removed': [], 'next_cursor': 'z', 'has_more': False}]
-admin.post('/api/plaid/exchange', json={'public_token': 'public-sandbox-2'})
+print('\n--- ?purge=1 removes THIS connection and no other ---')
+# It used to filter on user_id and source='plaid' alone, with nothing naming the item, so
+# disconnecting one bank with purge set would have deleted every imported row the user
+# had, from every institution. It was unreachable only because the missing delete cascade
+# made the endpoint fail first -- fixing that armed it.
+#
+# Two connections are built by hand here rather than through the fake: FakePlaid returns
+# one fixed set of account_ids, and _sync_plaid_accounts upserts on account_id, so a
+# second sync would re-point the SAME account rows at the new item instead of giving it
+# its own. Which is a real hazard in its own right, just not the one under test.
 with app.app_context():
-    iid2 = A.PlaidItem.query.filter_by(user_id=2).first().id
-admin.post('/api/plaid/items/%d/sync' % iid2)
-r = admin.delete('/api/plaid/items/%d?purge=1' % iid2)
-check('purge reports what it deleted', r.get_json().get('transactions_purged', 0) >= 1, r.get_json())
+    import plaid_client as _pc
+    keep = A.PlaidItem(user_id=2, item_id='item-keep', institution_name='Keep Bank',
+                       status='active', access_token_enc=_pc.encrypt_token('tok-keep'))
+    drop = A.PlaidItem(user_id=2, item_id='item-drop', institution_name='Drop Bank',
+                       status='active', access_token_enc=_pc.encrypt_token('tok-drop'))
+    db.session.add_all([keep, drop])
+    db.session.commit()
+    db.session.add_all([
+        A.PlaidAccount(user_id=2, item_id=keep.id, account_id='acct-keep', mask='1111'),
+        A.PlaidAccount(user_id=2, item_id=drop.id, account_id='acct-drop', mask='2222'),
+    ])
+    db.session.add_all([
+        A.SpendTransaction(user_id=2, source='plaid', external_id='plaid:keep-1',
+                           plaid_account_id='acct-keep', description='KEEP ME',
+                           amount=11.0, posted_at=A.date(2026, 10, 1), category='food'),
+        A.SpendTransaction(user_id=2, source='plaid', external_id='plaid:drop-1',
+                           plaid_account_id='acct-drop', description='DROP ME',
+                           amount=22.0, posted_at=A.date(2026, 10, 2), category='food'),
+    ])
+    db.session.add_all([
+        A.PlaidDeposit(user_id=2, external_id='dep:keep-1', plaid_account_id='acct-keep',
+                       description='KEEP PAY', amount=100.0,
+                       posted_at=A.date(2026, 10, 1)),
+        A.PlaidDeposit(user_id=2, external_id='dep:drop-1', plaid_account_id='acct-drop',
+                       description='DROP PAY', amount=200.0,
+                       posted_at=A.date(2026, 10, 2)),
+    ])
+    db.session.commit()
+    keep_id, drop_id = keep.id, drop.id
+
+r = admin.delete('/api/plaid/items/%d?purge=1' % drop_id)
+body = r.get_json()
+check('purge -> 200', r.status_code == 200, (r.status_code, body))
+check('it reports one transaction purged, not every row in the ledger',
+      body.get('transactions_purged') == 1, body)
+check('and one deposit, because phantom income from a bank that is gone is no better',
+      body.get('deposits_purged') == 1, body)
 with app.app_context():
-    check('no plaid-sourced rows remain',
-          A.SpendTransaction.query.filter_by(user_id=2, source='plaid').count() == 0)
+    check('the disconnected connection is gone', db.session.get(A.PlaidItem, drop_id) is None)
+    check('ITS row is gone',
+          A.SpendTransaction.query.filter_by(user_id=2,
+                                             external_id='plaid:drop-1').count() == 0)
+    check('THE OTHER BANK IS UNTOUCHED -- this is the whole point',
+          A.SpendTransaction.query.filter_by(user_id=2,
+                                             external_id='plaid:keep-1').count() == 1)
+    check('and so is its deposit',
+          A.PlaidDeposit.query.filter_by(user_id=2, external_id='dep:keep-1').count() == 1)
+    check('the surviving connection is still connected',
+          db.session.get(A.PlaidItem, keep_id) is not None)
+    check('and still has its account',
+          A.PlaidAccount.query.filter_by(item_id=keep_id).count() == 1)
+
 
 print('\n' + ('=' * 60))
 if fails:

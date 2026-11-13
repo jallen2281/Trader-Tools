@@ -4865,7 +4865,8 @@ def plaid_disconnect(iid):
     would be worse than orphaning one at Plaid.
 
     Transactions already imported are deliberately kept. They are the user's spending
-    history and deleting them would silently rewrite past budgets; ?purge=1 removes them.
+    history and deleting them would silently rewrite past budgets; ?purge=1 removes them,
+    and removes only the ones that came from THIS connection.
     """
     import plaid_client as pc
     uid = _get_current_user_id()
@@ -4878,15 +4879,33 @@ def plaid_disconnect(iid):
     except Exception as e:
         remote = False
         logger.warning("Plaid item_remove failed for item %s: %s", item.id, e)
-    purged = 0
+    purged = purged_deposits = 0
     if request.args.get('purge') == '1':
-        purged = SpendTransaction.query.filter(
-            SpendTransaction.user_id == uid,
-            SpendTransaction.source == 'plaid',
-            SpendTransaction.external_id.like('plaid:%')).delete(synchronize_session=False)
+        # Scoped to THIS connection's accounts. It used to filter on user_id and
+        # source='plaid' alone, so disconnecting one bank with purge set would have
+        # deleted every imported row the user had, from every institution. That was
+        # unreachable only because the missing delete cascade made the whole endpoint
+        # fail first; fixing the cascade armed it, so it is fixed in the same breath.
+        #
+        # Read before the item goes: the cascade takes its accounts with it, and
+        # plaid_account_id is the only thing tying a row to the connection it came from.
+        keys = [a.account_id for a in
+                PlaidAccount.query.filter_by(user_id=uid, item_id=item.id).all()]
+        if keys:
+            purged = SpendTransaction.query.filter(
+                SpendTransaction.user_id == uid,
+                SpendTransaction.source == 'plaid',
+                SpendTransaction.plaid_account_id.in_(keys)).delete(
+                synchronize_session=False)
+            # Deposits are imported from the same feed, and leaving them behind after
+            # "remove the history" leaves phantom income against a bank that is gone.
+            purged_deposits = PlaidDeposit.query.filter(
+                PlaidDeposit.user_id == uid,
+                PlaidDeposit.plaid_account_id.in_(keys)).delete(synchronize_session=False)
     db.session.delete(item)
     db.session.commit()
-    return jsonify({'success': True, 'revoked_at_plaid': remote, 'transactions_purged': purged})
+    return jsonify({'success': True, 'revoked_at_plaid': remote,
+                    'transactions_purged': purged, 'deposits_purged': purged_deposits})
 
 
 def _budget_rollup(user_id, month=None):
