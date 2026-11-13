@@ -91,6 +91,7 @@ SUITES = [
     ('plaid_liabilities', 'issuer-reported terms and positions, and what a sync may destroy'),
     ('plaid_enrich', 'the one call billed per transaction, and the gates in front of it'),
     ('plaid_row', 'which control a broken connection offers (runs under node)'),
+    ('plaid_relink', 'connecting a bank you already connected'),
     ('debt_as_of', 'a typed-in balance already contains the payments before it'),
     ('vehicle_method', 'one vehicle, one method -- mileage vs actual, and the farm exception'),
     ('batchfetch', 'batched market data fetching'),

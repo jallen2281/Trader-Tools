@@ -2781,6 +2781,37 @@ def plaid_exchange():
         return jsonify({'error': 'Unexpected response from Plaid'}), 502
 
     item = PlaidItem.query.filter_by(user_id=uid, item_id=item_id).first()
+    # A second connection to an institution already connected is almost always an
+    # accident, and an expensive one: Plaid's transaction ids are per Item, so the new
+    # connection re-imports history that external_id dedupe cannot recognise, and both
+    # sets of accounts then feed the same records, which _apply_plaid_balance SUMS.
+    # That is how one relink duplicated 48 rows and overstated assets by $31,785.34.
+    #
+    # Refused rather than silently absorbed, because the right answer for a WORKING
+    # connection is update mode, which keeps everything. A genuine second login at the
+    # same bank does exist, so the refusal can be overridden explicitly.
+    superseded = None
+    if not item and inst_id:
+        prior = PlaidItem.query.filter_by(user_id=uid, institution_id=inst_id).first()
+        if prior is not None:
+            if prior.recovery() == 'relink':
+                # The old one is gone from Plaid and cannot be repaired. This IS the
+                # replacement, so let it through and carry its records across.
+                superseded = prior
+            elif not d.get('allow_duplicate'):
+                return jsonify({
+                    'error': ('%s is already connected. To grant access to new products, '
+                              're-authorize that connection instead of adding a second '
+                              'one — a second connection duplicates your history and '
+                              'double-counts balances.'
+                              % (prior.institution_name or 'That institution')),
+                    'code': 'ALREADY_CONNECTED', 'item_id': prior.id,
+                    'institution_name': prior.institution_name,
+                    'recovery': prior.recovery(),
+                    'hint': 'POST /api/plaid/link-token with {"item_id": %d} for update '
+                            'mode, or resend with allow_duplicate=true if this really is '
+                            'a separate login.' % prior.id,
+                }), 409
     if not item:
         item = PlaidItem(user_id=uid, item_id=item_id)
         db.session.add(item)
@@ -2794,7 +2825,11 @@ def plaid_exchange():
     item.last_error = item.last_error_code = None
     db.session.commit()
     logger.info("Plaid item connected for user %s (%s)", uid, inst_name or item_id)
-    return jsonify(item.to_dict()), 201
+    body = item.to_dict()
+    if superseded is not None and superseded.id != item.id:
+        body['adopted'] = _adopt_plaid_item(item, superseded, client=client,
+                                            token=access_token)
+    return jsonify(body), 201
 
 
 @app.route('/api/plaid/items', methods=['GET'])
@@ -4370,6 +4405,156 @@ def finance_enrich_spend():
     return jsonify({'applied': len(changes), 'billed_rows': billed,
                     'spent': pc.enrich_cost(billed), 'unresolved': billed - len(changes),
                     'changes': changes})
+
+
+def _plaid_dupe_candidates(user_id, account_ids=None, tol_days=4):
+    """Rows that look like the same transaction imported twice. READ ONLY.
+
+    Needed because dedupe cannot see this class of duplicate at all: it keys on
+    external_id = plaid:<transaction_id>, and **Plaid's transaction ids are per Item**, so
+    the same purchase arriving on a replacement connection carries a different id. A
+    relink therefore re-imports history that is already there, silently.
+
+    Matching is on account + amount within a few days, NOT on date and description. Both
+    of those shift between connections: the same payment posted a day apart, and the
+    description differed only in the separator -- 'To Checking - 0852' against
+    'To Checking • 0852'. A strict comparison called 9 of 48 rows unique when every one
+    was a duplicate.
+
+    Deliberately reports rather than deletes. The rule is good enough to point a human at
+    a list and far too loose to act on alone: two genuinely separate charges of the same
+    amount, on the same account, days apart, are perfectly ordinary.
+    """
+    q = SpendTransaction.query.filter(SpendTransaction.user_id == user_id,
+                                      SpendTransaction.plaid_account_id.isnot(None))
+    if account_ids:
+        q = q.filter(SpendTransaction.plaid_account_id.in_(list(account_ids)))
+    rows = q.order_by(SpendTransaction.posted_at, SpendTransaction.id).all()
+    by_acct = {}
+    for t in rows:
+        by_acct.setdefault(t.plaid_account_id, []).append(t)
+    pairs, taken = [], set()
+    for group in by_acct.values():
+        for i, a in enumerate(group):
+            if a.id in taken:
+                continue
+            for b in group[i + 1:]:
+                if b.id in taken or not a.posted_at or not b.posted_at:
+                    continue
+                if round(float(a.amount or 0), 2) != round(float(b.amount or 0), 2):
+                    continue
+                if abs((b.posted_at - a.posted_at).days) > tol_days:
+                    continue
+                taken.add(a.id)
+                taken.add(b.id)
+                # Oldest first: it is the one carrying any hand-categorisation.
+                pairs.append({'keep': {'id': a.id, 'posted_at': a.posted_at.isoformat(),
+                                       'description': a.description,
+                                       'category': a.category},
+                              'duplicate': {'id': b.id,
+                                            'posted_at': b.posted_at.isoformat(),
+                                            'description': b.description,
+                                            'category': b.category},
+                              'amount': round(float(a.amount or 0), 2)})
+                break
+    return pairs
+
+
+def _adopt_plaid_item(new_item, old_item, client=None, token=None):
+    """Move an institution's records from a replaced connection onto its replacement.
+
+    A dead Item cannot be repaired in update mode, so the only way back is a new
+    connection -- and a new connection knows nothing about which record each account feeds
+    or which transactions came from it. Without this the user re-links seven accounts by
+    hand, and until they do, balances are fed by nothing while the old rows point at
+    accounts that no longer exist.
+
+    Accounts are matched on mask AND subtype, not mask alone. A mask is four digits and
+    collisions are entirely possible; subtype separates an IRA from a brokerage at the
+    same institution. A mask that matches more than one candidate is left alone and
+    reported rather than guessed at -- a wrong link makes one account report another's
+    balance, which is worse than no link.
+
+    Transactions follow their account. That part is deterministic: it is an id swap, not a
+    judgement. Duplicate ROWS are a separate problem and are only counted here, never
+    deleted -- see _plaid_dupe_candidates.
+    """
+    uid = new_item.user_id
+    report = {'from_item': old_item.id, 'institution': old_item.institution_name,
+              'accounts_matched': 0, 'links_carried': 0, 'rows_remapped': 0,
+              'deposits_remapped': 0, 'unmatched': [], 'ambiguous': []}
+    try:
+        _sync_plaid_accounts(new_item, client=client, token=token)
+    except Exception as e:                          # noqa: BLE001
+        logger.warning('plaid adopt: account fetch failed for item %s: %s', new_item.id, e)
+        report['error'] = 'could not read the new connection\'s accounts'
+        return report
+    db.session.flush()
+
+    def key(a):
+        return ((a.mask or '').strip(), (a.subtype or '').strip().lower())
+
+    old_by_key = {}
+    for a in PlaidAccount.query.filter_by(user_id=uid, item_id=old_item.id).all():
+        old_by_key.setdefault(key(a), []).append(a)
+
+    for a in PlaidAccount.query.filter_by(user_id=uid, item_id=new_item.id).all():
+        cands = old_by_key.get(key(a)) or []
+        if len(cands) != 1:
+            (report['ambiguous'] if cands else report['unmatched']).append(
+                {'name': a.name, 'mask': a.mask, 'subtype': a.subtype})
+            continue
+        o = cands[0]
+        report['accounts_matched'] += 1
+        if not (a.linked_account_id or a.linked_debt_id or a.linked_portfolio_id):
+            if o.linked_account_id or o.linked_debt_id or o.linked_portfolio_id:
+                a.linked_account_id = o.linked_account_id
+                a.linked_debt_id = o.linked_debt_id
+                a.linked_portfolio_id = o.linked_portfolio_id
+                report['links_carried'] += 1
+        report['rows_remapped'] += SpendTransaction.query.filter_by(
+            user_id=uid, plaid_account_id=o.account_id).update(
+            {'plaid_account_id': a.account_id}, synchronize_session=False)
+        report['deposits_remapped'] += PlaidDeposit.query.filter_by(
+            user_id=uid, plaid_account_id=o.account_id).update(
+            {'plaid_account_id': a.account_id}, synchronize_session=False)
+
+    # The replaced connection goes, with its accounts. Its token is already dead -- that
+    # is why there is a replacement -- so /item/remove would only fail.
+    db.session.delete(old_item)
+    db.session.flush()
+    # Recompute every record the carried links now feed, so no balance is left summing
+    # accounts that no longer exist.
+    for a in PlaidAccount.query.filter_by(user_id=uid, item_id=new_item.id).all():
+        _apply_plaid_balance(a)
+    db.session.commit()
+    logger.info('plaid adopt: item %s took over %s from item %s '
+                '(%s accounts, %s links, %s rows)', new_item.id, report['institution'],
+                old_item.id, report['accounts_matched'], report['links_carried'],
+                report['rows_remapped'])
+    return report
+
+
+@app.route('/api/plaid/duplicates', methods=['GET'])
+@require_api_auth
+def plaid_duplicates():
+    """Transactions that look imported twice. Read only; deletes nothing.
+
+    Exists because a relink re-imports history under fresh transaction ids, which
+    external_id dedupe cannot see. Reporting is the whole feature: the matching rule is
+    right for pointing a person at a list and much too loose to act on by itself.
+    """
+    uid = _get_current_user_id()
+    if not uid:
+        return jsonify({'error': 'Authentication required'}), 401
+    try:
+        tol = max(0, min(int(request.args.get('days') or 4), 14))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'days must be a number'}), 400
+    pairs = _plaid_dupe_candidates(uid, tol_days=tol)
+    return jsonify({'tolerance_days': tol, 'count': len(pairs),
+                    'extra_value': round(sum(p['amount'] for p in pairs), 2),
+                    'pairs': pairs})
 
 
 def _plaid_product_enabled(name):
