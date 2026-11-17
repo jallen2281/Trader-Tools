@@ -3770,6 +3770,19 @@ def plaid_accounts():
             d['suggested_link_id'] = sid
             d['suggested_link_kind'] = 'debt' if pa.is_credit() else 'account'
             d['suggested_confidence'] = score
+        # The book this account's new transactions are filed to, and the record it lives
+        # on. That record is the only place it can be set, and the debt and account forms
+        # are not where anyone looks for "where do my Amex charges go".
+        rec = None
+        if pa.linked_debt_id:
+            x = next((x for x in debts if x.id == pa.linked_debt_id), None)
+            rec = ('debt', x) if x else None
+        elif pa.linked_account_id:
+            x = next((x for x in accounts if x.id == pa.linked_account_id), None)
+            rec = ('account', x) if x else None
+        d['book_record'] = ({'kind': rec[0], 'id': rec[1].id, 'name': rec[1].name}
+                            if rec else None)
+        d['book_id'] = rec[1].entity_id if rec else None
         # How much of the ledger came from this account, so an unlinked one with hundreds of
         # transactions is obviously worth linking.
         d['transaction_count'] = SpendTransaction.query.filter_by(
@@ -3787,6 +3800,8 @@ def plaid_accounts():
 
     return jsonify({'accounts': out,
                     'rollups': rollups,
+                    'books': [{'id': e.id, 'name': e.name}
+                              for e in _visible_entities(uid).order_by(Entity.name).all()],
                     'linkable': {
                         'debts': [{'id': x.id, 'name': x.name, 'balance': float(x.balance or 0)}
                                   for x in debts],
@@ -4086,6 +4101,50 @@ def _attribute_linked_transactions(user_id, only_account=None):
                 row.debt_id = debt
                 touched += 1
     return touched
+
+
+def _account_books(user_id):
+    """Plaid account_id -> the book of the record that account is linked to.
+
+    The book on a card or bank account is where the user says whose money it is, and the
+    sync never read it. Every row arrived unfiled, shown as "Personal (default)" and
+    counted in no book's figures, so the household filed every new row by hand, week after
+    week, into the book its own card already named.
+
+    Only a linked Debt or FinanceAccount has a book. A portfolio does not, and an unlinked
+    account has nothing to inherit, so those rows still arrive unfiled -- which is honest,
+    since nobody has said where they go.
+    """
+    visible = {e.id for e in _visible_entities(user_id).all()}
+    debts = {d.id: d.entity_id for d in Debt.query.filter(_visible(Debt, user_id)).all()}
+    accts = {a.id: a.entity_id for a in
+             FinanceAccount.query.filter(_visible(FinanceAccount, user_id)).all()}
+    out = {}
+    for pa in PlaidAccount.query.filter_by(user_id=user_id).all():
+        bid = (debts.get(pa.linked_debt_id) if pa.linked_debt_id
+               else accts.get(pa.linked_account_id) if pa.linked_account_id else None)
+        if bid and bid in visible:
+            out[pa.account_id] = bid
+    return out
+
+
+def _arrival_book(user_id, txn, acct_books):
+    """The book a NEW spend row from Plaid starts in.
+
+    A pending charge's own book wins over the account's. Plaid posts a pending
+    transaction under a NEW transaction_id and retires the pending one, so a row the
+    user had moved to the farm came back as a fresh row in the card's book and the
+    filing was silently undone. Plaid names the row it replaces in
+    pending_transaction_id, and the retirement is processed after this, so the
+    pending row is still there to read.
+    """
+    pid = txn.get('pending_transaction_id')
+    if pid:
+        twin = SpendTransaction.query.filter_by(user_id=user_id,
+                                                external_id='plaid:%s' % pid).first()
+        if twin and twin.entity_id:
+            return twin.entity_id
+    return acct_books.get(txn.get('account_id'))
 
 
 def _sync_plaid_accounts(item, client=None, token=None):
@@ -4876,6 +4935,8 @@ def _plaid_sync_item(item, client=None, backfill=False):
     # account_id -> type, so a deposit can be told apart from a card payment as it arrives.
     acct_types = {a.account_id: (a.type or '') for a in
                   PlaidAccount.query.filter_by(user_id=item.user_id).all()}
+    # account_id -> book, so a new row is filed where its card or account already says.
+    acct_books = _account_books(item.user_id)
     unchanged = attributed = 0
     cursor = None if backfill else item.cursor
     # account_id -> (newest posted date already held, {abs amounts on that day}). Only on
@@ -4959,6 +5020,9 @@ def _plaid_sync_item(item, client=None, backfill=False):
             row = SpendTransaction.query.filter_by(user_id=item.user_id, external_id=ext).first()
             if row is None:
                 row = SpendTransaction(user_id=item.user_id, external_id=ext, source='plaid')
+                # NEW rows only. An existing row's book is the user's -- including a row
+                # they deliberately left unfiled -- and a `modified` must not overrule it.
+                row.entity_id = _arrival_book(item.user_id, txn, acct_books)
                 db.session.add(row)
                 added += 1
             elif backfill:

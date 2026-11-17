@@ -152,7 +152,7 @@
             </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:0.84em;">
-            <span class="muted">Anything not filed belongs to</span>
+            <span class="muted">New transactions are filed to their account's book &mdash; set it under <a href="#plaidCard">Connected accounts &rsaquo; Books to</a>. Anything still unfiled shows as</span>
             <select id="defBook" class="fin-in" style="padding:3px 8px;" onchange="saveDefaultBook()"><option value="">nothing &mdash; leave unassigned</option></select>
             <span id="defBookMsg" class="muted"></span>
             <button class="link-btn" onclick="attributeAll()" title="Apply what you have already taught the app about each payer">file income by payer</button>
@@ -1915,6 +1915,16 @@
                     return `<div class="muted" style="font-size:0.74em;margin-top:2px;">looks like <strong>${esc(nm)}</strong> &middot; <button class="link-btn" onclick="linkPlaidAccount(${a.id},'${sk}:${a.suggested_link_id}')">link it</button></div>`;
                   })()
                 : '';
+            /* Where this account's new transactions are filed. It IS the book of the linked
+               record -- there is nowhere else for it to live -- so it is set here, next to
+               the account, instead of inside a debt form nobody opens to answer
+               "where do my Amex charges go". */
+            const book = a.book_record
+                ? `<select class="fin-in" style="padding:3px 6px;font-size:0.82em;max-width:170px;" title="New transactions from this account are filed here. It is the book of ${esc(a.book_record.name).replace(/"/g,'&quot;')}, so it changes that record too." onchange="setAccountBook('${a.book_record.kind}',${a.book_record.id},this.value)">
+                    <option value="">no book &mdash; leave unfiled</option>
+                    ${(d.books||[]).map(b=>`<option value="${b.id}" ${String(a.book_id||'')===String(b.id)?'selected':''}>${esc(b.name)}</option>`).join('')}
+                   </select>`
+                : `<span class="muted" style="font-size:0.78em;">${a.linked_portfolio_id ? '&mdash;' : 'link it first'}</span>`;
             const bal = a.current_balance==null ? '<span class="muted">&mdash;</span>' : fmt2(a.current_balance);
             return `<tr>
                 <td><strong>${esc(a.name||'Account')}</strong>${a.mask?` <span class="muted">&middot;&middot;&middot;${esc(a.mask)}</span>`:''}
@@ -1925,6 +1935,7 @@
                        untracked holding or some cash, which is the useful signal. */
                     a.portfolio_variance ? `<div class="muted" style="font-size:0.74em;">tracked ${fmt(a.portfolio_value)} &middot; <span class="${Math.abs(a.portfolio_variance)>1?'neg':''}">${a.portfolio_variance>0?'+':''}${fmt(a.portfolio_variance)}</span></div>` : ''}</td>
                 <td>${sel}${suggestion}</td>
+                <td>${book}</td>
             </tr>`;
         }).join('');
         return `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
@@ -1938,10 +1949,11 @@
             <div class="muted" style="font-size:0.78em;margin-bottom:8px;line-height:1.5;">
               Linking to an <strong>account or debt</strong> replaces its balance from the bank on every sync &mdash; it stops being a figure you typed once, and a credit limit comes with it. Point several at one record and the balance is their <strong>sum</strong>, which is what sub-accounts like SoFi Vaults need.
               Linking to a <strong>portfolio</strong> only compares, because that value is holdings &times; price and one balance cannot say what is in them; the difference is shown instead.
+              <strong>Books to</strong> is where each account's new transactions are filed as they arrive; move any one row afterwards and it stays moved.
               ${unlinked?` <strong>${unlinked} not linked yet.</strong>`:''}
             </div>
             ${(d.rollups||[]).length ? `<div class="muted" style="margin-bottom:10px;font-size:0.78em;border-left:3px solid var(--border);padding-left:8px;">${d.rollups.map(c=>`<strong>${c.accounts.map(esc).join('</strong> + <strong>')}</strong>`).join('; ')} roll up into one record &mdash; the balance is their sum. That is right for sub-accounts like SoFi Vaults, which the bank reports separately but which are one pot.</div>` : ''}
-            <div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th style="text-align:right;">Balance</th><th>Linked to</th></tr></thead><tbody>${rows}</tbody></table></div>
+            <div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th style="text-align:right;">Balance</th><th>Linked to</th><th>Books to</th></tr></thead><tbody>${rows}</tbody></table></div>
         </div>`;
     }
     /* Which records a bank account may point at, grouped so the choice is navigable.
@@ -1975,6 +1987,12 @@
         return group('Cash accounts', cash.map(x=>opt('account', x)).join('')) +
                group('Investment accounts', invest.map(x=>opt('account', x)).join('')) +
                group('Other', other.map(x=>opt('account', x)).join(''));
+    }
+    async function setAccountBook(kind, id, value) {
+        const r = await fetch(`/api/finance/entity/${kind}/${id}`,{method:'PUT',credentials:'same-origin',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id: value||null})});
+        if(!r.ok){ alert((await r.json().catch(()=>({}))).error||'Could not set that book.'); }
+        await loadPlaid(); loadEntities();
     }
     async function linkPlaidAccount(id, value) {
         const [kind, rid] = String(value||'').split(':');
