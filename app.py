@@ -2936,6 +2936,7 @@ def finance_income_reconciliation():
 
 _DEPOSIT_KIND_LABELS = {'income': 'Income', 'transfer_in': 'Transfer in',
                         'card_payment': 'Card payment', 'refund': 'Refund',
+                        'own_account': 'From own account',
                         'unknown': 'Unclassified'}
 
 
@@ -2997,7 +2998,8 @@ def _ledger_rows(uid, start, end):
             'posted_at': d.posted_at.isoformat(),
             'description': d.description, 'merchant': d.merchant,
             'amount': round(float(d.amount or 0), 2),
-            'direction': 'transfer' if d.kind in ('transfer_in', 'card_payment') else 'in',
+            'direction': ('transfer' if d.kind in ('transfer_in', 'card_payment', 'own_account')
+                          else 'in'),
             'category': d.kind, 'category_label': src.name if src else _DEPOSIT_KIND_LABELS.get(d.kind, d.kind),
             'income_source_id': d.income_source_id,
             # A tied deposit is the cheque for income already logged by hand. It is real
@@ -3970,7 +3972,13 @@ def _pair_transfers(user_id, since=None):
     if since:
         q = q.filter(SpendTransaction.posted_at >= since - timedelta(days=TRANSFER_PAIR_DAYS))
         dq = dq.filter(PlaidDeposit.posted_at >= since)
-    outflows = [t for t in q.all() if (t.category or 'other') not in NON_SPEND_CATEGORIES]
+    # Outflows ALREADY filed as transfers are candidates too. Pairing is not only how a
+    # move gets reclassified -- it is the only thing that claims the INBOUND half. Skip
+    # the outflows a name rule already got right and their deposits are never claimed:
+    # "From Savings" $612.39 and a $1,500 move from Chase sat in the arrivals queue as
+    # money from outside, with their other halves right there, same cents, same day.
+    # Setting `transfer` on a row that is already `transfer` changes nothing.
+    outflows = q.all()
     claimed = {pid for (pid,) in db.session.query(SpendTransaction.paired_deposit_id).filter(
         SpendTransaction.user_id == user_id, SpendTransaction.paired_deposit_id.isnot(None)).all()}
     links = {a.account_id: a for a in PlaidAccount.query.filter_by(user_id=user_id).all()}

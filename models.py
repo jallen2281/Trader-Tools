@@ -2506,7 +2506,13 @@ class PlaidDeposit(db.Model):
     """
     __tablename__ = 'plaid_deposits'
 
-    KINDS = ('income', 'card_payment', 'transfer_in', 'refund', 'unknown')
+    # own_account: money from another of the owner's accounts that this ledger does not
+    # carry -- a brokerage sale swept to checking, a crypto withdrawal. It IS a transfer
+    # between their own accounts, but its other half lives in a brokerage, never in the
+    # spending ledger, so _pair_transfers can never find it and the arrivals queue would
+    # list it forever as outside money. The only way out the queue offered was tying it
+    # to an income source, which would have filed $2,852.16 of stock-sale proceeds as pay.
+    KINDS = ('income', 'card_payment', 'transfer_in', 'own_account', 'refund', 'unknown')
     # external_id is NOT NULL and unique per user because it is Plaid's own id and is what
     # stops a re-sync double-counting. A hand-entered row has no such id, so it gets a
     # generated one under this prefix -- which also makes "did a person type this?" a

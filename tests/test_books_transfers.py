@@ -159,6 +159,26 @@ with A.app.app_context():
     check('and joins the moved total instead',
           near(after['transfers_out'], 7500.00 + 2178.00 + 9000.00), after['transfers_out'])
 
+    print('\n--- an outflow the rules ALREADY filed as a transfer still claims its other half ---')
+    # "To Checking - 0852" is caught by a name rule and lands in `transfer` on import.
+    # Pairing only looked at outflows that were NOT transfers yet -- its job was to
+    # reclassify spending -- so this one never claimed its inbound half, and the $612.39
+    # "From Savings" deposit sat in the arrivals queue as money from outside.
+    moved_out = spend(HOME, RECENT, 'To Checking - 0852', 612.39, 'transfer', pa='acc_sav')
+    moved_in = arrive(RECENT, 'From Savings - 3808', 612.39, pa='acc_chk')
+    db.session.commit()
+    before = A._entity_report(ME, HOME, CUR)
+    A._pair_transfers(ME)
+    db.session.commit()
+    after = A._entity_report(ME, HOME, CUR)
+    check('the already-filed outflow is paired with its arrival',
+          moved_out.paired_deposit_id == moved_in.id, moved_out.paired_deposit_id)
+    check('so the arrival is NOT listed as money from outside',
+          moved_in.id not in {a['id'] for a in A._unpaired_arrivals(ME)['arrivals']})
+    check('its category is untouched', moved_out.category == 'transfer', moved_out.category)
+    check('spending does not move -- it was never counted',
+          near(after['expenses'], before['expenses']), (before['expenses'], after['expenses']))
+
     print('\n--- "at this rate" is measured over the records, not the calendar ---')
     ev = A._expense_view([
         type('T', (), {'amount': 1000.00, 'posted_at': date(CUR, 6, 1)})(),
@@ -247,6 +267,26 @@ with A.app.app_context():
     check('an arrival tied to an income source drops off the queue',
           ua2['count'] == 1, [a['description'] for a in ua2['arrivals']])
     check('and the total follows it down', near(ua2['total'], 2852.16), ua2['total'])
+
+    print('\n--- money from your OWN brokerage or crypto is named as such, not as income ---')
+    # Proceeds of a stock sale swept into checking. Its other half is in the brokerage,
+    # which never reaches the spending ledger, so pairing cannot find it. Tying it to an
+    # income source -- the only resolution on offer -- would have counted it as pay.
+    brk = PlaidDeposit.query.filter_by(description='Deposit from Brokerage - 5930').first()
+    A._apply_deposit_fields(brk, {'kind': 'own_account'}, ME)
+    db.session.commit()
+    ua3 = A._unpaired_arrivals(ME)
+    check('it drops off the queue', ua3['count'] == 0, [a['description'] for a in ua3['arrivals']])
+    check('without being tied to any income source', brk.income_source_id is None)
+    check('so it is not income', brk.kind != 'income')
+    lr = [r for r in A._ledger_rows(ME, RECENT, RECENT)
+          if r.get('id') == brk.id and r.get('kind') == 'deposit']
+    check('the ledger shows it as a transfer, not money in',
+          bool(lr) and lr[0]['direction'] == 'transfer', lr)
+    check('labelled for what it is',
+          bool(lr) and lr[0]['category_label'] == 'From own account', lr)
+    brk.kind = 'transfer_in'          # put it back for the bounded-window checks below
+    db.session.commit()
 
     print('\n--- the window and the list are bounded ---')
     old = arrive(date(CUR - 1, 5, 1), 'LAST YEAR MOVE', 999.00, pa='acc_chk')
