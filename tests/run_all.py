@@ -93,6 +93,7 @@ SUITES = [
     ('plaid_row', 'which control a broken connection offers (runs under node)'),
     ('plaid_relink', 'connecting a bank you already connected'),
     ('book_on_arrival', 'a synced row arrives in the book its account names'),
+    ('deposit_settles_entry', 'a bank deposit tied to income entered by hand counts once'),
     ('debt_as_of', 'a typed-in balance already contains the payments before it'),
     ('vehicle_method', 'one vehicle, one method -- mileage vs actual, and the farm exception'),
     ('batchfetch', 'batched market data fetching'),

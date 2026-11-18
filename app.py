@@ -2866,7 +2866,9 @@ def _income_reconciliation(user_id, months=INCOME_RECON_MONTHS, today=None):
     by_kind = {}
     for d in rows:
         by_kind.setdefault(d.kind or 'unknown', []).append(d)
-    counted = [d for d in rows if d.kind == 'income']
+    # A bank deposit settling a hand entry is the same money as that entry, which is
+    # already in `rows` as income of its own.
+    counted = [d for d in rows if d.kind == 'income' and not d.settles_deposit_id]
     observed_monthly = round(sum(float(d.amount or 0) for d in counted) / float(months), 2) \
         if counted else 0.0
 
@@ -3007,7 +3009,9 @@ def _ledger_rows(uid, start, end):
             # what lets the UI label it as settling that payment instead of looking like a
             # second copy of it.
             'income_event_id': d.income_event_id,
-            'settles_logged_income': d.income_event_id is not None,
+            'settles_deposit_id': d.settles_deposit_id,
+            'settles_logged_income': (d.income_event_id is not None
+                                      or d.settles_deposit_id is not None),
             'account_key': d.plaid_account_id or 'none',
             'account_name': plaid_names.get(d.plaid_account_id, 'Connected account'),
             # A deposit's own book wins, then the book of the income source behind it,
@@ -3298,6 +3302,7 @@ def _apply_deposit_fields(x, d, uid):
         if k not in PlaidDeposit.KINDS:
             raise ValueError('kind must be one of: %s' % ', '.join(PlaidDeposit.KINDS))
         x.kind = k
+        x.kind_locked = True
     if 'income_source_id' in d:
         sid = d.get('income_source_id')
         if sid in (None, '', 0, '0'):
@@ -3334,6 +3339,39 @@ def _apply_deposit_fields(x, d, uid):
             elif x.income_source_id != ev.income_source_id:
                 raise ValueError('that income event belongs to a different income source')
             x.income_event_id = eid
+    if 'settles_deposit_id' in d:
+        tid = d.get('settles_deposit_id')
+        if tid in (None, '', 0, '0'):
+            x.settles_deposit_id = None
+        else:
+            try:
+                tid = int(tid)
+            except (TypeError, ValueError):
+                raise ValueError('settles_deposit_id must be a number')
+            # The same rules as an event tie, plus the ones a self-referencing link needs:
+            # only the BANK side settles, only a HAND entry is settled, and one hand entry is
+            # one piece of money, so it can be claimed once.
+            t = PlaidDeposit.query.filter_by(id=tid, user_id=uid).first()
+            if not t or not t.is_manual():
+                raise ValueError('that is not income you entered by hand')
+            if x.is_manual():
+                raise ValueError('only a deposit from the bank can settle a hand entry')
+            if PlaidDeposit.query.filter(PlaidDeposit.user_id == uid,
+                                         PlaidDeposit.settles_deposit_id == t.id,
+                                         PlaidDeposit.id != (x.id or 0)).first():
+                raise ValueError('that entry is already settled by another deposit')
+            if x.income_source_id is None:
+                x.income_source_id = t.income_source_id
+            elif t.income_source_id and x.income_source_id != t.income_source_id:
+                raise ValueError('that entry belongs to a different income source')
+            x.settles_deposit_id = t.id
+            # Tying says what this deposit IS: that income, arriving. Left as the
+            # classifier's transfer_in it would show as a transfer, and -- the hand entry
+            # being the counted side -- nothing is lost by calling it what it is.
+            x.kind = 'income'
+            x.kind_locked = True
+    if x.settles_deposit_id and x.income_event_id:
+        raise ValueError('a deposit settles a logged payment or a hand entry, not both')
     if 'entity_id' in d:
         bid = d.get('entity_id')
         if bid in (None, '', 0, '0'):
@@ -3389,10 +3427,13 @@ def finance_modify_deposit(did):
     if request.method == 'DELETE':
         # A synced row would simply come back on the next sync, and deleting it would
         # look like it worked until then. Only hand-entered income can be removed.
-        if not (x.source == 'manual'
-                or (x.external_id or '').startswith(PlaidDeposit.MANUAL_DEPOSIT_PREFIX)):
+        if not x.is_manual():
             return jsonify({'error': 'This came from the bank feed and cannot be deleted. '
                                      'Re-file it instead.'}), 400
+        # A bank deposit that settled this entry was not counted BECAUSE this one was.
+        # Release it, so the money is still counted once rather than not at all.
+        PlaidDeposit.query.filter_by(user_id=uid, settles_deposit_id=x.id).update(
+            {'settles_deposit_id': None}, synchronize_session=False)
         db.session.delete(x)
         db.session.commit()
         return jsonify({'success': True})
@@ -3954,7 +3995,11 @@ def _record_deposit(item, txn, acct_types):
     row.amount = round(abs(float(txn.get('amount') or 0)), 2)
     row.pfc_primary = (pfc.get('primary') or None)
     row.pfc_detailed = (pfc.get('detailed') or None)
-    row.kind = _classify_deposit(txn, acct_types.get(aid))
+    # A kind a person chose outranks the classifier, the way category_locked does for
+    # spending. Without this a `modified` or a backfill silently re-labelled a Blue Cross
+    # settlement or a brokerage sale back to transfer_in.
+    if not row.kind_locked:
+        row.kind = _classify_deposit(txn, acct_types.get(aid))
 
 
 # A transfer and its landing are usually a day apart and sometimes a long weekend.
@@ -4047,7 +4092,8 @@ def _unpaired_arrivals(user_id, start=None, end=None, limit=50):
         PlaidDeposit.user_id == user_id,
         PlaidDeposit.kind.in_(UNCOUNTED_DEPOSIT_KINDS),
         PlaidDeposit.income_source_id.is_(None),
-        PlaidDeposit.income_event_id.is_(None))
+        PlaidDeposit.income_event_id.is_(None),
+        PlaidDeposit.settles_deposit_id.is_(None))
     if start is not None:
         q = q.filter(PlaidDeposit.posted_at >= start)
     if end is not None:

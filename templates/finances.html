@@ -1502,34 +1502,48 @@
         const bkSel = document.getElementById('dpBook');
         bkSel.innerHTML = '<option value="">&mdash; use the source or the default &mdash;</option>' +
             (ENTITIES||[]).map(x=>`<option value="${x.id}" ${String(e.entity_id||'')===String(x.id)?'selected':''}>${esc(x.name)}</option>`).join('');
-        dpSyncEvents(e.income_event_id);
+        DP_FROM_BANK = !isNew && !manual;
+        dpSyncEvents(e.income_event_id ? 'event:' + e.income_event_id
+                     : e.settles_deposit_id ? 'deposit:' + e.settles_deposit_id : '');
     }
+    let DP_FROM_BANK = false;
     /* The same money gets recorded twice: logged by hand the day a commission is earned,
        then again as the cheque that clears days later. Only payments belonging to the
        chosen source are offered, because a tie across sources is meaningless -- and one
        already tied to another deposit is shown but not selectable, so two cheques cannot
-       both claim the same payment. */
+       both claim the same payment.
+       Income ENTERED BY HAND is offered too, but only when this deposit came from the bank:
+       the farm logs egg money as hand entries, not events, so its list was always empty and
+       the one filing left -- naming the source -- counted a $36 transfer for eggs twice.
+       Values carry their kind ("event:3", "deposit:157") because the ids are two tables. */
     function dpSyncEvents(selected) {
         const sel = document.getElementById('dpEvent');
         if (!sel) return;
         const sid = document.getElementById('dpSrc').value;
         const src = ((OUTLOOK&&OUTLOOK.income_sources)||[]).find(s=>String(s.id)===String(sid));
         const evs = (src && src.events) || [];
+        const logged = DP_FROM_BANK ? ((src && src.logged_deposits) || []) : [];
         const want = String(selected||'');
+        const opt = (v, taken, text) =>
+            `<option value="${v}"${v===want?' selected':''}${taken?' disabled':''}>${text}${taken?' (already tied)':''}</option>`;
         sel.innerHTML = '<option value="">&mdash; not a logged payment &mdash;</option>' +
-            evs.map(e=>{
-                const taken = (e.deposit_ids||[]).length && String(e.id)!==want;
-                return `<option value="${e.id}"${String(e.id)===want?' selected':''}${taken?' disabled':''}>`
-                     + `${e.date} · ${fmt2(e.gross_amount)}${e.description?' · '+esc(e.description):''}`
-                     + `${taken?' (already tied)':''}</option>`;
-            }).join('');
-        sel.disabled = !evs.length;
+            evs.map(e=>opt('event:' + e.id, (e.deposit_ids||[]).length && 'event:' + e.id !== want,
+                `${e.date} · ${fmt2(e.gross_amount)}${e.description?' · '+esc(e.description):''}`)).join('') +
+            logged.map(x=>opt('deposit:' + x.id, (x.settled_by||[]).length && 'deposit:' + x.id !== want,
+                `${x.date} · ${fmt2(x.amount)}${x.description?' · '+esc(x.description):''} · entered by hand`)).join('');
+        // A tie older than the list still has to show as chosen, or saving would clear it.
+        if (want && !sel.querySelector(`option[value="${want}"]`)) {
+            sel.insertAdjacentHTML('beforeend', `<option value="${want}" selected>tied to #${esc(want.split(':')[1])}</option>`);
+        }
+        sel.disabled = !(evs.length || logged.length || want);
     }
     async function saveDeposit(id) {
         const g=i=>document.getElementById(i);
+        const [tieKind, tieId] = String((g('dpEvent')&&g('dpEvent').value)||'').split(':');
         const body={description:g('dpDesc').value.trim(), merchant:g('dpWho').value.trim(),
             income_source_id:g('dpSrc').value||null, entity_id:g('dpBook').value||null,
-            income_event_id:(g('dpEvent')&&g('dpEvent').value)||null};
+            income_event_id: tieKind==='event' ? tieId : null,
+            settles_deposit_id: tieKind==='deposit' ? tieId : null};
         if(!g('dpDate').disabled){ body.posted_at=g('dpDate').value; body.amount=parseFloat(g('dpAmt').value)||0; }
         const url = id ? `/api/finance/deposits/${id}` : '/api/finance/deposits';
         const r = await fetch(url,{method:id?'PUT':'POST',credentials:'same-origin',

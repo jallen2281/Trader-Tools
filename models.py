@@ -1515,10 +1515,13 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
         # which would sum every unattributed deposit in the household into this one source.
         if not self.id:
             return 0.0
+        # A bank deposit that settles a hand entry is skipped for the same reason: the hand
+        # entry is already counted here. See PlaidDeposit.settles_deposit_id.
         q = PlaidDeposit.query.filter(
             PlaidDeposit.income_source_id == self.id,
             PlaidDeposit.kind == 'income',
             PlaidDeposit.income_event_id.is_(None),
+            PlaidDeposit.settles_deposit_id.is_(None),
             PlaidDeposit.posted_at >= start)
         if end is not None:
             q = q.filter(PlaidDeposit.posted_at <= end)
@@ -1583,7 +1586,8 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
             q = PlaidDeposit.query.filter(
                 PlaidDeposit.income_source_id == self.id,
                 PlaidDeposit.kind == 'income',
-                PlaidDeposit.income_event_id.is_(None))
+                PlaidDeposit.income_event_id.is_(None),
+                PlaidDeposit.settles_deposit_id.is_(None))
             if start is not None:
                 q = q.filter(PlaidDeposit.posted_at >= start)
             row = q.order_by(PlaidDeposit.posted_at.asc()).first()
@@ -1626,7 +1630,8 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
             q = PlaidDeposit.query.filter(
                 PlaidDeposit.income_source_id == self.id,
                 PlaidDeposit.kind == 'income',
-                PlaidDeposit.income_event_id.is_(None))
+                PlaidDeposit.income_event_id.is_(None),
+                PlaidDeposit.settles_deposit_id.is_(None))
             if start is not None:
                 q = q.filter(PlaidDeposit.posted_at >= start)
             if end is not None:
@@ -1821,6 +1826,26 @@ class IncomeSource(PayrollDeferralMixin, db.Model):
         }
         if include_events:
             d['events'] = [e.to_dict() for e in (self.events or [])]
+            # Income this source has had ENTERED BY HAND, which a bank deposit can settle
+            # just as it settles an event -- see PlaidDeposit.settles_deposit_id. The newest
+            # sixty: a deposit settles something recorded around the time it landed.
+            if self.id:
+                logged = (PlaidDeposit.query
+                          .filter(PlaidDeposit.income_source_id == self.id,
+                                  db.or_(PlaidDeposit.source == 'manual',
+                                         PlaidDeposit.external_id.startswith(
+                                             PlaidDeposit.MANUAL_DEPOSIT_PREFIX)))
+                          .order_by(PlaidDeposit.posted_at.desc()).limit(60).all())
+                ids = [x.id for x in logged]
+                by = {}
+                for sid, tid in (db.session.query(PlaidDeposit.id, PlaidDeposit.settles_deposit_id)
+                                 .filter(PlaidDeposit.settles_deposit_id.in_(ids or [-1])).all()):
+                    by.setdefault(tid, []).append(sid)
+                d['logged_deposits'] = [{
+                    'id': x.id, 'date': x.posted_at.isoformat() if x.posted_at else None,
+                    'amount': float(x.amount or 0), 'description': x.description,
+                    'settled_by': sorted(by.get(x.id, [])),
+                } for x in logged]
         return d
 
 
@@ -2555,7 +2580,26 @@ class PlaidDeposit(db.Model):
     # plaid | manual. Hand-entered income (a farm sale, a commission cheque) has no Plaid
     # transaction behind it and must not be deleted by a re-sync.
     source = db.Column(db.String(10), default='plaid')
+    # The HAND-ENTERED deposit this bank deposit settles, when the same money was recorded
+    # both ways. income_event_id covers a payment logged as an IncomeEvent, but the farm
+    # logs egg money as hand-entered deposits, so a $36.00 bank transfer for eggs already
+    # entered as "Egg sales" $36.00 had nothing to tie to. The only filing the deposit form
+    # offered was naming the income source, and that would have counted the eggs twice.
+    # As with an event, the hand entry is the side that counts. Deliberately not a foreign
+    # key: it points into this same table, and deleting the hand entry clears the link
+    # instead (finance_modify_deposit), so the bank deposit then counts in its place.
+    settles_deposit_id = db.Column(db.Integer, index=True)
+    # Set when a person chooses the kind. Every re-delivery of a transaction re-ran the
+    # classifier over it, so 'refund' and 'own_account' -- which the classifier never
+    # returns -- reverted on the next `modified` or backfill, and the deposit went back
+    # into the arrivals queue as if nobody had ever said what it was.
+    kind_locked = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def is_manual(self):
+        """A person typed this in, rather than the bank feed delivering it."""
+        return (self.source == 'manual'
+                or (self.external_id or '').startswith(self.MANUAL_DEPOSIT_PREFIX))
 
     __table_args__ = (
         db.UniqueConstraint('user_id', 'external_id', name='uq_plaid_deposit'),
@@ -2572,6 +2616,8 @@ class PlaidDeposit(db.Model):
             'pfc_primary': self.pfc_primary, 'pfc_detailed': self.pfc_detailed,
             'income_source_id': self.income_source_id,
             'income_event_id': self.income_event_id,
+            'settles_deposit_id': self.settles_deposit_id,
+            'kind_locked': bool(self.kind_locked),
             'entity_id': self.entity_id, 'source': self.source or 'plaid',
         }
 
